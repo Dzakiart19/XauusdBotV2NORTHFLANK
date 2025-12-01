@@ -830,9 +830,15 @@ class PositionTracker:
             logger.debug(f"Invalid data: user_id={user_id}, trade_id={trade_id}, signal={signal_type}, entry={entry_price}, sl={stop_loss}, tp={take_profit}")
             return None
         
-        session = self.db.get_session()
+        session = None
         position_id = None
         try:
+            session = self.db.get_session()
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            
             position = Position(
                 user_id=user_id,
                 trade_id=trade_id,
@@ -888,16 +894,18 @@ class PositionTracker:
             
         except (IntegrityError, OperationalError, SQLAlchemyError, ValueError, TypeError) as e:
             logger.error(f"Database error adding position for User:{user_id} Trade:{trade_id}: {type(e).__name__}: {e}", exc_info=True)
-            try:
-                session.rollback()
-            except (OperationalError, SQLAlchemyError) as rollback_error:
-                logger.error(f"Error during rollback: {rollback_error}")
+            if session:
+                try:
+                    session.rollback()
+                except (OperationalError, SQLAlchemyError) as rollback_error:
+                    logger.error(f"Error during rollback: {rollback_error}")
             return None
         finally:
-            try:
-                session.close()
-            except (OperationalError, SQLAlchemyError) as close_error:
-                logger.error(f"Error closing session: {close_error}")
+            if session:
+                try:
+                    session.close()
+                except (OperationalError, SQLAlchemyError) as close_error:
+                    logger.error(f"Error closing session: {close_error}")
     
     async def _apply_dynamic_sl_internal(self, user_id: int, position_id: int, pos: Dict, 
                                           current_price: float, unrealized_pl: float) -> tuple[bool, Optional[float], Dict]:
@@ -1198,8 +1206,14 @@ class PositionTracker:
                 else:
                     return None
             
-            session = self.db.get_session()
+            session = None
             try:
+                session = self.db.get_session()
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+                
                 position = session.query(Position).filter(Position.id == position_id, Position.user_id == user_id).first()
                 if not position:
                     logger.warning(f"Position {position_id} not found in database for User:{user_id}")
@@ -1220,15 +1234,17 @@ class PositionTracker:
                 session.commit()
             except (IntegrityError, OperationalError, SQLAlchemyError, ValueError, TypeError) as e:
                 logger.error(f"Database error updating position {position_id}: {type(e).__name__}: {e}", exc_info=True)
-                try:
-                    session.rollback()
-                except (OperationalError, SQLAlchemyError) as rollback_error:
-                    logger.error(f"Error during rollback: {rollback_error}")
+                if session:
+                    try:
+                        session.rollback()
+                    except (OperationalError, SQLAlchemyError) as rollback_error:
+                        logger.error(f"Error during rollback: {rollback_error}")
             finally:
-                try:
-                    session.close()
-                except (OperationalError, SQLAlchemyError) as close_error:
-                    logger.error(f"Error closing session: {close_error}")
+                if session:
+                    try:
+                        session.close()
+                    except (OperationalError, SQLAlchemyError) as close_error:
+                        logger.error(f"Error closing session: {close_error}")
             
             hit_tp = False
             hit_sl = False
@@ -1282,8 +1298,14 @@ class PositionTracker:
         
         trade_result = None
         
-        session = self.db.get_session()
+        session = None
         try:
+            session = self.db.get_session()
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            
             position = session.query(Position).filter(Position.id == position_id, Position.user_id == user_id).first()
             if position:
                 position.status = 'CLOSED'
@@ -1437,15 +1459,17 @@ class PositionTracker:
             
         except (IntegrityError, OperationalError, SQLAlchemyError, asyncio.CancelledError, asyncio.TimeoutError, ValueError, TypeError, KeyError) as e:
             logger.error(f"Error closing position {position_id}: {e}", exc_info=True)
-            try:
-                session.rollback()
-            except (OperationalError, SQLAlchemyError) as rollback_error:
-                logger.error(f"Error during rollback: {rollback_error}")
+            if session:
+                try:
+                    session.rollback()
+                except (OperationalError, SQLAlchemyError) as rollback_error:
+                    logger.error(f"Error during rollback: {rollback_error}")
         finally:
-            try:
-                session.close()
-            except (OperationalError, SQLAlchemyError) as close_error:
-                logger.error(f"Error closing session: {close_error}")
+            if session:
+                try:
+                    session.close()
+                except (OperationalError, SQLAlchemyError) as close_error:
+                    logger.error(f"Error closing session: {close_error}")
     
     async def monitor_active_positions(self):
         """Monitor all active positions and apply dynamic SL/TP
@@ -1715,11 +1739,14 @@ class PositionTracker:
         if user_id in self.active_positions and len(self.active_positions[user_id]) > 0:
             return True
         
-        # Check 3: Database fallback (critical for restart scenarios)
-        # Menggunakan synchronous query karena ini method sync
         try:
             session = self.db.get_session()
             try:
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+                
                 active_count = session.query(Position).filter(
                     Position.user_id == user_id,
                     Position.status == 'ACTIVE'
@@ -1736,8 +1763,14 @@ class PositionTracker:
     
     async def verify_active_position_in_db(self, user_id: int) -> bool:
         """Verify active position exists in database (for critical operations)"""
-        session = self.db.get_session()
+        session = None
         try:
+            session = self.db.get_session()
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            
             active_count = session.query(Position).filter(
                 Position.user_id == user_id,
                 Position.status == 'ACTIVE'
@@ -1747,7 +1780,8 @@ class PositionTracker:
             logger.error(f"Error verifying position in DB: {e}")
             return False
         finally:
-            session.close()
+            if session:
+                session.close()
     
     async def has_active_position_verified(self, user_id: int) -> bool:
         """
