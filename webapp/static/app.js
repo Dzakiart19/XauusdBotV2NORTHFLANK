@@ -36,32 +36,38 @@ function initTelegram() {
     }
 }
 
-async function fetchDashboardData() {
-    try {
-        const response = await fetch('/api/dashboard');
-        if (!response.ok) {
-            throw new Error('Network response was not ok');
+async function fetchWithRetry(url, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const urlWithCache = url.includes('?') ? url + '&t=' + Date.now() : url + '?t=' + Date.now();
+            const response = await fetch(urlWithCache, {
+                method: 'GET',
+                headers: {'Accept': 'application/json'},
+                cache: 'no-store'
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            if (attempt > 1) console.log(`✅ Retry successful for ${url}`);
+            return data;
+        } catch (error) {
+            console.warn(`Attempt ${attempt}/${maxRetries} failed for ${url}:`, error.message);
+            if (attempt === maxRetries) {
+                console.error(`❌ All retries failed for ${url}`);
+                throw error;
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
         }
-        const data = await response.json();
-        return data;
-    } catch (error) {
-        console.error('Error fetching dashboard data:', error);
-        throw error;
     }
 }
 
+async function fetchDashboardData() {
+    return fetchWithRetry('/api/dashboard');
+}
+
 async function fetchCandlesData() {
-    try {
-        const response = await fetch('/api/candles?timeframe=M1&limit=100');
-        if (!response.ok) {
-            throw new Error('Network response was not ok');
-        }
-        const data = await response.json();
-        return data;
-    } catch (error) {
-        console.error('Error fetching candles data:', error);
-        throw error;
-    }
+    return fetchWithRetry('/api/candles?timeframe=M1&limit=100');
 }
 
 function convertToWIB(timestamp) {

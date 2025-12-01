@@ -1007,7 +1007,14 @@ class TradingBotOrchestrator:
                         'connected': self.config_valid and self.market_data is not None and self.market_data.is_connected()
                     }
                     
-                    return web.json_response(response_data, headers={'Cache-Control': 'no-cache'})
+                    return web.json_response(response_data, headers={
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0',
+                        'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                        'Access-Control-Allow-Headers': 'Content-Type'
+                    })
                     
                 except Exception as e:
                     logger.error(f"Error in API dashboard: {e}")
@@ -1080,7 +1087,14 @@ class TradingBotOrchestrator:
                         'active_position': active_position
                     }
                     
-                    return web.json_response(response_data, headers={'Cache-Control': 'no-cache'})
+                    return web.json_response(response_data, headers={
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0',
+                        'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                        'Access-Control-Allow-Headers': 'Content-Type'
+                    })
                     
                 except Exception as e:
                     logger.error(f"Error in API candles: {e}")
