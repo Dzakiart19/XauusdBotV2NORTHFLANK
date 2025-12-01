@@ -92,6 +92,20 @@ Perbaikan untuk meningkatkan akurasi sinyal dari ~50% ke target 80-90%:
 - TRAILING_STOP_DISTANCE_PIPS: 3.0 → 5.0
 - SIGNAL_SCORE_THRESHOLD_AUTO: 55 → 75
 
+**Real-Time Telegram Dashboard (Dec 1, 2025):**
+- ✅ Dashboard real-time yang ditampilkan langsung di chat Telegram
+- ✅ Auto-update setiap **5 detik** dengan MD5 hash untuk deteksi perubahan
+- ✅ Commands: `/dashboard` (start), `/stopdashboard` (stop), `/refresh` (manual refresh)
+- Panel yang ditampilkan:
+  - 💰 **HARGA XAUUSD (REAL-TIME)**: Status LIVE indicator, Mid Price, Bid/Ask, Spread, 24h Range, Change %
+  - 📊 **MARKET REGIME**: Tren, Volatilitas, Bias, Confidence
+  - 📡 **SINYAL TERAKHIR**: Tipe, Entry price, waktu
+  - 📈 **POSISI AKTIF**: Entry, SL, TP, Unrealized P/L real-time
+  - 📉 **STATISTIK**: Win Rate, Total P/L, Sinyal Hari Ini
+- Fitur: Rate limiting, error handling, thread-safe dengan asyncio.Lock
+- Data harga diambil langsung dari WebSocket tick (bukan candle)
+- Timezone: WIB (Asia/Jakarta)
+
 **Multi-Platform Deployment Support (Dec 1, 2025):**
 - ✅ **Koyeb**: Sudah didukung (lihat DEPLOYMENT_KOYEB.md)
 - ✅ **Northflank**: Baru ditambahkan (lihat DEPLOYMENT_NORTHFLANK.md)
@@ -110,7 +124,7 @@ Perbaikan untuk meningkatkan akurasi sinyal dari ~50% ke target 80-90%:
 - **Indicators:** EMA (5, 10, 20, 50), RSI (14), Stochastic (K=14, D=3), ATR (14), MACD (12,26,9), Volume, Twin Range Filter, Market Bias CEREBR.
 - **Risk Management:** Fixed SL ($1 per trade), dynamic TP (1.45x-2.50x R:R), max spread (5 pips), risk per trade (0.5%). Includes dynamic SL tightening and trailing stop activation. Lot size is fixed at 0.01.
 - **Access Control:** Private bot with dual-tier access.
-- **Commands:** Admin commands (`/riset`, `/status`, `/tasks`, `/analytics`, `/systemhealth`) and User commands (`/start`, `/help`, `/monitor`, `/getsignal`, `/status`, `/riwayat`, `/performa`, `/regime`, `/optimize`, `/rules`).
+- **Commands:** Admin commands (`/riset`, `/status`, `/tasks`, `/analytics`, `/systemhealth`) and User commands (`/start`, `/help`, `/monitor`, `/getsignal`, `/status`, `/riwayat`, `/performa`, `/regime`, `/optimize`, `/rules`, `/dashboard`, `/stopdashboard`, `/refresh`).
 - **Anti-Duplicate Protection:** Employs a two-phase cache pattern (pending/confirmed status, hash-based tracking, thread-safe locking, TTL-backed signal cache with async cleanup) for race-condition-safe signal deduplication and anti-spam.
 - **Candle Data Persistence:** Stores M1, M5, and H1 candles in the database with immediate H1 save on candle close. Supports partial candle restore on restart.
 - **H1 Historical Loading (Nov 28, 2025):** H1 timeframe dimuat lengkap saat startup dengan immediate persistence, pending queue mechanism, dan thread-safe session management.

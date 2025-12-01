@@ -320,8 +320,8 @@ class TradingBot:
         self.dashboard_enabled: Dict[int, bool] = {}
         self._dashboard_last_hash: Dict[int, str] = {}
         self._realtime_dashboard_lock = asyncio.Lock()
-        self.DASHBOARD_UPDATE_INTERVAL = 15
-        logger.info("✅ Real-time dashboard system initialized")
+        self.DASHBOARD_UPDATE_INTERVAL = 5  # Update setiap 5 detik untuk real-time
+        logger.info("✅ Real-time dashboard system initialized (interval: 5s)")
         
         self.rate_limiter = RateLimiter(
             max_calls=30,
@@ -1420,7 +1420,7 @@ class TradingBot:
         lines.append(f"⏰ Update: {now_wib.strftime('%H:%M:%S WIB')}")
         lines.append("")
         
-        lines.append("💰 *HARGA XAUUSD*")
+        lines.append("💰 *HARGA XAUUSD (REAL-TIME)*")
         try:
             if self.market_data:
                 bid = 0.0
@@ -1429,17 +1429,35 @@ class TradingBot:
                 high_24h = 0.0
                 low_24h = 0.0
                 change_pct = 0.0
+                mid_price = 0.0
+                data_age = "N/A"
                 
-                if hasattr(self.market_data, 'get_current_price'):
-                    price_data = await self.market_data.get_current_price()
-                    if price_data:
-                        bid = price_data.get('bid', 0) or 0
-                        ask = price_data.get('ask', 0) or 0
+                # Ambil harga bid/ask real-time langsung dari WebSocket
+                if hasattr(self.market_data, 'get_bid_ask'):
+                    bid_ask = await self.market_data.get_bid_ask()
+                    if bid_ask:
+                        bid, ask = bid_ask
+                        mid_price = (bid + ask) / 2
+                        spread = (ask - bid) * 10  # Convert to pips
                 
-                if hasattr(self.market_data, 'get_spread'):
-                    spread_val = await self.market_data.get_spread()
-                    spread = spread_val if spread_val else 0.0
+                # Jika tidak ada dari get_bid_ask, coba dari current_bid/ask langsung
+                if bid == 0 and hasattr(self.market_data, 'current_bid') and self.market_data.current_bid:
+                    bid = self.market_data.current_bid
+                    ask = self.market_data.current_ask if self.market_data.current_ask else bid
+                    mid_price = (bid + ask) / 2
+                    spread = (ask - bid) * 10
                 
+                # Cek umur data (seberapa fresh)
+                if hasattr(self.market_data, 'last_data_received') and self.market_data.last_data_received:
+                    age_seconds = (datetime.now() - self.market_data.last_data_received).total_seconds()
+                    if age_seconds < 5:
+                        data_age = "🟢 LIVE"
+                    elif age_seconds < 30:
+                        data_age = f"🟡 {int(age_seconds)}s ago"
+                    else:
+                        data_age = f"🔴 {int(age_seconds)}s ago"
+                
+                # Ambil 24h high/low dan change dari M5 candles
                 if hasattr(self.market_data, 'm5_builder') and self.market_data.m5_builder:
                     df = self.market_data.m5_builder.get_dataframe(288)
                     if df is not None and len(df) > 0:
@@ -1452,12 +1470,12 @@ class TradingBot:
                 
                 change_emoji = "📈" if change_pct >= 0 else "📉"
                 
-                lines.append(f"• Bid: ${bid:.2f}")
-                lines.append(f"• Ask: ${ask:.2f}")
+                lines.append(f"• Status: {data_age}")
+                lines.append(f"• Mid: *${mid_price:.2f}*")
+                lines.append(f"• Bid: ${bid:.2f} | Ask: ${ask:.2f}")
                 lines.append(f"• Spread: {spread:.1f} pips")
                 if high_24h > 0 and low_24h > 0:
-                    lines.append(f"• 24h High: ${high_24h:.2f}")
-                    lines.append(f"• 24h Low: ${low_24h:.2f}")
+                    lines.append(f"• 24h: ${low_24h:.2f} - ${high_24h:.2f}")
                     lines.append(f"• Change: {change_emoji} {change_pct:+.2f}%")
             else:
                 lines.append("• Data tidak tersedia")
@@ -1608,13 +1626,13 @@ class TradingBot:
             logger.debug(f"Dashboard stats error: {e}")
         
         lines.append("")
-        lines.append("_Update otomatis setiap 15 detik_")
+        lines.append("_Update otomatis setiap 5 detik_")
         lines.append("_Gunakan /stopdashboard untuk menghentikan_")
         
         return "\n".join(lines)
     
     async def _realtime_dashboard_update_loop(self, chat_id: int):
-        """Loop untuk update dashboard real-time setiap 15 detik.
+        """Loop untuk update dashboard real-time setiap 5 detik.
         
         Args:
             chat_id: ID chat Telegram untuk update
