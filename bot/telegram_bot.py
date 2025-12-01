@@ -2886,6 +2886,19 @@ class TradingBot:
                 
                 signal_sent_successfully = True
                 await self._confirm_signal_sent(user_id, signal_type, entry_price)
+                
+                type_key = f"{user_id}_{signal_type}"
+                async with self._cache_lock:
+                    self.last_signal_per_type[type_key] = {
+                        'timestamp': datetime.now(),
+                        'entry_price': entry_price,
+                        'signal_type': signal_type,
+                        'stop_loss': signal.get('stop_loss'),
+                        'take_profit': signal.get('take_profit'),
+                        'trade_id': trade_id,
+                        'position_id': position_id
+                    }
+                
                 logger.info(f"✅ Signal sent - Trade:{trade_id} Position:{position_id} User:{mask_user_id(user_id)} {signal_type} @${entry_price:.2f}")
                 
                 if self.signal_quality_tracker and trade_id is not None:

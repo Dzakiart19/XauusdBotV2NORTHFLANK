@@ -389,3 +389,24 @@ body {
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+.chart-card {
+    padding: 16px;
+}
+
+.chart-card .card-header {
+    margin-bottom: 12px;
+}
+
+#chart-container {
+    height: 300px;
+    width: 100%;
+    background: #1a1a2e;
+    border-radius: 8px;
+    border: 1px solid #2a2a4e;
+    overflow: hidden;
+}
+
+#chart-container .tv-lightweight-charts {
+    border-radius: 8px;
+}

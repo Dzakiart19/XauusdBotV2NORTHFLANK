@@ -73,6 +73,16 @@ class UserPreferences(Base):
     max_daily_signals: Mapped[int] = mapped_column(Integer, default=999999)
     timezone: Mapped[str] = mapped_column(String(50), default='Asia/Jakarta')
 
+class UserTrial(Base):
+    __tablename__ = 'user_trials'
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
+    trial_start: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    trial_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 class UserManager:
     """Thread-safe user manager with per-user locking.
     
@@ -531,14 +541,243 @@ class UserManager:
         return await asyncio.to_thread(self.get_user_count)
     
     def has_access(self, telegram_id: int) -> bool:
-        """Check if user has access (READ operation - no lock needed)."""
+        """Check if user has access (READ operation - no lock needed).
+        
+        Access hierarchy:
+        1. AUTHORIZED_USER_IDS - Full access (no trial needed)
+        2. ID_USER_PUBLIC - Full access (no trial needed)
+        3. Active trial - Temporary access during trial period
+        """
         if telegram_id in self.config.AUTHORIZED_USER_IDS:
             return True
         
         if hasattr(self.config, 'ID_USER_PUBLIC') and telegram_id in self.config.ID_USER_PUBLIC:
             return True
         
+        trial_status = self.check_trial_status(telegram_id)
+        if trial_status and trial_status.get('is_active', False):
+            return True
+        
         return False
+    
+    def start_trial(self, user_id: int) -> Optional[Dict]:
+        """Start a 3-day trial for a new user (WRITE operation).
+        
+        Trial hanya diberikan untuk user baru yang belum terdaftar di AUTHORIZED_USER_IDS.
+        
+        Args:
+            user_id: Telegram user ID
+            
+        Returns:
+            Dict with trial info if successful, None if already has trial or is authorized user
+        """
+        if user_id in self.config.AUTHORIZED_USER_IDS:
+            logger.info(f"User {user_id} is authorized, no trial needed")
+            return None
+        
+        if hasattr(self.config, 'ID_USER_PUBLIC') and user_id in self.config.ID_USER_PUBLIC:
+            logger.info(f"User {user_id} is public user, no trial needed")
+            return None
+        
+        with self.user_lock(user_id):
+            with self.get_session() as session:
+                try:
+                    existing_trial = session.query(UserTrial).filter(
+                        UserTrial.user_id == user_id
+                    ).first()
+                    
+                    if existing_trial:
+                        logger.info(f"User {user_id} already has a trial")
+                        session.expunge(existing_trial)
+                        return {
+                            'user_id': existing_trial.user_id,
+                            'trial_start': existing_trial.trial_start,
+                            'trial_end': existing_trial.trial_end,
+                            'is_active': existing_trial.is_active,
+                            'already_exists': True
+                        }
+                    
+                    now = datetime.utcnow()
+                    trial_end = now + timedelta(days=3)
+                    
+                    new_trial = UserTrial(
+                        user_id=user_id,
+                        trial_start=now,
+                        trial_end=trial_end,
+                        is_active=True,
+                        created_at=now
+                    )
+                    
+                    session.add(new_trial)
+                    session.flush()
+                    
+                    logger.info(f"Started 3-day trial for user {user_id}, expires at {trial_end}")
+                    
+                    return {
+                        'user_id': user_id,
+                        'trial_start': now,
+                        'trial_end': trial_end,
+                        'is_active': True,
+                        'already_exists': False
+                    }
+                    
+                except (SQLAlchemyError, ValueError, TypeError, AttributeError) as e:
+                    logger.error(f"Error starting trial for user {user_id}: {e}")
+                    return None
+    
+    async def async_start_trial(self, user_id: int) -> Optional[Dict]:
+        """Async wrapper for start_trial using asyncio.to_thread."""
+        return await asyncio.to_thread(self.start_trial, user_id)
+    
+    def check_trial_status(self, user_id: int) -> Optional[Dict]:
+        """Check trial status for a user (READ operation).
+        
+        Args:
+            user_id: Telegram user ID
+            
+        Returns:
+            Dict with trial status, or None if no trial exists
+        """
+        with self.get_session() as session:
+            try:
+                trial = session.query(UserTrial).filter(
+                    UserTrial.user_id == user_id
+                ).first()
+                
+                if not trial:
+                    return None
+                
+                now = datetime.utcnow()
+                is_expired = now > trial.trial_end
+                
+                if is_expired and trial.is_active:
+                    with self.user_lock(user_id):
+                        trial_to_update = session.query(UserTrial).filter(
+                            UserTrial.user_id == user_id
+                        ).first()
+                        if trial_to_update:
+                            trial_to_update.is_active = False
+                            session.commit()
+                            logger.info(f"Trial expired for user {user_id}")
+                
+                remaining = trial.trial_end - now
+                remaining_days = max(0, remaining.days)
+                remaining_hours = max(0, remaining.seconds // 3600) if remaining_days == 0 else 0
+                
+                return {
+                    'user_id': trial.user_id,
+                    'trial_start': trial.trial_start,
+                    'trial_end': trial.trial_end,
+                    'is_active': not is_expired,
+                    'is_expired': is_expired,
+                    'remaining_days': remaining_days,
+                    'remaining_hours': remaining_hours
+                }
+                
+            except (SQLAlchemyError, ValueError, TypeError, AttributeError) as e:
+                logger.error(f"Error checking trial status for user {user_id}: {e}")
+                return None
+    
+    async def async_check_trial_status(self, user_id: int) -> Optional[Dict]:
+        """Async wrapper for check_trial_status using asyncio.to_thread."""
+        return await asyncio.to_thread(self.check_trial_status, user_id)
+    
+    def is_trial_expired(self, user_id: int) -> bool:
+        """Check if user's trial has expired (READ operation).
+        
+        Args:
+            user_id: Telegram user ID
+            
+        Returns:
+            True if trial expired or doesn't exist, False if trial is active
+        """
+        trial_status = self.check_trial_status(user_id)
+        
+        if trial_status is None:
+            return True
+        
+        return trial_status.get('is_expired', True)
+    
+    async def async_is_trial_expired(self, user_id: int) -> bool:
+        """Async wrapper for is_trial_expired using asyncio.to_thread."""
+        return await asyncio.to_thread(self.is_trial_expired, user_id)
+    
+    def get_trial_remaining_days(self, user_id: int) -> int:
+        """Get remaining trial days for a user (READ operation).
+        
+        Args:
+            user_id: Telegram user ID
+            
+        Returns:
+            Number of remaining days (0 if expired or no trial)
+        """
+        trial_status = self.check_trial_status(user_id)
+        
+        if trial_status is None:
+            return 0
+        
+        return trial_status.get('remaining_days', 0)
+    
+    async def async_get_trial_remaining_days(self, user_id: int) -> int:
+        """Async wrapper for get_trial_remaining_days using asyncio.to_thread."""
+        return await asyncio.to_thread(self.get_trial_remaining_days, user_id)
+    
+    def get_trial_info_message(self, user_id: int) -> Optional[str]:
+        """Get formatted trial info message in Indonesian (READ operation).
+        
+        Args:
+            user_id: Telegram user ID
+            
+        Returns:
+            Formatted trial info message, or None if no trial
+        """
+        if user_id in self.config.AUTHORIZED_USER_IDS:
+            return None
+        
+        if hasattr(self.config, 'ID_USER_PUBLIC') and user_id in self.config.ID_USER_PUBLIC:
+            return None
+        
+        trial_status = self.check_trial_status(user_id)
+        
+        if trial_status is None:
+            return None
+        
+        if trial_status.get('is_expired', False):
+            return (
+                "⚠️ *Masa Trial Berakhir*\n\n"
+                "Masa trial 3 hari Anda telah berakhir.\n\n"
+                "Untuk melanjutkan menggunakan bot ini, silakan berlangganan.\n\n"
+                "📞 Hubungi admin untuk informasi berlangganan."
+            )
+        
+        remaining_days = trial_status.get('remaining_days', 0)
+        remaining_hours = trial_status.get('remaining_hours', 0)
+        
+        if remaining_days > 0:
+            time_left = f"{remaining_days} hari"
+        elif remaining_hours > 0:
+            time_left = f"{remaining_hours} jam"
+        else:
+            time_left = "kurang dari 1 jam"
+        
+        jakarta_tz = pytz.timezone('Asia/Jakarta')
+        trial_end_utc = trial_status.get('trial_end')
+        if trial_end_utc:
+            trial_end_local = trial_end_utc.replace(tzinfo=pytz.UTC).astimezone(jakarta_tz)
+            end_date = trial_end_local.strftime('%d %B %Y, %H:%M WIB')
+        else:
+            end_date = "N/A"
+        
+        return (
+            f"🎁 *Masa Trial Aktif*\n\n"
+            f"⏳ Sisa waktu: *{time_left}*\n"
+            f"📅 Berakhir: {end_date}\n\n"
+            f"💡 Nikmati semua fitur bot selama masa trial!"
+        )
+    
+    async def async_get_trial_info_message(self, user_id: int) -> Optional[str]:
+        """Async wrapper for get_trial_info_message using asyncio.to_thread."""
+        return await asyncio.to_thread(self.get_trial_info_message, user_id)
     
     def set_active_user(self, telegram_id: int, data: Dict):
         """Set active user data (WRITE operation with active_users lock).

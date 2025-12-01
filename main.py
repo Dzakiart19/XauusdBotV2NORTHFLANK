@@ -867,13 +867,24 @@ class TradingBotOrchestrator:
                                         last_signal = {
                                             'direction': signal_data.get('signal_type', 'UNKNOWN'),
                                             'entry_price': signal_data.get('entry_price'),
-                                            'sl': None,
-                                            'tp': None,
+                                            'sl': signal_data.get('stop_loss'),
+                                            'tp': signal_data.get('take_profit'),
                                             'timestamp': ts.isoformat(),
                                             '_ts': ts
                                         }
                             if last_signal:
                                 last_signal.pop('_ts', None)
+                                
+                            if last_signal and (last_signal.get('sl') is None or last_signal.get('tp') is None):
+                                if hasattr(self, 'signal_session_manager') and self.signal_session_manager:
+                                    sessions = self.signal_session_manager.get_all_active_sessions()
+                                    for user_id, session in sessions.items():
+                                        if session and hasattr(session, 'stop_loss') and hasattr(session, 'take_profit'):
+                                            if last_signal.get('sl') is None:
+                                                last_signal['sl'] = session.stop_loss
+                                            if last_signal.get('tp') is None:
+                                                last_signal['tp'] = session.take_profit
+                                            break
                         except Exception as e:
                             logger.debug(f"Error getting last signal: {e}")
                     
@@ -886,13 +897,46 @@ class TradingBotOrchestrator:
                                     if isinstance(user_positions, dict):
                                         for pos_id, pos in user_positions.items():
                                             if isinstance(pos, dict):
+                                                entry_price = pos.get('entry_price')
+                                                stop_loss = pos.get('stop_loss')
+                                                take_profit = pos.get('take_profit')
+                                                direction = pos.get('signal_type', 'BUY')
+                                                
+                                                current_pnl_pips = None
+                                                distance_to_tp_pips = None
+                                                distance_to_sl_pips = None
+                                                
+                                                current_price = price_data.get('mid')
+                                                pip_value = getattr(self.config, 'XAUUSD_PIP_VALUE', 10.0)
+                                                
+                                                if current_price and entry_price:
+                                                    if direction == 'BUY':
+                                                        current_pnl_pips = round((current_price - entry_price) * pip_value, 1)
+                                                    else:
+                                                        current_pnl_pips = round((entry_price - current_price) * pip_value, 1)
+                                                
+                                                if current_price and take_profit:
+                                                    if direction == 'BUY':
+                                                        distance_to_tp_pips = round((take_profit - current_price) * pip_value, 1)
+                                                    else:
+                                                        distance_to_tp_pips = round((current_price - take_profit) * pip_value, 1)
+                                                
+                                                if current_price and stop_loss:
+                                                    if direction == 'BUY':
+                                                        distance_to_sl_pips = round((current_price - stop_loss) * pip_value, 1)
+                                                    else:
+                                                        distance_to_sl_pips = round((stop_loss - current_price) * pip_value, 1)
+                                                
                                                 active_position = {
                                                     'active': True,
-                                                    'direction': pos.get('signal_type', 'BUY'),
-                                                    'entry_price': pos.get('entry_price'),
-                                                    'sl': pos.get('stop_loss'),
-                                                    'tp': pos.get('take_profit'),
-                                                    'unrealized_pnl': pos.get('unrealized_pnl', 0)
+                                                    'direction': direction,
+                                                    'entry_price': entry_price,
+                                                    'sl': stop_loss,
+                                                    'tp': take_profit,
+                                                    'unrealized_pnl': pos.get('unrealized_pnl', 0),
+                                                    'current_pnl_pips': current_pnl_pips,
+                                                    'distance_to_tp_pips': distance_to_tp_pips,
+                                                    'distance_to_sl_pips': distance_to_sl_pips
                                                 }
                                                 break
                                     if active_position['active']:
@@ -969,13 +1013,87 @@ class TradingBotOrchestrator:
                     logger.error(f"Error in API dashboard: {e}")
                     return web.json_response({'error': str(e)}, status=500)
             
+            async def api_candles(request):
+                try:
+                    timeframe = request.query.get('timeframe', 'M1').upper()
+                    if timeframe not in ('M1', 'M5', 'H1'):
+                        timeframe = 'M1'
+                    
+                    try:
+                        limit = int(request.query.get('limit', 50))
+                        limit = max(1, min(limit, 200))
+                    except (ValueError, TypeError):
+                        limit = 50
+                    
+                    candles_data = []
+                    current_price = None
+                    
+                    if self.config_valid and self.market_data:
+                        if timeframe == 'M1':
+                            builder = self.market_data.m1_builder
+                        elif timeframe == 'M5':
+                            builder = self.market_data.m5_builder
+                        else:
+                            builder = self.market_data.h1_builder
+                        
+                        df = builder.get_dataframe(limit=limit)
+                        
+                        if df is not None and len(df) > 0:
+                            df_reset = df.reset_index()
+                            for _, row in df_reset.iterrows():
+                                candle = {
+                                    'timestamp': row['timestamp'].isoformat() if hasattr(row['timestamp'], 'isoformat') else str(row['timestamp']),
+                                    'open': float(row['open']),
+                                    'high': float(row['high']),
+                                    'low': float(row['low']),
+                                    'close': float(row['close']),
+                                    'volume': int(row['volume']) if 'volume' in row else 0
+                                }
+                                candles_data.append(candle)
+                        
+                        current_price = await self.market_data.get_current_price()
+                    
+                    active_position = None
+                    if self.config_valid and self.position_tracker:
+                        try:
+                            positions = self.position_tracker.get_active_positions()
+                            if positions:
+                                for user_id, user_positions in positions.items():
+                                    if isinstance(user_positions, dict):
+                                        for pos_id, pos in user_positions.items():
+                                            if isinstance(pos, dict):
+                                                active_position = {
+                                                    'entry_price': pos.get('entry_price'),
+                                                    'stop_loss': pos.get('stop_loss'),
+                                                    'take_profit': pos.get('take_profit'),
+                                                    'direction': pos.get('signal_type', 'BUY')
+                                                }
+                                                break
+                                    if active_position:
+                                        break
+                        except Exception as e:
+                            logger.debug(f"Error getting positions for candles API: {e}")
+                    
+                    response_data = {
+                        'candles': candles_data,
+                        'current_price': current_price,
+                        'active_position': active_position
+                    }
+                    
+                    return web.json_response(response_data, headers={'Cache-Control': 'no-cache'})
+                    
+                except Exception as e:
+                    logger.error(f"Error in API candles: {e}")
+                    return web.json_response({'error': str(e)}, status=500)
+            
             app = web.Application()
             app.router.add_get('/health', health_check)
             app.router.add_get('/', health_check)
             app.router.add_get('/dashboard', dashboard_page)
             app.router.add_get('/static/{filename}', static_files)
             app.router.add_get('/api/dashboard', api_dashboard)
-            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /static/*")
+            app.router.add_get('/api/candles', api_candles)
+            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /api/candles, /static/*")
             
             webhook_path = None
             if self.config_valid and self.config.TELEGRAM_BOT_TOKEN:
