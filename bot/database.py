@@ -1457,7 +1457,7 @@ class DatabaseManager:
                 trade.exit_price = exit_price
                 trade.actual_pl = actual_pl
                 trade.close_time = close_time
-                trade.result = 'WIN' if actual_pl > 0 else 'LOSS'
+                trade.result = 'WIN' if actual_pl >= 0 else 'LOSS'
                 
                 session.flush()
                 

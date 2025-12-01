@@ -88,8 +88,8 @@ class BacktestResult:
         
         self.total_trades = len(self.trades)
         
-        wins = [t for t in self.trades if t.result == 'WIN']
-        losses = [t for t in self.trades if t.result == 'LOSS']
+        wins = [t for t in self.trades if t.profit_loss >= 0]
+        losses = [t for t in self.trades if t.profit_loss < 0]
         
         self.winning_trades = len(wins)
         self.losing_trades = len(losses)
@@ -144,11 +144,11 @@ class BacktestResult:
         current_losses = 0
         
         for trade in self.trades:
-            if trade.result == 'WIN':
+            if trade.profit_loss >= 0:
                 current_wins += 1
                 current_losses = 0
                 max_wins = max(max_wins, current_wins)
-            elif trade.result == 'LOSS':
+            else:
                 current_losses += 1
                 current_wins = 0
                 max_losses = max(max_losses, current_losses)

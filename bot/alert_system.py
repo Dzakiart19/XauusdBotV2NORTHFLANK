@@ -426,7 +426,8 @@ class AlertSystem:
         
         message = MessageFormatter.trade_exit(exit_data)
         
-        priority = 'HIGH' if result == 'WIN' else 'NORMAL'
+        actual_pl = trade_data.get('actual_pl', 0)
+        priority = 'HIGH' if actual_pl >= 0 else 'NORMAL'
         
         alert = Alert(
             alert_type=AlertType.TRADE_EXIT,
@@ -494,10 +495,10 @@ class AlertSystem:
             
             total_trades = len(today_trades)
             closed_trades = [t for t in today_trades if t.status == 'CLOSED']
-            wins = len([t for t in closed_trades if t.result == 'WIN'])
-            losses = len([t for t in closed_trades if t.result == 'LOSS'])
+            wins = len([t for t in closed_trades if t.actual_pl is not None and t.actual_pl >= 0])
+            losses = len([t for t in closed_trades if t.actual_pl is not None and t.actual_pl < 0])
             
-            total_pl = sum([t.actual_pl for t in closed_trades if t.actual_pl])
+            total_pl = sum([t.actual_pl for t in closed_trades if t.actual_pl is not None])
             win_rate = (wins / len(closed_trades) * 100) if closed_trades else 0
             
             message = (
