@@ -2374,6 +2374,11 @@ class MarketDataClient:
             try:
                 session = db_manager.get_session()
                 
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+                
                 saved_m1 = 0
                 saved_m5 = 0
                 saved_h1 = 0
