@@ -1,4 +1,15 @@
 const TelegramWebApp = window.Telegram?.WebApp;
+const DEBUG = true;
+
+function debugLog(msg) {
+    console.log('[APP] ' + msg);
+    const debugEl = document.getElementById('debug-console');
+    if (debugEl && DEBUG) {
+        debugEl.classList.add('active');
+        debugEl.innerHTML += msg + '<br>';
+        debugEl.scrollTop = debugEl.scrollHeight;
+    }
+}
 
 let isConnected = false;
 let lastUpdateTime = null;
@@ -11,6 +22,8 @@ let slLine = null;
 let tpLine = null;
 let currentPriceLine = null;
 let lastActivePosition = null;
+
+debugLog('app.js loaded');
 
 function initTelegram() {
     if (TelegramWebApp) {
@@ -39,6 +52,7 @@ function initTelegram() {
 async function fetchWithRetry(url, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
+            debugLog(`Fetch attempt ${attempt}: ${url}`);
             const urlWithCache = url.includes('?') ? url + '&t=' + Date.now() : url + '?t=' + Date.now();
             const response = await fetch(urlWithCache, {
                 method: 'GET',
@@ -49,12 +63,11 @@ async function fetchWithRetry(url, maxRetries = 3) {
                 throw new Error(`HTTP ${response.status}`);
             }
             const data = await response.json();
-            if (attempt > 1) console.log(`✅ Retry successful for ${url}`);
+            debugLog(`✅ Fetch OK: ${url}`);
             return data;
         } catch (error) {
-            console.warn(`Attempt ${attempt}/${maxRetries} failed for ${url}:`, error.message);
+            debugLog(`❌ Attempt ${attempt}/${maxRetries} failed: ${error.message}`);
             if (attempt === maxRetries) {
-                console.error(`❌ All retries failed for ${url}`);
                 throw error;
             }
             await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
@@ -80,8 +93,9 @@ function convertToWIB(timestamp) {
 
 function initChart() {
     const container = document.getElementById('chart-container');
+    debugLog('initChart called. Container exists: ' + (!!container) + ', LWC available: ' + (typeof LightweightCharts !== 'undefined'));
     if (!container || typeof LightweightCharts === 'undefined') {
-        console.warn('Chart container or LightweightCharts not available');
+        debugLog('ERROR: Chart container or LightweightCharts not available');
         return;
     }
     
@@ -567,9 +581,11 @@ function stopAutoRefresh() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    debugLog('DOMContentLoaded fired');
     initTelegram();
     initChart();
     startAutoRefresh();
+    debugLog('Dashboard initialization complete');
     
     const refreshBtn = document.getElementById('refresh-btn');
     if (refreshBtn) {

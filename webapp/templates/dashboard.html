@@ -3,12 +3,34 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>XAUUSD Trading Dashboard</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=1">
+    <style>
+        .debug-console {
+            background: #0a0e27;
+            color: #00ff00;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 11px;
+            max-height: 100px;
+            overflow-y: auto;
+            border: 1px solid #333;
+            margin: 10px;
+            display: none;
+        }
+        .debug-console.active {
+            display: block;
+        }
+    </style>
 </head>
 <body>
+    <div id="debug-console" class="debug-console"></div>
+    
     <div class="container">
         <div class="header">
             <h1>XAUUSD</h1>
@@ -144,6 +166,23 @@
         </div>
     </div>
     
-    <script src="/static/app.js"></script>
+    <script>
+        const DEBUG = true;
+        function debugLog(msg) {
+            console.log('[DASHBOARD] ' + msg);
+            if (DEBUG) {
+                const debugEl = document.getElementById('debug-console');
+                if (debugEl) {
+                    debugEl.classList.add('active');
+                    debugEl.innerHTML += msg + '<br>';
+                    debugEl.scrollTop = debugEl.scrollHeight;
+                }
+            }
+        }
+        debugLog('Dashboard HTML loaded - initializing...');
+        debugLog('LightweightCharts available: ' + (typeof LightweightCharts !== 'undefined'));
+    </script>
+    
+    <script src="/static/app.js?v=1"></script>
 </body>
 </html>
