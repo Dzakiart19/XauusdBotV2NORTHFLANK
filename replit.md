@@ -3,6 +3,13 @@
 ## Overview
 This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision.
 
+## Recent Changes (December 2025)
+- **Database**: Migrated to PostgreSQL with BIGINT support for Telegram user IDs
+- **API Dashboard Stats Query Fix**: Fixed SQL query to use correct column names (`actual_pl` instead of `pnl`, `signal_time` instead of `created_at`, and `status = 'CLOSED'` uppercase)
+- **Trade History Sync**: Verified - trades properly save with `exit_price`, `actual_pl`, `close_time`, and `result` when positions are closed
+- **Web Dashboard**: Real-time sync confirmed working with live price data, active positions, and market regime display
+- **Position Tracking**: Full lifecycle working - open, monitor with dynamic SL/trailing stop, and close with P/L calculation
+
 ## User Preferences
 - Bahasa komunikasi: **Bahasa Indonesia** (100% tidak ada bahasa Inggris)
 - Data source: **Deriv WebSocket** (gratis, tanpa API key)

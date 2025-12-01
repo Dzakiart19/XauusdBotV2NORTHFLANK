@@ -1024,9 +1024,9 @@ class TradingBotOrchestrator:
                                 
                                 result = session.execute(text(
                                     "SELECT COUNT(*) as total, "
-                                    "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
-                                    "SUM(pnl) as total_pnl "
-                                    "FROM trades WHERE status = 'closed'"
+                                    "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
+                                    "COALESCE(SUM(actual_pl), 0) as total_pnl "
+                                    "FROM trades WHERE status = 'CLOSED'"
                                 ))
                                 row = result.fetchone()
                                 if row:
@@ -1037,7 +1037,7 @@ class TradingBotOrchestrator:
                                     stats['win_rate'] = float(wins / total * 100) if total > 0 else 0.0
                                 
                                 today_result = session.execute(text(
-                                    "SELECT COUNT(*) FROM trades WHERE created_at >= :today"
+                                    "SELECT COUNT(*) FROM trades WHERE signal_time >= :today"
                                 ), {'today': today_start})
                                 signals_today = today_result.scalar()
                                 stats['signals_today'] = int(signals_today or 0)

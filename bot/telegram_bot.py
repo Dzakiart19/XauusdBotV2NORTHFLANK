@@ -4073,6 +4073,14 @@ class TradingBot:
         
         user_id = update.effective_user.id
         
+        def escape_md(text: str) -> str:
+            """Escape special characters for Markdown"""
+            if not text:
+                return text
+            for char in ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+                text = str(text).replace(char, f'\\{char}')
+            return text
+        
         try:
             if not self.market_regime_detector:
                 await update.message.reply_text("⚠️ Market Regime Detector tidak tersedia.")
@@ -4100,20 +4108,20 @@ class TradingBot:
             
             regime_analysis = regime_result.to_dict()
             
-            regime_type = regime_analysis.get('regime_type', 'unknown').upper()
+            regime_type = regime_analysis.get('regime_type', 'unknown').upper().replace('_', ' ')
             confidence = regime_analysis.get('confidence', 0) * 100
             volatility_info = regime_analysis.get('volatility', {})
             volatility = volatility_info.get('level', 'normal').upper() if isinstance(volatility_info, dict) else 'NORMAL'
             trend_info = regime_analysis.get('trend', {})
-            trend_strength = trend_info.get('adx', 0) if isinstance(trend_info, dict) else 0
             adx_value = trend_info.get('adx', 0) if isinstance(trend_info, dict) else 0
+            bias = str(regime_analysis.get('bias', 'NEUTRAL')).replace('_', ' ')
             
             regime_emoji = {
-                'STRONG_TREND': '📈',
-                'MODERATE_TREND': '📈',
-                'WEAK_TREND': '📉',
-                'RANGE_BOUND': '↔️',
-                'HIGH_VOLATILITY': '⚡',
+                'STRONG TREND': '📈',
+                'MODERATE TREND': '📈',
+                'WEAK TREND': '📉',
+                'RANGE BOUND': '↔️',
+                'HIGH VOLATILITY': '⚡',
                 'BREAKOUT': '🚀',
                 'UNKNOWN': '❓'
             }.get(regime_type, '❓')
@@ -4131,7 +4139,7 @@ class TradingBot:
                 f"*Market Conditions:*\n"
                 f"• Volatility: {vol_emoji} {volatility}\n"
                 f"• ADX: {adx_value:.1f}\n"
-                f"• Bias: {regime_analysis.get('bias', 'NEUTRAL')}\n\n"
+                f"• Bias: {bias}\n\n"
             )
             
             price_position = regime_analysis.get('price_position', {})
@@ -4151,7 +4159,8 @@ class TradingBot:
             if recommended_rules:
                 msg += "*Recommended Strategies:*\n"
                 for rule in recommended_rules[:3]:
-                    msg += f"• {rule}\n"
+                    rule_clean = str(rule).replace('_', ' ')
+                    msg += f"• {rule_clean}\n"
             
             await update.message.reply_text(msg, parse_mode='Markdown')
             logger.info(f"Regime command executed for user {mask_user_id(user_id)}")
