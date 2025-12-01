@@ -2255,3 +2255,460 @@ class IndicatorEngine:
         except Exception as e:
             self._logger.warning(f"Gagal menghitung EMA ribbon: {str(e)}")
             return default_result
+    
+    def detect_inside_bar(self, df: pd.DataFrame, lookback: int = 1) -> Dict:
+        """Detect inside bar pattern (mother bar engulfs current bar).
+        
+        Args:
+            df: DataFrame with OHLC data
+            lookback: Number of bars to check (default 1 = check current bar vs previous)
+            
+        Returns:
+            Dict with:
+            - is_inside_bar: bool
+            - mother_bar_high: float (high of mother bar)
+            - mother_bar_low: float (low of mother bar)
+            - current_bar_range: float (high - low of current bar)
+            - mother_bar_range: float (high - low of mother bar)
+            - consolidation_ratio: float (current_range / mother_range, < 1.0 = more compressed)
+            - bias: str ('BULLISH' if close near high, 'BEARISH' if close near low, 'NEUTRAL')
+            - description: str
+            
+        Inside Bar Rules:
+        - Current high < Previous high AND Current low > Previous low
+        - Indicates consolidation and potential breakout
+        """
+        default_result = {
+            'is_inside_bar': False,
+            'mother_bar_high': 0.0,
+            'mother_bar_low': 0.0,
+            'current_bar_range': 0.0,
+            'mother_bar_range': 0.0,
+            'consolidation_ratio': 1.0,
+            'bias': 'NEUTRAL',
+            'description': 'No inside bar detected'
+        }
+        
+        if not self._validate_dataframe(df, ['open', 'high', 'low', 'close']):
+            return default_result
+        
+        if len(df) < lookback + 2:
+            return default_result
+        
+        try:
+            high = self._get_column_series(df, 'high')
+            low = self._get_column_series(df, 'low')
+            close = self._get_column_series(df, 'close')
+            
+            current_high = safe_series_operation(high, 'value', -1, 0.0)
+            current_low = safe_series_operation(low, 'value', -1, 0.0)
+            current_close = safe_series_operation(close, 'value', -1, 0.0)
+            
+            mother_high = safe_series_operation(high, 'value', -(lookback + 1), 0.0)
+            mother_low = safe_series_operation(low, 'value', -(lookback + 1), 0.0)
+            
+            if current_high <= 0 or current_low <= 0 or mother_high <= 0 or mother_low <= 0:
+                return default_result
+            
+            current_range = current_high - current_low
+            mother_range = mother_high - mother_low
+            
+            is_inside = current_high < mother_high and current_low > mother_low
+            
+            if is_inside:
+                if mother_range > 1e-10:
+                    consolidation_ratio = current_range / mother_range
+                else:
+                    consolidation_ratio = 1.0
+                
+                if np.isnan(consolidation_ratio) or np.isinf(consolidation_ratio):
+                    consolidation_ratio = 1.0
+                
+                if current_range > 1e-10:
+                    close_position = (current_close - current_low) / current_range
+                    if np.isnan(close_position) or np.isinf(close_position):
+                        close_position = 0.5
+                    if close_position > 0.7:
+                        bias = 'BULLISH'
+                    elif close_position < 0.3:
+                        bias = 'BEARISH'
+                    else:
+                        bias = 'NEUTRAL'
+                else:
+                    bias = 'NEUTRAL'
+                
+                description = f"Inside bar detected: consolidation ratio {consolidation_ratio:.2f}, {bias.lower()} bias"
+                self._logger.debug(f"Inside bar pattern: {description}")
+                
+                return {
+                    'is_inside_bar': True,
+                    'mother_bar_high': float(mother_high),
+                    'mother_bar_low': float(mother_low),
+                    'current_bar_range': float(current_range),
+                    'mother_bar_range': float(mother_range),
+                    'consolidation_ratio': float(consolidation_ratio),
+                    'bias': bias,
+                    'description': description
+                }
+            
+            return default_result
+            
+        except Exception as e:
+            self._logger.warning(f"Failed to detect inside bar: {str(e)}")
+            return default_result
+    
+    def detect_pin_bar_pattern(self, df: pd.DataFrame, min_wick_ratio: float = 2.0) -> Dict:
+        """Detect pin bar (rejection candle) pattern.
+        
+        Args:
+            df: DataFrame with OHLC data
+            min_wick_ratio: Minimum ratio of wick to body (default 2.0)
+            
+        Returns:
+            Dict with:
+            - is_pin_bar: bool
+            - pin_type: str ('BULLISH_PIN', 'BEARISH_PIN', 'NONE')
+            - wick_ratio: float (upper or lower wick / body)
+            - body_ratio: float (body / total range, smaller = better rejection)
+            - rejection_level: float (the price level where rejection occurred)
+            - strength: str ('STRONG', 'MODERATE', 'WEAK')
+            - description: str
+            
+        Pin Bar Rules:
+        - Bullish Pin: Long lower wick, small body at top, lower wick >= 2x body
+        - Bearish Pin: Long upper wick, small body at bottom, upper wick >= 2x body
+        - Indicates strong rejection and potential reversal
+        """
+        default_result = {
+            'is_pin_bar': False,
+            'pin_type': 'NONE',
+            'wick_ratio': 0.0,
+            'body_ratio': 1.0,
+            'rejection_level': 0.0,
+            'strength': 'WEAK',
+            'description': 'No pin bar detected'
+        }
+        
+        if not self._validate_dataframe(df, ['open', 'high', 'low', 'close']):
+            return default_result
+        
+        if len(df) < 1:
+            return default_result
+        
+        try:
+            open_price = safe_series_operation(self._get_column_series(df, 'open'), 'value', -1, 0.0)
+            high = safe_series_operation(self._get_column_series(df, 'high'), 'value', -1, 0.0)
+            low = safe_series_operation(self._get_column_series(df, 'low'), 'value', -1, 0.0)
+            close = safe_series_operation(self._get_column_series(df, 'close'), 'value', -1, 0.0)
+            
+            if high <= 0 or low <= 0:
+                return default_result
+            
+            total_range = high - low
+            if total_range <= 1e-10:
+                return default_result
+            
+            body = abs(close - open_price)
+            upper_wick = high - max(open_price, close)
+            lower_wick = min(open_price, close) - low
+            
+            if body < 1e-10:
+                body = 1e-10
+            
+            body_ratio = body / total_range
+            if np.isnan(body_ratio) or np.isinf(body_ratio):
+                body_ratio = 1.0
+            
+            if lower_wick >= min_wick_ratio * body and lower_wick > upper_wick * 2:
+                wick_ratio = lower_wick / body
+                if np.isnan(wick_ratio) or np.isinf(wick_ratio):
+                    wick_ratio = min_wick_ratio
+                
+                if wick_ratio >= 3.0 and body_ratio < 0.25:
+                    strength = 'STRONG'
+                elif wick_ratio >= 2.5 or body_ratio < 0.33:
+                    strength = 'MODERATE'
+                else:
+                    strength = 'WEAK'
+                
+                description = f"Bullish pin bar: wick ratio {wick_ratio:.2f}, body ratio {body_ratio:.2f}, {strength.lower()} strength"
+                self._logger.debug(f"Pin bar pattern: {description}")
+                
+                return {
+                    'is_pin_bar': True,
+                    'pin_type': 'BULLISH_PIN',
+                    'wick_ratio': float(wick_ratio),
+                    'body_ratio': float(body_ratio),
+                    'rejection_level': float(low),
+                    'strength': strength,
+                    'description': description
+                }
+            
+            if upper_wick >= min_wick_ratio * body and upper_wick > lower_wick * 2:
+                wick_ratio = upper_wick / body
+                if np.isnan(wick_ratio) or np.isinf(wick_ratio):
+                    wick_ratio = min_wick_ratio
+                
+                if wick_ratio >= 3.0 and body_ratio < 0.25:
+                    strength = 'STRONG'
+                elif wick_ratio >= 2.5 or body_ratio < 0.33:
+                    strength = 'MODERATE'
+                else:
+                    strength = 'WEAK'
+                
+                description = f"Bearish pin bar: wick ratio {wick_ratio:.2f}, body ratio {body_ratio:.2f}, {strength.lower()} strength"
+                self._logger.debug(f"Pin bar pattern: {description}")
+                
+                return {
+                    'is_pin_bar': True,
+                    'pin_type': 'BEARISH_PIN',
+                    'wick_ratio': float(wick_ratio),
+                    'body_ratio': float(body_ratio),
+                    'rejection_level': float(high),
+                    'strength': strength,
+                    'description': description
+                }
+            
+            return default_result
+            
+        except Exception as e:
+            self._logger.warning(f"Failed to detect pin bar pattern: {str(e)}")
+            return default_result
+    
+    def detect_candlestick_reversal_patterns(self, df: pd.DataFrame) -> Dict:
+        """Detect various reversal candlestick patterns.
+        
+        Args:
+            df: DataFrame with OHLC data
+            
+        Returns:
+            Dict with:
+            - has_reversal_pattern: bool
+            - patterns_detected: List[str] (e.g., ['HAMMER', 'MORNING_STAR'])
+            - dominant_pattern: str (strongest pattern detected)
+            - reversal_direction: str ('BULLISH', 'BEARISH', 'NONE')
+            - confidence: float (0.0 to 1.0)
+            - pattern_details: Dict (specific data for each pattern)
+            - description: str
+            
+        Patterns to detect:
+        - HAMMER/HANGING_MAN (bullish/bearish single candle reversal)
+        - ENGULFING (bullish/bearish two-candle reversal)
+        - DOJI (indecision, potential reversal)
+        - MORNING_STAR/EVENING_STAR (three-candle reversal)
+        """
+        default_result = {
+            'has_reversal_pattern': False,
+            'patterns_detected': [],
+            'dominant_pattern': 'NONE',
+            'reversal_direction': 'NONE',
+            'confidence': 0.0,
+            'pattern_details': {},
+            'description': 'No reversal patterns detected'
+        }
+        
+        if not self._validate_dataframe(df, ['open', 'high', 'low', 'close']):
+            return default_result
+        
+        if len(df) < 3:
+            return default_result
+        
+        try:
+            patterns_detected = []
+            pattern_details = {}
+            bullish_confidence = 0.0
+            bearish_confidence = 0.0
+            
+            def get_candle_data(idx):
+                o = safe_series_operation(self._get_column_series(df, 'open'), 'value', idx, 0.0)
+                h = safe_series_operation(self._get_column_series(df, 'high'), 'value', idx, 0.0)
+                l = safe_series_operation(self._get_column_series(df, 'low'), 'value', idx, 0.0)
+                c = safe_series_operation(self._get_column_series(df, 'close'), 'value', idx, 0.0)
+                return {'open': o, 'high': h, 'low': l, 'close': c}
+            
+            curr = get_candle_data(-1)
+            prev = get_candle_data(-2)
+            prev2 = get_candle_data(-3) if len(df) >= 3 else None
+            
+            if curr['high'] <= 0 or curr['low'] <= 0 or prev['high'] <= 0 or prev['low'] <= 0:
+                return default_result
+            
+            curr_body = abs(curr['close'] - curr['open'])
+            curr_range = curr['high'] - curr['low']
+            curr_upper_wick = curr['high'] - max(curr['open'], curr['close'])
+            curr_lower_wick = min(curr['open'], curr['close']) - curr['low']
+            curr_is_bullish = curr['close'] > curr['open']
+            
+            prev_body = abs(prev['close'] - prev['open'])
+            prev_range = prev['high'] - prev['low']
+            prev_is_bullish = prev['close'] > prev['open']
+            
+            if curr_range > 1e-10 and curr_body >= 0:
+                body_ratio = curr_body / curr_range
+                lower_wick_ratio = curr_lower_wick / curr_range
+                upper_wick_ratio = curr_upper_wick / curr_range
+                
+                if np.isnan(body_ratio) or np.isinf(body_ratio):
+                    body_ratio = 1.0
+                if np.isnan(lower_wick_ratio) or np.isinf(lower_wick_ratio):
+                    lower_wick_ratio = 0.0
+                if np.isnan(upper_wick_ratio) or np.isinf(upper_wick_ratio):
+                    upper_wick_ratio = 0.0
+                
+                if lower_wick_ratio >= 0.6 and body_ratio <= 0.33 and upper_wick_ratio <= 0.1:
+                    if curr_is_bullish or curr['close'] >= curr['open']:
+                        pattern_name = 'HAMMER'
+                        patterns_detected.append(pattern_name)
+                        bullish_confidence += 0.3
+                        pattern_details[pattern_name] = {
+                            'lower_wick_ratio': float(lower_wick_ratio),
+                            'body_ratio': float(body_ratio),
+                            'direction': 'BULLISH'
+                        }
+                    else:
+                        pattern_name = 'HANGING_MAN'
+                        patterns_detected.append(pattern_name)
+                        bearish_confidence += 0.25
+                        pattern_details[pattern_name] = {
+                            'lower_wick_ratio': float(lower_wick_ratio),
+                            'body_ratio': float(body_ratio),
+                            'direction': 'BEARISH'
+                        }
+                
+                if upper_wick_ratio >= 0.6 and body_ratio <= 0.33 and lower_wick_ratio <= 0.1:
+                    if curr_is_bullish:
+                        pattern_name = 'INVERTED_HAMMER'
+                        patterns_detected.append(pattern_name)
+                        bullish_confidence += 0.25
+                        pattern_details[pattern_name] = {
+                            'upper_wick_ratio': float(upper_wick_ratio),
+                            'body_ratio': float(body_ratio),
+                            'direction': 'BULLISH'
+                        }
+                    else:
+                        pattern_name = 'SHOOTING_STAR'
+                        patterns_detected.append(pattern_name)
+                        bearish_confidence += 0.3
+                        pattern_details[pattern_name] = {
+                            'upper_wick_ratio': float(upper_wick_ratio),
+                            'body_ratio': float(body_ratio),
+                            'direction': 'BEARISH'
+                        }
+            
+            if curr_range > 1e-10:
+                doji_threshold = 0.1
+                doji_body_ratio = curr_body / curr_range if curr_range > 0 else 1.0
+                if np.isnan(doji_body_ratio) or np.isinf(doji_body_ratio):
+                    doji_body_ratio = 1.0
+                if doji_body_ratio <= doji_threshold:
+                    pattern_name = 'DOJI'
+                    patterns_detected.append(pattern_name)
+                    bullish_confidence += 0.15
+                    bearish_confidence += 0.15
+                    pattern_details[pattern_name] = {
+                        'body_ratio': float(doji_body_ratio),
+                        'direction': 'NEUTRAL'
+                    }
+            
+            if prev_body > 1e-10 and curr_body > 1e-10:
+                if not prev_is_bullish and curr_is_bullish:
+                    if curr['open'] <= prev['close'] and curr['close'] >= prev['open']:
+                        if curr_body > prev_body * 1.2:
+                            pattern_name = 'BULLISH_ENGULFING'
+                            patterns_detected.append(pattern_name)
+                            bullish_confidence += 0.4
+                            engulf_ratio = curr_body / prev_body if prev_body > 0 else 1.0
+                            if np.isnan(engulf_ratio) or np.isinf(engulf_ratio):
+                                engulf_ratio = 1.0
+                            pattern_details[pattern_name] = {
+                                'body_ratio': float(engulf_ratio),
+                                'direction': 'BULLISH'
+                            }
+                
+                if prev_is_bullish and not curr_is_bullish:
+                    if curr['open'] >= prev['close'] and curr['close'] <= prev['open']:
+                        if curr_body > prev_body * 1.2:
+                            pattern_name = 'BEARISH_ENGULFING'
+                            patterns_detected.append(pattern_name)
+                            bearish_confidence += 0.4
+                            engulf_ratio = curr_body / prev_body if prev_body > 0 else 1.0
+                            if np.isnan(engulf_ratio) or np.isinf(engulf_ratio):
+                                engulf_ratio = 1.0
+                            pattern_details[pattern_name] = {
+                                'body_ratio': float(engulf_ratio),
+                                'direction': 'BEARISH'
+                            }
+            
+            if prev2 is not None and prev2['high'] > 0 and prev2['low'] > 0:
+                prev2_body = abs(prev2['close'] - prev2['open'])
+                prev2_is_bullish = prev2['close'] > prev2['open']
+                
+                if not prev2_is_bullish and curr_is_bullish and prev2_body > 1e-10 and curr_body > 1e-10:
+                    prev_body_small = prev_body < prev2_body * 0.3 and prev_body < curr_body * 0.3
+                    if prev_body_small:
+                        if prev['high'] < prev2['close'] or prev['low'] > prev2['close']:
+                            pattern_name = 'MORNING_STAR'
+                            patterns_detected.append(pattern_name)
+                            bullish_confidence += 0.5
+                            middle_ratio = prev_body / prev2_body if prev2_body > 0 else 0.0
+                            if np.isnan(middle_ratio) or np.isinf(middle_ratio):
+                                middle_ratio = 0.0
+                            pattern_details[pattern_name] = {
+                                'middle_body_ratio': float(middle_ratio),
+                                'direction': 'BULLISH'
+                            }
+                
+                if prev2_is_bullish and not curr_is_bullish and prev2_body > 1e-10 and curr_body > 1e-10:
+                    prev_body_small = prev_body < prev2_body * 0.3 and prev_body < curr_body * 0.3
+                    if prev_body_small:
+                        if prev['low'] > prev2['close'] or prev['high'] < prev2['close']:
+                            pattern_name = 'EVENING_STAR'
+                            patterns_detected.append(pattern_name)
+                            bearish_confidence += 0.5
+                            middle_ratio = prev_body / prev2_body if prev2_body > 0 else 0.0
+                            if np.isnan(middle_ratio) or np.isinf(middle_ratio):
+                                middle_ratio = 0.0
+                            pattern_details[pattern_name] = {
+                                'middle_body_ratio': float(middle_ratio),
+                                'direction': 'BEARISH'
+                            }
+            
+            if patterns_detected:
+                bullish_confidence = min(bullish_confidence, 1.0)
+                bearish_confidence = min(bearish_confidence, 1.0)
+                
+                if bullish_confidence > bearish_confidence:
+                    reversal_direction = 'BULLISH'
+                    confidence = bullish_confidence
+                elif bearish_confidence > bullish_confidence:
+                    reversal_direction = 'BEARISH'
+                    confidence = bearish_confidence
+                else:
+                    reversal_direction = 'NEUTRAL'
+                    confidence = max(bullish_confidence, bearish_confidence)
+                
+                dominant_pattern = patterns_detected[0]
+                pattern_priority = ['MORNING_STAR', 'EVENING_STAR', 'BULLISH_ENGULFING', 'BEARISH_ENGULFING', 'HAMMER', 'SHOOTING_STAR']
+                for priority_pattern in pattern_priority:
+                    if priority_pattern in patterns_detected:
+                        dominant_pattern = priority_pattern
+                        break
+                
+                description = f"Detected {len(patterns_detected)} pattern(s): {', '.join(patterns_detected)}. {reversal_direction} reversal with {confidence:.0%} confidence"
+                self._logger.debug(f"Candlestick reversal patterns: {description}")
+                
+                return {
+                    'has_reversal_pattern': True,
+                    'patterns_detected': patterns_detected,
+                    'dominant_pattern': dominant_pattern,
+                    'reversal_direction': reversal_direction,
+                    'confidence': float(confidence),
+                    'pattern_details': pattern_details,
+                    'description': description
+                }
+            
+            return default_result
+            
+        except Exception as e:
+            self._logger.warning(f"Failed to detect candlestick reversal patterns: {str(e)}")
+            return default_result
