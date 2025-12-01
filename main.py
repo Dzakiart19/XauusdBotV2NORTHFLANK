@@ -862,12 +862,31 @@ class TradingBotOrchestrator:
                     return web.Response(text='Error loading file', status=500)
             
             async def api_dashboard(request):
-                """API endpoint for real-time dashboard data"""
+                """API endpoint for real-time dashboard data with per-user filtering"""
                 try:
                     import pytz
                     
                     wib = pytz.timezone('Asia/Jakarta')
                     now = datetime.now(wib)
+                    
+                    user_id_str = request.query.get('user_id', None)
+                    user_id = None
+                    user_mode = 'guest'
+                    is_authorized = False
+                    
+                    if user_id_str:
+                        try:
+                            user_id = int(user_id_str)
+                            if user_id in self.config.AUTHORIZED_USER_IDS:
+                                is_authorized = True
+                                user_mode = 'authorized'
+                                logger.debug(f"Dashboard accessed by authorized user: {user_id}")
+                            else:
+                                user_mode = 'limited'
+                                logger.debug(f"Dashboard accessed by non-authorized user: {user_id}")
+                        except (ValueError, TypeError):
+                            user_id = None
+                            user_mode = 'guest'
                     
                     price_data: Dict[str, Any] = {
                         'mid': 0.0,
@@ -941,7 +960,10 @@ class TradingBotOrchestrator:
                         try:
                             positions = self.position_tracker.get_active_positions()
                             if positions:
-                                for user_id, user_positions in positions.items():
+                                for pos_user_id, user_positions in positions.items():
+                                    if user_id is not None and pos_user_id != user_id:
+                                        continue
+                                    
                                     if isinstance(user_positions, dict):
                                         for pos_id, pos in user_positions.items():
                                             if isinstance(pos, dict):
@@ -1026,12 +1048,20 @@ class TradingBotOrchestrator:
                             if session:
                                 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
                                 
-                                result = session.execute(text(
-                                    "SELECT COUNT(*) as total, "
-                                    "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
-                                    "COALESCE(SUM(actual_pl), 0) as total_pnl "
-                                    "FROM trades WHERE status = 'CLOSED'"
-                                ))
+                                if user_id is not None and is_authorized:
+                                    result = session.execute(text(
+                                        "SELECT COUNT(*) as total, "
+                                        "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
+                                        "COALESCE(SUM(actual_pl), 0) as total_pnl "
+                                        "FROM trades WHERE status = 'CLOSED' AND user_id = :user_id"
+                                    ), {'user_id': user_id})
+                                else:
+                                    result = session.execute(text(
+                                        "SELECT COUNT(*) as total, "
+                                        "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
+                                        "COALESCE(SUM(actual_pl), 0) as total_pnl "
+                                        "FROM trades WHERE status = 'CLOSED'"
+                                    ))
                                 row = result.fetchone()
                                 if row:
                                     total = int(row[0] or 0)
@@ -1040,9 +1070,14 @@ class TradingBotOrchestrator:
                                     stats['total_pnl'] = float(row[2] or 0)
                                     stats['win_rate'] = float(wins / total * 100) if total > 0 else 0.0
                                 
-                                today_result = session.execute(text(
-                                    "SELECT COUNT(*) FROM trades WHERE signal_time >= :today"
-                                ), {'today': today_start})
+                                if user_id is not None and is_authorized:
+                                    today_result = session.execute(text(
+                                        "SELECT COUNT(*) FROM trades WHERE signal_time >= :today AND user_id = :user_id"
+                                    ), {'today': today_start, 'user_id': user_id})
+                                else:
+                                    today_result = session.execute(text(
+                                        "SELECT COUNT(*) FROM trades WHERE signal_time >= :today"
+                                    ), {'today': today_start})
                                 signals_today = today_result.scalar()
                                 stats['signals_today'] = int(signals_today or 0)
                                 
@@ -1057,7 +1092,9 @@ class TradingBotOrchestrator:
                         'regime': regime_data,
                         'stats': stats,
                         'timestamp': now.isoformat(),
-                        'connected': self.config_valid and self.market_data is not None and self.market_data.is_connected()
+                        'connected': self.config_valid and self.market_data is not None and self.market_data.is_connected(),
+                        'user_mode': user_mode,
+                        'user_id': user_id
                     }
                     
                     return web.json_response(response_data, headers={
@@ -1158,7 +1195,7 @@ class TradingBotOrchestrator:
                     return web.json_response({'error': str(e)}, status=500)
             
             async def api_trade_history(request):
-                """API endpoint for trade history with pagination"""
+                """API endpoint for trade history with pagination and per-user filtering"""
                 try:
                     try:
                         page = int(request.query.get('page', 1))
@@ -1173,6 +1210,18 @@ class TradingBotOrchestrator:
                         limit = 20
                     
                     status_filter = request.query.get('status', 'all').lower()
+                    
+                    user_id_str = request.query.get('user_id', None)
+                    user_id = None
+                    is_authorized = False
+                    
+                    if user_id_str:
+                        try:
+                            user_id = int(user_id_str)
+                            if user_id in self.config.AUTHORIZED_USER_IDS:
+                                is_authorized = True
+                        except (ValueError, TypeError):
+                            user_id = None
                     
                     trades_list = []
                     total_trades = 0
@@ -1190,18 +1239,32 @@ class TradingBotOrchestrator:
                                 else:
                                     status_condition = "1=1"
                                 
-                                count_result = session.execute(text(
-                                    f"SELECT COUNT(*) FROM trades WHERE {status_condition}"
-                                ))
+                                if user_id is not None and is_authorized:
+                                    count_result = session.execute(text(
+                                        f"SELECT COUNT(*) FROM trades WHERE {status_condition} AND user_id = :user_id"
+                                    ), {'user_id': user_id})
+                                else:
+                                    count_result = session.execute(text(
+                                        f"SELECT COUNT(*) FROM trades WHERE {status_condition}"
+                                    ))
                                 total_trades = count_result.scalar() or 0
                                 
-                                result = session.execute(text(
-                                    f"SELECT id, user_id, ticker, signal_type, entry_price, stop_loss, "
-                                    f"take_profit, exit_price, status, signal_time, close_time, result, actual_pl "
-                                    f"FROM trades WHERE {status_condition} "
-                                    f"ORDER BY COALESCE(close_time, signal_time) DESC "
-                                    f"LIMIT :limit OFFSET :offset"
-                                ), {'limit': limit, 'offset': offset})
+                                if user_id is not None and is_authorized:
+                                    result = session.execute(text(
+                                        f"SELECT id, user_id, ticker, signal_type, entry_price, stop_loss, "
+                                        f"take_profit, exit_price, status, signal_time, close_time, result, actual_pl "
+                                        f"FROM trades WHERE {status_condition} AND user_id = :user_id "
+                                        f"ORDER BY COALESCE(close_time, signal_time) DESC "
+                                        f"LIMIT :limit OFFSET :offset"
+                                    ), {'limit': limit, 'offset': offset, 'user_id': user_id})
+                                else:
+                                    result = session.execute(text(
+                                        f"SELECT id, user_id, ticker, signal_type, entry_price, stop_loss, "
+                                        f"take_profit, exit_price, status, signal_time, close_time, result, actual_pl "
+                                        f"FROM trades WHERE {status_condition} "
+                                        f"ORDER BY COALESCE(close_time, signal_time) DESC "
+                                        f"LIMIT :limit OFFSET :offset"
+                                    ), {'limit': limit, 'offset': offset})
                                 
                                 for row in result:
                                     trade_data = {
@@ -1488,8 +1551,9 @@ class TradingBotOrchestrator:
                 if not self.db_manager:
                     return {'status': 'ok', 'message': 'No database manager'}
                 if hasattr(self.db_manager, 'engine') and self.db_manager.engine:
+                    engine = self.db_manager.engine
                     def sync_check():
-                        with self.db_manager.engine.connect() as conn:
+                        with engine.connect() as conn:
                             conn.execute(text("SELECT 1"))
                         return True
                     

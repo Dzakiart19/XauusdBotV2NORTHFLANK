@@ -419,6 +419,8 @@ class TradingStrategy:
         
         self._regime_detector = None
         self._current_regime = None
+        
+        self.indicator_engine: Any = None
     
     def _get_regime_detector(self):
         """Lazy initialization of regime detector to avoid circular imports."""

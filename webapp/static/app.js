@@ -45,6 +45,40 @@
     var wsReconnectAttempts = 0;
     var MAX_WS_RECONNECT_ATTEMPTS = 10;
     var useWebSocket = true;
+    
+    var currentUserId = null;
+    var currentUserFirstName = null;
+
+    function getTelegramUserId() {
+        if (TelegramWebApp && TelegramWebApp.initDataUnsafe && TelegramWebApp.initDataUnsafe.user) {
+            return TelegramWebApp.initDataUnsafe.user.id;
+        }
+        var urlParams = new URLSearchParams(window.location.search);
+        return urlParams.get('user_id') || null;
+    }
+
+    function getTelegramUserFirstName() {
+        if (TelegramWebApp && TelegramWebApp.initDataUnsafe && TelegramWebApp.initDataUnsafe.user) {
+            return TelegramWebApp.initDataUnsafe.user.first_name || null;
+        }
+        return null;
+    }
+
+    function updateUserGreeting() {
+        var greetingEl = document.getElementById('user-greeting');
+        if (!greetingEl) return;
+        
+        if (currentUserFirstName) {
+            greetingEl.innerHTML = '👤 Welcome, <strong>' + currentUserFirstName + '</strong>';
+            greetingEl.className = 'user-greeting authenticated';
+        } else if (currentUserId) {
+            greetingEl.innerHTML = '👤 User ID: <strong>' + currentUserId + '</strong>';
+            greetingEl.className = 'user-greeting authenticated';
+        } else {
+            greetingEl.innerHTML = '👁️ Guest Mode';
+            greetingEl.className = 'user-greeting guest';
+        }
+    }
 
     function initTelegram() {
         debugLog('initTelegram called');
@@ -63,6 +97,12 @@
         } else {
             debugLog('Telegram WebApp not available - running standalone');
         }
+        
+        currentUserId = getTelegramUserId();
+        currentUserFirstName = getTelegramUserFirstName();
+        debugLog('User ID: ' + (currentUserId || 'anonymous'));
+        debugLog('User Name: ' + (currentUserFirstName || 'unknown'));
+        updateUserGreeting();
     }
 
     function fetchWithRetry(url, maxRetries) {
@@ -113,9 +153,13 @@
 
     function fetchDashboardData() {
         debugLog('fetchDashboardData called');
-        return fetchWithRetry('/api/dashboard').then(function(data) {
+        var url = '/api/dashboard';
+        if (currentUserId) {
+            url += '?user_id=' + encodeURIComponent(currentUserId);
+        }
+        return fetchWithRetry(url).then(function(data) {
             if (data) {
-                debugLog('Dashboard data received: price=' + (data.price ? 'yes' : 'no'));
+                debugLog('Dashboard data received: price=' + (data.price ? 'yes' : 'no') + ', user_mode=' + (data.user_mode || 'unknown'));
             }
             return data;
         });
@@ -302,7 +346,11 @@
 
     function fetchTradeHistory() {
         debugLog('fetchTradeHistory called');
-        return fetchWithRetry('/api/trade-history?limit=10').then(function(data) {
+        var url = '/api/trade-history?limit=10';
+        if (currentUserId) {
+            url += '&user_id=' + encodeURIComponent(currentUserId);
+        }
+        return fetchWithRetry(url).then(function(data) {
             if (data && data.trades) {
                 debugLog('Trade history received: ' + data.trades.length + ' trades');
                 updateTradeHistoryCard(data.trades);
