@@ -115,7 +115,8 @@ class PositionTracker:
     MAX_SLIPPAGE_PIPS = 5.0
     
     def __init__(self, config, db_manager, risk_manager, alert_system=None, user_manager=None, 
-                 chart_generator=None, market_data=None, telegram_app=None, signal_session_manager=None):
+                 chart_generator=None, market_data=None, telegram_app=None, signal_session_manager=None,
+                 signal_quality_tracker=None):
         self.config = config
         self.db = db_manager
         self.risk_manager = risk_manager
@@ -125,6 +126,7 @@ class PositionTracker:
         self.market_data = market_data
         self.telegram_app = telegram_app
         self.signal_session_manager = signal_session_manager
+        self.signal_quality_tracker = signal_quality_tracker
         self.active_positions = {}
         self.monitoring = False
         
@@ -766,6 +768,11 @@ class PositionTracker:
         self.signal_session_manager = signal_session_manager
         logger.info("Signal session manager injected to position tracker")
     
+    def set_signal_quality_tracker(self, signal_quality_tracker):
+        """Set signal quality tracker for result updates"""
+        self.signal_quality_tracker = signal_quality_tracker
+        logger.info("Signal quality tracker injected to position tracker")
+    
     def check_slippage(self, expected_price: float, actual_price: float, operation: str, user_id: int, position_id: Optional[int] = None):
         """Check for excessive slippage and send alert if threshold is exceeded
         
@@ -819,7 +826,7 @@ class PositionTracker:
         return pos
         
     async def add_position(self, user_id: int, trade_id: int, signal_type: str, entry_price: float,
-                          stop_loss: float, take_profit: float):
+                          stop_loss: float, take_profit: float, signal_quality_id: int = None):
         """Add position with comprehensive validation and error handling
         
         Thread-safe with asyncio.Lock for active_positions access
@@ -872,7 +879,8 @@ class PositionTracker:
                     'take_profit': take_profit,
                     'original_sl': stop_loss,
                     'sl_adjustment_count': 0,
-                    'max_profit_reached': 0.0
+                    'max_profit_reached': 0.0,
+                    'signal_quality_id': signal_quality_id,
                 }
             
             logger.info(f"✅ Position added - User:{user_id} ID:{position_id} {signal_type} @${entry_price:.2f} SL:${stop_loss:.2f} TP:${take_profit:.2f}")
@@ -1332,6 +1340,37 @@ class PositionTracker:
             self._trailing_stop_last_notify.pop(position_id, None)
             
             logger.info(f"Position closed - User:{user_id} ID:{position_id} {reason} P/L:${actual_pl:.2f}")
+            
+            # Update signal quality tracker with trade result
+            if hasattr(self, 'signal_quality_tracker') and self.signal_quality_tracker:
+                try:
+                    # Calculate pips and duration
+                    opened_at = pos.get('opened_at')
+                    if opened_at and isinstance(opened_at, datetime):
+                        duration_minutes = int((datetime.now(pytz.UTC) - opened_at).total_seconds() / 60)
+                    else:
+                        duration_minutes = 0
+                    
+                    # Calculate actual pips
+                    if signal_type == 'BUY':
+                        actual_pips = (exit_price - entry_price) * 10  # 10 pips per $1
+                    else:
+                        actual_pips = (entry_price - exit_price) * 10
+                    
+                    result_data = {
+                        'exit_price': exit_price,
+                        'actual_pips': actual_pips,
+                        'result': trade_result,
+                        'duration_minutes': duration_minutes
+                    }
+                    
+                    # Get signal_quality_id from position if available
+                    signal_quality_id = pos.get('signal_quality_id')
+                    if signal_quality_id:
+                        self.signal_quality_tracker.update_result(signal_quality_id, result_data)
+                        logger.info(f"📊 Signal quality updated: ID={signal_quality_id}, Result={trade_result}")
+                except Exception as e:
+                    logger.error(f"❌ Error updating signal quality for position {position_id}: {e}")
             
             # End signal session to allow new signals
             if self.signal_session_manager:

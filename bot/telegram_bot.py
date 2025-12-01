@@ -2755,13 +2755,42 @@ class TradingBot:
                 
                 logger.debug(f"Trade created in DB with ID {trade_id}, preparing to add position...")
                 
+                signal_quality_id = None
+                if self.signal_quality_tracker and trade_id is not None:
+                    try:
+                        rule_name = signal.get('rule_type', 'STRATEGY')
+                        confluence_score = signal.get('confluence_score', 0)
+                        market_regime = signal.get('market_regime', 'unknown')
+                        sl_pips = abs(entry_price - signal['stop_loss']) / 0.1 if 'stop_loss' in signal else 10.0
+                        tp_pips = abs(signal['take_profit'] - entry_price) / 0.1 if 'take_profit' in signal else 20.0
+                        
+                        signal_data = {
+                            'user_id': user_id,
+                            'signal_type': signal_type,
+                            'rule_name': rule_name,
+                            'confluence_level': confluence_score if isinstance(confluence_score, int) else int(confluence_score / 25) + 1,
+                            'market_regime': market_regime,
+                            'entry_price': entry_price,
+                            'sl_pips': sl_pips,
+                            'tp_pips': tp_pips,
+                            'confidence': signal.get('confidence', 0.5),
+                            'reason': signal.get('reason', '')
+                        }
+                        
+                        signal_quality_id = self.signal_quality_tracker.record_signal(signal_data)
+                        if signal_quality_id:
+                            logger.debug(f"📝 Signal recorded to quality tracker - ID:{signal_quality_id} Trade:{trade_id} Rule:{rule_name}")
+                    except (ValueError, TypeError, KeyError, AttributeError) as sqt_error:
+                        logger.warning(f"Failed to record signal to quality tracker: {sqt_error}")
+                
                 position_id = await self.position_tracker.add_position(
                     user_id,
                     trade_id,
                     signal_type,
                     entry_price,
                     signal['stop_loss'],
-                    signal['take_profit']
+                    signal['take_profit'],
+                    signal_quality_id
                 )
                 
                 if not position_id:
@@ -2902,33 +2931,6 @@ class TradingBot:
                     }
                 
                 logger.info(f"✅ Signal sent - Trade:{trade_id} Position:{position_id} User:{mask_user_id(user_id)} {signal_type} @${entry_price:.2f}")
-                
-                if self.signal_quality_tracker and trade_id is not None:
-                    try:
-                        rule_name = signal.get('rule_type', 'STRATEGY')
-                        confluence_score = signal.get('confluence_score', 0)
-                        market_regime = signal.get('market_regime', 'unknown')
-                        sl_pips = abs(entry_price - signal['stop_loss']) / 0.1 if 'stop_loss' in signal else 10.0
-                        tp_pips = abs(signal['take_profit'] - entry_price) / 0.1 if 'take_profit' in signal else 20.0
-                        
-                        signal_data = {
-                            'user_id': user_id,
-                            'signal_type': signal_type,
-                            'rule_name': rule_name,
-                            'confluence_level': confluence_score if isinstance(confluence_score, int) else int(confluence_score / 25) + 1,
-                            'market_regime': market_regime,
-                            'entry_price': entry_price,
-                            'sl_pips': sl_pips,
-                            'tp_pips': tp_pips,
-                            'confidence': signal.get('confidence', 0.5),
-                            'reason': signal.get('reason', '')
-                        }
-                        
-                        signal_quality_id = self.signal_quality_tracker.record_signal(signal_data)
-                        if signal_quality_id:
-                            logger.debug(f"📝 Signal recorded to quality tracker - ID:{signal_quality_id} Trade:{trade_id} Rule:{rule_name}")
-                    except (ValueError, TypeError, KeyError, AttributeError) as sqt_error:
-                        logger.warning(f"Failed to record signal to quality tracker: {sqt_error}")
                 
                 if signal_message and signal_message.message_id:
                     await self.start_dashboard(user_id, chat_id, position_id, signal_message.message_id)

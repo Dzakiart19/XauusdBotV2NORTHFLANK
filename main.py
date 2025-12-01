@@ -284,7 +284,8 @@ class TradingBotOrchestrator:
             self.user_manager,
             self.chart_generator,
             self.market_data,
-            signal_session_manager=self.signal_session_manager
+            signal_session_manager=self.signal_session_manager,
+            signal_quality_tracker=self.signal_quality_tracker
         )
         logger.info("Position tracker initialized")
         
