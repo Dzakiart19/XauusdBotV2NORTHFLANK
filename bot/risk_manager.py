@@ -194,16 +194,19 @@ class DynamicRiskCalculator:
             return round(default_risk, 2)
     
     def calculate_dynamic_lot(self, sl_pips: float, account_balance: float, 
-                             user_id: Optional[int] = None) -> float:
+                             user_id: Optional[int] = None,
+                             indicators: Optional[Dict] = None) -> float:
         """
         Calculate lot size berdasarkan SL pips dan risk amount.
+        With optional volatility-based adjustment using ATR zones.
         
-        Formula: lot_size = risk_amount / (sl_pips * pip_value)
+        Formula: lot_size = risk_amount / (sl_pips * pip_value) * volatility_multiplier
         
         Args:
             sl_pips: Stop loss dalam pips
             account_balance: Balance akun dalam USD
             user_id: Optional user ID untuk dynamic risk calculation
+            indicators: Optional Dict with 'atr' and 'close' for volatility adjustment
             
         Returns:
             float: Lot size (min 0.01, max 0.1)
@@ -230,6 +233,37 @@ class DynamicRiskCalculator:
             lot_size = max(self.MIN_LOT_SIZE, min(lot_size, self.MAX_LOT_SIZE))
             
             lot_size = round(lot_size, 2)
+            
+            volatility_zone = "N/A"
+            volatility_multiplier = 1.0
+            
+            if indicators is not None and isinstance(indicators, dict):
+                atr = indicators.get('atr')
+                close = indicators.get('close')
+                
+                if atr is not None and close is not None:
+                    try:
+                        from bot.strategy import TradingStrategy, safe_float
+                        
+                        temp_strategy = TradingStrategy(self.config)
+                        adjusted_lot, volatility_zone, volatility_multiplier = temp_strategy.calculate_lot_with_volatility_zones(
+                            indicators, lot_size
+                        )
+                        
+                        adjusted_lot = max(self.MIN_LOT_SIZE, min(adjusted_lot, self.MAX_LOT_SIZE))
+                        adjusted_lot = round(adjusted_lot, 2)
+                        
+                        logger.info(f"📊 Dynamic lot calculation with volatility adjustment: "
+                                   f"Risk=${risk_amount:.2f}, SL={sl_pips:.1f} pips, "
+                                   f"Base Lot={lot_size:.2f}, Zone={volatility_zone}, "
+                                   f"Multiplier={volatility_multiplier}x, Final Lot={adjusted_lot:.2f}")
+                        
+                        return adjusted_lot
+                        
+                    except ImportError as e:
+                        logger.warning(f"Could not import TradingStrategy for volatility adjustment: {e}")
+                    except Exception as e:
+                        logger.warning(f"Error applying volatility adjustment: {e}, using base lot")
             
             logger.info(f"📊 Dynamic lot calculation: "
                        f"Risk=${risk_amount:.2f}, SL={sl_pips:.1f} pips, "
@@ -773,6 +807,218 @@ class DynamicRiskCalculator:
                 'should_adjust': False,
                 'error': str(e)
             }
+    
+    def get_daily_drawdown_percent(self, user_id: int) -> float:
+        """Get current daily drawdown percentage for a user.
+        
+        Calculates the daily drawdown as a percentage of the daily loss threshold.
+        Uses safe calculations to handle edge cases.
+        
+        Args:
+            user_id: ID user untuk mendapatkan data drawdown
+            
+        Returns:
+            float: Drawdown as percentage (0.0 to 100.0)
+                   Returns 0.0 if data is unavailable or on error
+        
+        Example:
+            >>> dd_pct = risk_calc.get_daily_drawdown_percent(user_id=123)
+            >>> print(dd_pct)  # 25.5
+        """
+        try:
+            exposure = self.get_exposure_status(user_id)
+            
+            daily_realized_loss = abs(exposure.get('daily_realized_loss', 0.0))
+            daily_threshold = exposure.get('daily_threshold', self.effective_daily_threshold)
+            
+            if daily_threshold <= 0:
+                daily_threshold = self.effective_daily_threshold
+            
+            if daily_threshold <= 0:
+                logger.warning(f"Invalid daily threshold for user {user_id}: {daily_threshold}, returning 0.0")
+                return 0.0
+            
+            drawdown_percent = (daily_realized_loss / daily_threshold) * 100.0
+            
+            drawdown_percent = max(0.0, min(drawdown_percent, 100.0))
+            
+            logger.debug(f"Daily drawdown for user {user_id}: {drawdown_percent:.2f}% "
+                        f"(loss=${daily_realized_loss:.2f}, threshold=${daily_threshold:.2f})")
+            
+            return round(drawdown_percent, 2)
+            
+        except (SQLAlchemyError, ValueError, TypeError) as e:
+            logger.error(f"Error in get_daily_drawdown_percent for user {user_id}: {e}")
+            return 0.0
+        except Exception as e:
+            logger.error(f"Unexpected error in get_daily_drawdown_percent for user {user_id}: {e}")
+            return 0.0
+    
+    def calculate_dynamic_sl_expansion(self, daily_drawdown_percent: float) -> Dict[str, Any]:
+        """Calculate dynamic SL expansion berdasarkan daily drawdown level.
+        
+        IMPROVEMENT 7: Drawdown Protection dengan Dynamic SL Expansion
+        
+        Pure calculation method yang menerima drawdown percentage langsung.
+        Tidak mengakses database, cocok untuk penggunaan dengan cached data.
+        
+        Args:
+            daily_drawdown_percent: Current daily loss as percentage (0.0 to 100.0)
+            
+        Returns:
+            Dict with:
+            - drawdown_percent: float - Input drawdown percentage
+            - sl_multiplier: float (1.0, 1.15, or 1.30)
+            - mode: str ('NORMAL', 'EXPANSION', 'RECOVERY')
+            - lot_reduction: float (1.0 for normal, 0.5 for RECOVERY mode)
+            - log_info: str - Human readable log message
+            - should_adjust: bool - Whether adjustment is needed
+            
+        Rules:
+        - If drawdown < 20%: SL multiplier = 1.0 (normal SL)
+        - If drawdown 20-40%: SL multiplier = 1.15 (expand SL +15%)
+        - If drawdown > 40%: SL multiplier = 1.30 (expand SL +30%)
+        
+        Alternate strategy for drawdown > 40%:
+        - Option 1: Expand SL +30% (default via DRAWDOWN_RECOVERY_USE_LOT_REDUCTION=false)
+        - Option 2: Reduce lot_size by 50% (via DRAWDOWN_RECOVERY_USE_LOT_REDUCTION=true)
+        
+        Graceful Fallback:
+        - If daily_drawdown_percent is invalid (None, NaN, negative), use 1.0x multiplier
+        
+        Non-Blocking:
+        - This only affects SL/lot adjustment, signals still generate
+        
+        Example:
+            >>> result = risk_calc.calculate_dynamic_sl_expansion(25.0)
+            >>> print(result['mode'])  # 'EXPANSION'
+            >>> print(result['sl_multiplier'])  # 1.15
+            >>> print(result['log_info'])  # "Drawdown mode: EXPANSION (25.00%), SL expanded 1.15x"
+        """
+        try:
+            if daily_drawdown_percent is None:
+                logger.warning("calculate_dynamic_sl_expansion: drawdown_percent is None, using fallback")
+                return self._get_fallback_sl_expansion("Input is None")
+            
+            try:
+                import math
+                if math.isnan(daily_drawdown_percent) or math.isinf(daily_drawdown_percent):
+                    logger.warning(f"calculate_dynamic_sl_expansion: Invalid value {daily_drawdown_percent}, using fallback")
+                    return self._get_fallback_sl_expansion("NaN or Inf value")
+            except (TypeError, ValueError):
+                pass
+            
+            try:
+                drawdown = float(daily_drawdown_percent)
+            except (TypeError, ValueError) as e:
+                logger.warning(f"calculate_dynamic_sl_expansion: Cannot convert to float: {e}, using fallback")
+                return self._get_fallback_sl_expansion("Cannot convert to float")
+            
+            if drawdown < 0:
+                logger.warning(f"calculate_dynamic_sl_expansion: Negative drawdown {drawdown}%, treating as 0")
+                drawdown = 0.0
+            
+            use_lot_reduction = getattr(self.config, 'DRAWDOWN_RECOVERY_USE_LOT_REDUCTION', False)
+            
+            if drawdown < 20.0:
+                sl_multiplier = 1.0
+                lot_reduction = 1.0
+                mode = 'NORMAL'
+                log_info = f"Drawdown mode: NORMAL ({drawdown:.2f}%), SL normal 1.0x"
+                should_adjust = False
+                
+            elif drawdown < 40.0:
+                sl_multiplier = 1.15
+                lot_reduction = 1.0
+                mode = 'EXPANSION'
+                log_info = f"Drawdown mode: EXPANSION ({drawdown:.2f}%), SL expanded 1.15x"
+                should_adjust = True
+                logger.info(f"🛡️ {log_info}")
+                
+            else:
+                if use_lot_reduction:
+                    sl_multiplier = 1.0
+                    lot_reduction = 0.5
+                    mode = 'RECOVERY'
+                    log_info = f"Drawdown mode: RECOVERY ({drawdown:.2f}%), lot reduced 50%"
+                else:
+                    sl_multiplier = 1.30
+                    lot_reduction = 0.5
+                    mode = 'RECOVERY'
+                    log_info = f"Drawdown mode: RECOVERY ({drawdown:.2f}%), SL expanded 1.30x, lot reduced 50%"
+                
+                should_adjust = True
+                logger.warning(f"🚨 {log_info}")
+            
+            result = {
+                'drawdown_percent': round(drawdown, 2),
+                'sl_multiplier': sl_multiplier,
+                'mode': mode,
+                'lot_reduction': lot_reduction,
+                'log_info': log_info,
+                'should_adjust': should_adjust,
+                'use_lot_reduction_strategy': use_lot_reduction
+            }
+            
+            logger.debug(f"Dynamic SL expansion calculated: DD={drawdown:.2f}%, "
+                        f"Mode={mode}, SL_mult={sl_multiplier:.2f}, Lot_adj={lot_reduction:.2f}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Unexpected error in calculate_dynamic_sl_expansion: {e}")
+            return self._get_fallback_sl_expansion(f"Unexpected error: {e}")
+    
+    def _get_fallback_sl_expansion(self, reason: str = "Unknown") -> Dict[str, Any]:
+        """Return fallback/default SL expansion values for error cases.
+        
+        Args:
+            reason: Reason for fallback (for logging)
+            
+        Returns:
+            Dict with safe default values (no adjustment)
+        """
+        logger.debug(f"Using fallback SL expansion: {reason}")
+        return {
+            'drawdown_percent': 0.0,
+            'sl_multiplier': 1.0,
+            'mode': 'NORMAL',
+            'lot_reduction': 1.0,
+            'log_info': f"Drawdown mode: NORMAL (fallback - {reason}), SL normal 1.0x",
+            'should_adjust': False,
+            'fallback_reason': reason
+        }
+    
+    def get_sl_expansion_for_user(self, user_id: int) -> Dict[str, Any]:
+        """Convenience method: Get SL expansion for a user by combining helper methods.
+        
+        Combines get_daily_drawdown_percent() and calculate_dynamic_sl_expansion()
+        into a single call.
+        
+        Args:
+            user_id: ID user untuk mendapatkan data drawdown
+            
+        Returns:
+            Dict with SL expansion info including user_id
+            
+        Example:
+            >>> result = risk_calc.get_sl_expansion_for_user(123)
+            >>> print(result['sl_multiplier'])  # 1.15
+        """
+        try:
+            drawdown_percent = self.get_daily_drawdown_percent(user_id)
+            
+            result = self.calculate_dynamic_sl_expansion(drawdown_percent)
+            
+            result['user_id'] = user_id
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in get_sl_expansion_for_user for user {user_id}: {e}")
+            fallback = self._get_fallback_sl_expansion(f"Error for user {user_id}: {e}")
+            fallback['user_id'] = user_id
+            return fallback
 
 
 class RiskManager:

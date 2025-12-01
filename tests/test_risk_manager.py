@@ -258,6 +258,139 @@ class TestDynamicRiskCalculator:
         
         assert should_close is False
         assert position is None
+    
+    def test_get_daily_drawdown_percent_no_loss(self, dynamic_risk_config, mock_db_manager, test_db):
+        """Test get_daily_drawdown_percent with no realized loss"""
+        mock_db_manager.get_session = Mock(return_value=test_db)
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        dd_percent = calc.get_daily_drawdown_percent(user_id=123456)
+        
+        assert isinstance(dd_percent, float)
+        assert dd_percent >= 0.0
+        assert dd_percent <= 100.0
+    
+    def test_calculate_dynamic_sl_expansion_normal(self, dynamic_risk_config, mock_db_manager):
+        """Test SL expansion in NORMAL mode (drawdown < 20%)"""
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc.calculate_dynamic_sl_expansion(daily_drawdown_percent=10.0)
+        
+        assert result['mode'] == 'NORMAL'
+        assert result['sl_multiplier'] == 1.0
+        assert result['lot_reduction'] == 1.0
+        assert result['should_adjust'] is False
+        assert 'log_info' in result
+    
+    def test_calculate_dynamic_sl_expansion_expansion(self, dynamic_risk_config, mock_db_manager):
+        """Test SL expansion in EXPANSION mode (20% <= drawdown < 40%)"""
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc.calculate_dynamic_sl_expansion(daily_drawdown_percent=25.0)
+        
+        assert result['mode'] == 'EXPANSION'
+        assert result['sl_multiplier'] == 1.15
+        assert result['lot_reduction'] == 1.0
+        assert result['should_adjust'] is True
+        assert 'EXPANSION' in result['log_info']
+    
+    def test_calculate_dynamic_sl_expansion_recovery(self, dynamic_risk_config, mock_db_manager):
+        """Test SL expansion in RECOVERY mode (drawdown >= 40%)"""
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc.calculate_dynamic_sl_expansion(daily_drawdown_percent=50.0)
+        
+        assert result['mode'] == 'RECOVERY'
+        assert result['sl_multiplier'] == 1.30
+        assert result['lot_reduction'] == 0.5
+        assert result['should_adjust'] is True
+        assert 'RECOVERY' in result['log_info']
+    
+    def test_calculate_dynamic_sl_expansion_edge_20(self, dynamic_risk_config, mock_db_manager):
+        """Test SL expansion at exactly 20% drawdown"""
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc.calculate_dynamic_sl_expansion(daily_drawdown_percent=20.0)
+        
+        assert result['mode'] == 'EXPANSION'
+        assert result['sl_multiplier'] == 1.15
+    
+    def test_calculate_dynamic_sl_expansion_edge_40(self, dynamic_risk_config, mock_db_manager):
+        """Test SL expansion at exactly 40% drawdown"""
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc.calculate_dynamic_sl_expansion(daily_drawdown_percent=40.0)
+        
+        assert result['mode'] == 'RECOVERY'
+        assert result['sl_multiplier'] == 1.30
+    
+    def test_calculate_dynamic_sl_expansion_none_input(self, dynamic_risk_config, mock_db_manager):
+        """Test SL expansion with None input (graceful fallback)"""
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc.calculate_dynamic_sl_expansion(daily_drawdown_percent=None)
+        
+        assert result['mode'] == 'NORMAL'
+        assert result['sl_multiplier'] == 1.0
+        assert result['should_adjust'] is False
+        assert 'fallback_reason' in result
+    
+    def test_calculate_dynamic_sl_expansion_negative_input(self, dynamic_risk_config, mock_db_manager):
+        """Test SL expansion with negative input (treated as 0)"""
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc.calculate_dynamic_sl_expansion(daily_drawdown_percent=-5.0)
+        
+        assert result['mode'] == 'NORMAL'
+        assert result['sl_multiplier'] == 1.0
+        assert result['drawdown_percent'] == 0.0
+    
+    def test_calculate_dynamic_sl_expansion_zero(self, dynamic_risk_config, mock_db_manager):
+        """Test SL expansion at 0% drawdown"""
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc.calculate_dynamic_sl_expansion(daily_drawdown_percent=0.0)
+        
+        assert result['mode'] == 'NORMAL'
+        assert result['sl_multiplier'] == 1.0
+    
+    def test_get_sl_expansion_for_user(self, dynamic_risk_config, mock_db_manager, test_db):
+        """Test convenience method get_sl_expansion_for_user"""
+        mock_db_manager.get_session = Mock(return_value=test_db)
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc.get_sl_expansion_for_user(user_id=123456)
+        
+        assert 'sl_multiplier' in result
+        assert 'mode' in result
+        assert 'lot_reduction' in result
+        assert 'user_id' in result
+        assert result['user_id'] == 123456
+    
+    def test_get_fallback_sl_expansion(self, dynamic_risk_config, mock_db_manager):
+        """Test fallback SL expansion values"""
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc._get_fallback_sl_expansion("Test reason")
+        
+        assert result['sl_multiplier'] == 1.0
+        assert result['mode'] == 'NORMAL'
+        assert result['lot_reduction'] == 1.0
+        assert result['should_adjust'] is False
+        assert 'fallback_reason' in result
+        assert result['fallback_reason'] == "Test reason"
+    
+    def test_calculate_dynamic_sl_expansion_with_lot_reduction_config(self, dynamic_risk_config, mock_db_manager):
+        """Test SL expansion with lot reduction strategy enabled"""
+        dynamic_risk_config.DRAWDOWN_RECOVERY_USE_LOT_REDUCTION = True
+        calc = DynamicRiskCalculator(dynamic_risk_config, mock_db_manager)
+        
+        result = calc.calculate_dynamic_sl_expansion(daily_drawdown_percent=50.0)
+        
+        assert result['mode'] == 'RECOVERY'
+        assert result['sl_multiplier'] == 1.0
+        assert result['lot_reduction'] == 0.5
+        assert result['use_lot_reduction_strategy'] is True
 
 
 @pytest.mark.unit

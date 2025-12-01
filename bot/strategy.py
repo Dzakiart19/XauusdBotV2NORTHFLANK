@@ -548,6 +548,96 @@ class TradingStrategy:
         
         logger.info(f"📝 Signal tracking updated: {signal_type} @ ${entry_price:.2f} | Candle: {candle_timestamp}")
     
+    def calculate_lot_with_volatility_zones(self, indicators: Dict, base_lot_size: float) -> Tuple[float, str, float]:
+        """Calculate dynamic lot size berdasarkan ATR volatility zones.
+        
+        Smart Position Sizing dengan Volatility Adapter - calculates ATR% internally
+        from indicators and applies zone-based multipliers.
+        
+        Args:
+            indicators: Dict with 'atr' and 'close' values
+            base_lot_size: Base lot size from config
+            
+        Returns:
+            Tuple of (adjusted_lot_size, volatility_zone, multiplier)
+            
+        ATR zone thresholds (as percentage of close price):
+        - EXTREME_LOW: < 0.005% - multiplier = 0.5x (kurangi saat market quiet)
+        - LOW: 0.005% - 0.02% - multiplier = 0.7x
+        - NORMAL: 0.02% - 0.05% - multiplier = 1.0x (standard)
+        - HIGH: 0.05% - 0.1% - multiplier = 0.85x
+        - EXTREME_HIGH: > 0.1% - multiplier = 0.7x (kurangi saat volatile)
+        """
+        default_multiplier = 1.0
+        default_zone = "NORMAL"
+        
+        try:
+            base = safe_float(base_lot_size, 0.01, "base_lot_size")
+            if base <= 0:
+                base = 0.01
+            
+            if not indicators or not isinstance(indicators, dict):
+                logger.warning("calculate_lot_with_volatility_zones: No indicators provided, using default multiplier 1.0x")
+                return base, default_zone, default_multiplier
+            
+            atr_raw = indicators.get('atr')
+            close_raw = indicators.get('close')
+            
+            if not is_valid_number(atr_raw):
+                logger.warning("calculate_lot_with_volatility_zones: ATR not available, using default multiplier 1.0x")
+                return base, default_zone, default_multiplier
+            
+            if not is_valid_number(close_raw):
+                logger.warning("calculate_lot_with_volatility_zones: Close price not available, using default multiplier 1.0x")
+                return base, default_zone, default_multiplier
+            
+            atr = safe_float(atr_raw, 0.0, "atr")
+            close = safe_float(close_raw, 0.0, "close")
+            
+            if atr <= 0 or close <= 0:
+                logger.warning(f"calculate_lot_with_volatility_zones: Invalid ATR ({atr}) or close ({close}), using default")
+                return base, default_zone, default_multiplier
+            
+            atr_percent = safe_divide(atr, close, 0.0, "atr_percent") * 100
+            
+            if not is_valid_number(atr_percent) or atr_percent < 0:
+                logger.warning(f"calculate_lot_with_volatility_zones: Invalid ATR% ({atr_percent}), using default")
+                return base, default_zone, default_multiplier
+            
+            if atr_percent < 0.005:
+                zone = "EXTREME_LOW"
+                multiplier = 0.5
+            elif atr_percent < 0.02:
+                zone = "LOW"
+                multiplier = 0.7
+            elif atr_percent < 0.05:
+                zone = "NORMAL"
+                multiplier = 1.0
+            elif atr_percent < 0.1:
+                zone = "HIGH"
+                multiplier = 0.85
+            else:
+                zone = "EXTREME_HIGH"
+                multiplier = 0.7
+            
+            adjusted_lot = base * multiplier
+            
+            if not is_valid_number(adjusted_lot) or adjusted_lot <= 0:
+                logger.warning(f"calculate_lot_with_volatility_zones: Invalid adjusted lot ({adjusted_lot}), using base")
+                return base, default_zone, default_multiplier
+            
+            adjusted_lot = round(adjusted_lot, 2)
+            
+            logger.info(f"📊 Dynamic LOT ADJUSTMENT: Zone={zone}, ATR%={atr_percent:.4f}%, "
+                       f"base={base:.2f}x{multiplier} = {adjusted_lot:.2f}")
+            
+            return adjusted_lot, zone, multiplier
+            
+        except Exception as e:
+            logger.error(f"Error in calculate_lot_with_volatility_zones: {e}, using default")
+            base = safe_float(base_lot_size, 0.01)
+            return base if base > 0 else 0.01, default_zone, default_multiplier
+    
     def calculate_trend_strength(self, indicators: Dict) -> Tuple[float, str]:
         """Calculate trend strength with validation and error handling
         

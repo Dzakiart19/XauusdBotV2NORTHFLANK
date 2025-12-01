@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 from numpy.typing import NDArray
 
 
@@ -2106,37 +2106,44 @@ class IndicatorEngine:
             self._logger.warning(f"Gagal mendeteksi reversal patterns: {str(e)}")
             return default_result
     
-    def calculate_ema_ribbon(self, df: pd.DataFrame) -> Dict:
-        """
-        Calculate EMA Ribbon for advanced momentum confirmation.
+    def calculate_ema_ribbon(self, df: pd.DataFrame, periods: Optional[List[int]] = None) -> Dict:
+        """Calculate EMA Ribbon dengan 6 EMAs untuk momentum analysis.
         
-        EMA Ribbon uses multiple EMAs: 5, 10, 15, 20, 25, 30
-        - BULLISH: All EMAs stacked ascending (EMA5 > EMA10 > EMA15 > ... > EMA30)
-        - BEARISH: All EMAs stacked descending (EMA5 < EMA10 < EMA15 < ... < EMA30)
-        - MIXED: No clear order (weak momentum)
+        EMA Ribbon uses multiple EMAs for trend confirmation:
+        - Bullish Ribbon: EMA5 > EMA10 > EMA15 > EMA20 > EMA25 > EMA30 (fully stacked)
+        - Bearish Ribbon: EMA5 < EMA10 < EMA15 < EMA20 < EMA25 < EMA30 (fully stacked)
+        - Mixed/Neutral: no clear order (weak momentum)
         
         Args:
             df: DataFrame with OHLC data
+            periods: List of EMA periods (default: [5, 10, 15, 20, 25, 30])
         
         Returns:
             Dict with:
-            - ema_values: Dict with all EMA values (ema_5, ema_10, etc.)
-            - alignment_status: 'STRONG_BULLISH', 'BULLISH', 'NEUTRAL', 'BEARISH', 'STRONG_BEARISH', 'MIXED'
-            - bullish_count: Number of bullish alignments (EMA[n] > EMA[n+5])
-            - bearish_count: Number of bearish alignments (EMA[n] < EMA[n+5])
-            - ribbon_spread: Spread between EMA5 and EMA30 as percentage
+            - ema_5, ema_10, ema_15, ema_20, ema_25, ema_30: EMA values
+            - alignment_status: 'STRONG_BULLISH'/'BULLISH'/'NEUTRAL'/'BEARISH'/'STRONG_BEARISH'/'MIXED'
+            - is_stacked: bool (True if fully stacked in order)
+            - description: str (human readable description)
+            - bullish_count: Number of bullish alignments
+            - bearish_count: Number of bearish alignments
+            - ribbon_spread: Spread between fastest and slowest EMA as percentage
             - trend_strength: 0.0 to 1.0 score
         """
+        if periods is None:
+            periods = [5, 10, 15, 20, 25, 30]
+        
+        default_ema_values = {f'ema_{p}': 0.0 for p in periods}
         default_result = {
-            'ema_values': {
-                'ema_5': 0.0,
-                'ema_10': 0.0,
-                'ema_15': 0.0,
-                'ema_20': 0.0,
-                'ema_25': 0.0,
-                'ema_30': 0.0
-            },
+            'ema_values': default_ema_values,
+            'ema_5': 0.0,
+            'ema_10': 0.0,
+            'ema_15': 0.0,
+            'ema_20': 0.0,
+            'ema_25': 0.0,
+            'ema_30': 0.0,
             'alignment_status': 'NEUTRAL',
+            'is_stacked': False,
+            'description': 'EMA Ribbon data unavailable - neutral alignment assumed',
             'bullish_count': 0,
             'bearish_count': 0,
             'ribbon_spread': 0.0,
@@ -2144,12 +2151,14 @@ class IndicatorEngine:
         }
         
         if not self._validate_dataframe(df, ['close']):
+            self._logger.debug("EMA Ribbon: DataFrame validation failed, returning neutral")
             return default_result
         
-        ema_periods = [5, 10, 15, 20, 25, 30]
+        ema_periods = sorted(periods)
         min_required_length = max(ema_periods) + 10
         
         if len(df) < min_required_length:
+            self._logger.debug(f"EMA Ribbon: Insufficient data ({len(df)} < {min_required_length}), returning neutral")
             return default_result
         
         try:
@@ -2160,68 +2169,88 @@ class IndicatorEngine:
                 ema_values[f'ema_{period}'] = float(ema_val)
             
             if any(v == 0.0 for v in ema_values.values()):
+                self._logger.debug("EMA Ribbon: Some EMA values are zero, returning neutral")
                 return default_result
             
             bullish_alignments = 0
             bearish_alignments = 0
             total_comparisons = len(ema_periods) - 1
             
-            sorted_periods = sorted(ema_periods)
-            for i in range(len(sorted_periods) - 1):
-                shorter_ema = ema_values[f'ema_{sorted_periods[i]}']
-                longer_ema = ema_values[f'ema_{sorted_periods[i+1]}']
+            for i in range(len(ema_periods) - 1):
+                shorter_ema = ema_values[f'ema_{ema_periods[i]}']
+                longer_ema = ema_values[f'ema_{ema_periods[i+1]}']
                 
                 if shorter_ema > longer_ema:
                     bullish_alignments += 1
                 elif shorter_ema < longer_ema:
                     bearish_alignments += 1
             
-            ema_5_val = ema_values['ema_5']
-            ema_30_val = ema_values['ema_30']
+            fastest_ema = ema_values[f'ema_{ema_periods[0]}']
+            slowest_ema = ema_values[f'ema_{ema_periods[-1]}']
             
-            if ema_30_val > 0:
-                ribbon_spread = ((ema_5_val - ema_30_val) / ema_30_val) * 100
+            if slowest_ema > 0:
+                ribbon_spread = ((fastest_ema - slowest_ema) / slowest_ema) * 100
             else:
                 ribbon_spread = 0.0
             
+            is_stacked = False
             if bullish_alignments == total_comparisons:
+                is_stacked = True
                 if abs(ribbon_spread) > 0.5:
                     alignment_status = 'STRONG_BULLISH'
                     trend_strength = 1.0
+                    description = f"Strong bullish momentum - all EMAs stacked bullish (spread: {ribbon_spread:.2f}%)"
                 else:
                     alignment_status = 'BULLISH'
                     trend_strength = 0.8
+                    description = f"Bullish momentum - EMAs aligned upward (spread: {ribbon_spread:.2f}%)"
             elif bearish_alignments == total_comparisons:
+                is_stacked = True
                 if abs(ribbon_spread) > 0.5:
                     alignment_status = 'STRONG_BEARISH'
                     trend_strength = 1.0
+                    description = f"Strong bearish momentum - all EMAs stacked bearish (spread: {ribbon_spread:.2f}%)"
                 else:
                     alignment_status = 'BEARISH'
                     trend_strength = 0.8
+                    description = f"Bearish momentum - EMAs aligned downward (spread: {ribbon_spread:.2f}%)"
             elif bullish_alignments >= 4:
                 alignment_status = 'BULLISH'
                 trend_strength = 0.6 + (bullish_alignments - 4) * 0.1
+                description = f"Moderate bullish - {bullish_alignments}/{total_comparisons} EMAs aligned bullish"
             elif bearish_alignments >= 4:
                 alignment_status = 'BEARISH'
                 trend_strength = 0.6 + (bearish_alignments - 4) * 0.1
+                description = f"Moderate bearish - {bearish_alignments}/{total_comparisons} EMAs aligned bearish"
             elif bullish_alignments >= 3 and bullish_alignments > bearish_alignments:
                 alignment_status = 'NEUTRAL'
                 trend_strength = 0.4
+                description = f"Neutral with bullish lean - {bullish_alignments}/{total_comparisons} bullish alignments"
             elif bearish_alignments >= 3 and bearish_alignments > bullish_alignments:
                 alignment_status = 'NEUTRAL'
                 trend_strength = 0.4
+                description = f"Neutral with bearish lean - {bearish_alignments}/{total_comparisons} bearish alignments"
             else:
                 alignment_status = 'MIXED'
                 trend_strength = 0.2
+                description = f"Mixed/weak momentum - no clear EMA alignment ({bullish_alignments}B/{bearish_alignments}S)"
             
-            return {
+            result = {
                 'ema_values': ema_values,
                 'alignment_status': alignment_status,
+                'is_stacked': is_stacked,
+                'description': description,
                 'bullish_count': bullish_alignments,
                 'bearish_count': bearish_alignments,
                 'ribbon_spread': float(ribbon_spread),
                 'trend_strength': float(trend_strength)
             }
+            
+            for period in ema_periods:
+                result[f'ema_{period}'] = ema_values[f'ema_{period}']
+            
+            self._logger.debug(f"EMA Ribbon: {alignment_status}, stacked={is_stacked}, spread={ribbon_spread:.2f}%")
+            return result
             
         except Exception as e:
             self._logger.warning(f"Gagal menghitung EMA ribbon: {str(e)}")
