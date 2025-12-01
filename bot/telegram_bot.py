@@ -293,6 +293,7 @@ class TradingBot:
                  auto_optimizer: Optional['AutoOptimizer'] = None):
         self.config = config
         self.db = db_manager
+        self.db_manager = db_manager
         self.strategy = strategy
         self.risk_manager = risk_manager
         self.market_data = market_data
@@ -2025,6 +2026,47 @@ class TradingBot:
             welcome_msg += f"\n*Mode:* {mode} | Unlimited 24/7\n"
             
             await message.reply_text(welcome_msg, parse_mode='Markdown')
+            
+            help_msg = (
+                "📋 *PANDUAN LENGKAP BOT*\n\n"
+                "*Commands Dasar:*\n"
+                "/start - Tampilkan pesan ini\n"
+                "/help - Bantuan lengkap\n"
+                "/monitor - Mulai monitoring sinyal\n"
+                "/stopmonitor - Stop monitoring\n"
+                "/getsignal - Dapatkan sinyal manual\n"
+                "/status - Cek posisi aktif\n"
+                "/settings - Lihat konfigurasi\n\n"
+                "*Commands Statistik:*\n"
+                "/riwayat - Lihat riwayat trading\n"
+                "/performa - Statistik performa\n"
+                "/stats - Statistik harian\n"
+                "/winstats - Win rate statistics\n"
+                "/analytics - Comprehensive analytics\n\n"
+                "*Advanced Analysis:*\n"
+                "/regime - Market regime analysis\n"
+                "/optimize - Auto-optimizer status\n"
+                "/rules - Signal rules status\n"
+                "/analyze - Analisis chart detail\n\n"
+                "*Dashboard:*\n"
+                "/dashboard - Dashboard real-time\n"
+                "/stopdashboard - Hentikan dashboard\n"
+                "/refresh - Refresh dashboard\n\n"
+                f"*Mode:* {mode} | Unlimited 24/7"
+            )
+            
+            help_message = await message.reply_text(help_msg, parse_mode='Markdown')
+            
+            try:
+                await context.bot.pin_chat_message(
+                    chat_id=chat.id,
+                    message_id=help_message.message_id,
+                    disable_notification=True
+                )
+                logger.info(f"Help message pinned for user {mask_user_id(user.id)}")
+            except (TelegramError, BadRequest) as pin_error:
+                logger.warning(f"Could not pin help message: {pin_error}")
+            
             logger.info(f"Start command executed successfully for user {mask_user_id(user.id)}")
             
         except asyncio.CancelledError:

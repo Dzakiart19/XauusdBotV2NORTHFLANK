@@ -2377,7 +2377,7 @@ class AggressiveSignalRules:
         self._quality_stats = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
         logger.info("Quality statistics reset")
     
-    async def _run_signal_check_async(self, check_func: Callable, *args) -> SignalResult:
+    async def _run_signal_check_async(self, rule_name: str, check_func: Callable, *args) -> SignalResult:
         """
         Wrapper to run synchronous signal check in executor with timeout.
         
@@ -2385,14 +2385,21 @@ class AggressiveSignalRules:
         asynchronously in a thread pool executor. It handles timeouts and
         errors gracefully, returning an empty SignalResult on failure.
         
+        IMPORTANT: This method returns the actual SignalResult object from
+        check_func, not a dict. The returned SignalResult is used directly
+        for confluence voting calculations.
+        
         Args:
+            rule_name: The rule type name (e.g., 'M1_SCALP', 'M5_SWING') for proper
+                      identification in timeout/error cases
             check_func: The synchronous signal check function to run
             *args: Arguments to pass to the check function
         
         Returns:
             SignalResult from the check function, or empty SignalResult on timeout/error
+            Never returns a dict - always returns a SignalResult object
         """
-        rule_name = getattr(check_func, '__name__', 'unknown')
+        func_name = getattr(check_func, '__name__', 'unknown')
         start_time = time.time()
         
         try:
@@ -2401,12 +2408,20 @@ class AggressiveSignalRules:
                 timeout=self.PARALLEL_SIGNAL_TIMEOUT
             )
             elapsed = time.time() - start_time
-            logger.debug(f"Signal check '{rule_name}' completed in {elapsed:.3f}s")
+            
+            if not isinstance(result, SignalResult):
+                logger.warning(f"Signal check '{rule_name}' ({func_name}) returned {type(result).__name__} instead of SignalResult, converting...")
+                return SignalResult(
+                    rule_name=rule_name,
+                    reason=f"Unexpected return type: {type(result).__name__}"
+                )
+            
+            logger.debug(f"Signal check '{rule_name}' ({func_name}) completed in {elapsed:.3f}s - SignalResult returned")
             return result
             
         except asyncio.TimeoutError:
             elapsed = time.time() - start_time
-            logger.warning(f"Signal check '{rule_name}' timed out after {elapsed:.1f}s (limit: {self.PARALLEL_SIGNAL_TIMEOUT}s)")
+            logger.warning(f"Signal check '{rule_name}' ({func_name}) timed out after {elapsed:.1f}s (limit: {self.PARALLEL_SIGNAL_TIMEOUT}s)")
             return SignalResult(
                 rule_name=rule_name,
                 reason=f"Timeout after {self.PARALLEL_SIGNAL_TIMEOUT}s"
@@ -2414,7 +2429,7 @@ class AggressiveSignalRules:
             
         except Exception as e:
             elapsed = time.time() - start_time
-            logger.error(f"Signal check '{rule_name}' failed after {elapsed:.3f}s: {str(e)}")
+            logger.error(f"Signal check '{rule_name}' ({func_name}) failed after {elapsed:.3f}s: {str(e)}")
             return SignalResult(
                 rule_name=rule_name,
                 reason=f"Error: {str(e)}"
@@ -2459,22 +2474,26 @@ class AggressiveSignalRules:
         
         if df_m1 is not None and len(df_m1) >= 30:
             tasks.append(self._run_signal_check_async(
+                RuleType.M1_SCALP.value,
                 self.check_m1_scalp_signal, df_m1, df_m5, df_h1
             ))
             task_names.append(RuleType.M1_SCALP.value)
         
         if df_m5 is not None and len(df_m5) >= 50:
             tasks.append(self._run_signal_check_async(
+                RuleType.M5_SWING.value,
                 self.check_m5_swing_signal, df_m5, df_h1
             ))
             task_names.append(RuleType.M5_SWING.value)
             
             tasks.append(self._run_signal_check_async(
+                RuleType.SR_REVERSION.value,
                 self.check_sr_reversion_signal, df_h1, df_m5
             ))
             task_names.append(RuleType.SR_REVERSION.value)
             
             tasks.append(self._run_signal_check_async(
+                RuleType.BREAKOUT.value,
                 self.check_breakout_signal, df_m5, df_h1
             ))
             task_names.append(RuleType.BREAKOUT.value)
@@ -2545,6 +2564,10 @@ class AggressiveSignalRules:
         agree on the same direction. A higher weighted score indicates
         stronger confluence.
         
+        IMPORTANT: This method expects SignalResult objects, not dicts.
+        It uses attribute access (result.signal_type, result.confidence)
+        to read signal data from the SignalResult objects.
+        
         Args:
             signals: Dict of rule names to SignalResult objects
                      (typically from generate_signals_parallel)
@@ -2570,6 +2593,14 @@ class AggressiveSignalRules:
         sell_votes: List[Tuple[str, float]] = []
         
         for rule_name, result in signals.items():
+            if result is None:
+                logger.warning(f"Signal for '{rule_name}' is None, skipping")
+                continue
+            
+            if not isinstance(result, SignalResult):
+                logger.error(f"Signal for '{rule_name}' is {type(result).__name__} not SignalResult, skipping")
+                continue
+            
             if not result.is_valid():
                 continue
             
