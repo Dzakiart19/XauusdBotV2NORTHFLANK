@@ -1214,6 +1214,183 @@ class TradingBotOrchestrator:
                     logger.error(f"Error in API trade-history: {e}")
                     return web.json_response({'error': str(e)}, status=500)
             
+            async def ws_dashboard(request):
+                """WebSocket endpoint for real-time dashboard updates"""
+                ws = web.WebSocketResponse()
+                await ws.prepare(request)
+                
+                logger.info("🔌 WebSocket client connected to /ws/dashboard")
+                
+                try:
+                    while not ws.closed and self.running:
+                        try:
+                            import pytz
+                            wib = pytz.timezone('Asia/Jakarta')
+                            now = datetime.now(wib)
+                            
+                            price_data: Dict[str, Any] = {
+                                'mid': 0.0,
+                                'bid': 0.0,
+                                'ask': 0.0,
+                                'spread': 0.0,
+                                'high': 0.0,
+                                'low': 0.0,
+                                'change_percent': 0.0
+                            }
+                            
+                            if self.config_valid and self.market_data:
+                                try:
+                                    bid = self.market_data.current_bid
+                                    ask = self.market_data.current_ask
+                                    if bid and ask and isinstance(bid, (int, float)) and isinstance(ask, (int, float)):
+                                        price_data['bid'] = float(bid)
+                                        price_data['ask'] = float(ask)
+                                        price_data['mid'] = float((bid + ask) / 2)
+                                        price_data['spread'] = float(round((ask - bid) * 10, 1))
+                                    
+                                    m1_df = self.market_data.m1_builder.get_dataframe(limit=1440)
+                                    if m1_df is not None and len(m1_df) > 0:
+                                        high_val = m1_df['high'].max()
+                                        low_val = m1_df['low'].min()
+                                        price_data['high'] = float(high_val) if high_val is not None else 0.0
+                                        price_data['low'] = float(low_val) if low_val is not None else 0.0
+                                        
+                                        if len(m1_df) > 1:
+                                            first_close = float(m1_df.iloc[0]['close'])
+                                            last_close = float(m1_df.iloc[-1]['close'])
+                                            if first_close > 0:
+                                                change = ((last_close - first_close) / first_close) * 100
+                                                price_data['change_percent'] = float(round(change, 2))
+                                except Exception as e:
+                                    logger.debug(f"WebSocket: Error getting price data: {e}")
+                            
+                            active_position = {'active': False}
+                            if self.config_valid and self.position_tracker:
+                                try:
+                                    positions = self.position_tracker.get_active_positions()
+                                    if positions:
+                                        for user_id, user_positions in positions.items():
+                                            if isinstance(user_positions, dict):
+                                                for pos_id, pos in user_positions.items():
+                                                    if isinstance(pos, dict):
+                                                        entry_price = pos.get('entry_price')
+                                                        stop_loss = pos.get('stop_loss')
+                                                        take_profit = pos.get('take_profit')
+                                                        direction = pos.get('signal_type', 'BUY')
+                                                        
+                                                        current_pnl_pips = None
+                                                        distance_to_tp_pips = None
+                                                        distance_to_sl_pips = None
+                                                        unrealized_pnl_usd = 0.0
+                                                        
+                                                        current_price = price_data.get('mid')
+                                                        pip_value = getattr(self.config, 'XAUUSD_PIP_VALUE', 10.0)
+                                                        lot_size = pos.get('lot_size', getattr(self.config, 'LOT_SIZE', 0.01))
+                                                        
+                                                        if current_price and entry_price:
+                                                            if direction == 'BUY':
+                                                                current_pnl_pips = round((current_price - entry_price) * pip_value, 1)
+                                                            else:
+                                                                current_pnl_pips = round((entry_price - current_price) * pip_value, 1)
+                                                            
+                                                            unrealized_pnl_usd = round(current_pnl_pips * lot_size * pip_value, 2)
+                                                        
+                                                        if current_price and take_profit:
+                                                            if direction == 'BUY':
+                                                                distance_to_tp_pips = round((take_profit - current_price) * pip_value, 1)
+                                                            else:
+                                                                distance_to_tp_pips = round((current_price - take_profit) * pip_value, 1)
+                                                        
+                                                        if current_price and stop_loss:
+                                                            if direction == 'BUY':
+                                                                distance_to_sl_pips = round((current_price - stop_loss) * pip_value, 1)
+                                                            else:
+                                                                distance_to_sl_pips = round((stop_loss - current_price) * pip_value, 1)
+                                                        
+                                                        active_position = {
+                                                            'active': True,
+                                                            'direction': direction,
+                                                            'entry_price': entry_price,
+                                                            'sl': stop_loss,
+                                                            'tp': take_profit,
+                                                            'unrealized_pnl': unrealized_pnl_usd,
+                                                            'current_pnl_pips': current_pnl_pips,
+                                                            'distance_to_tp_pips': distance_to_tp_pips,
+                                                            'distance_to_sl_pips': distance_to_sl_pips,
+                                                            'lot_size': lot_size
+                                                        }
+                                                        break
+                                            if active_position['active']:
+                                                break
+                                except Exception as e:
+                                    logger.debug(f"WebSocket: Error getting positions: {e}")
+                            
+                            stats: Dict[str, Any] = {
+                                'win_rate': 0.0,
+                                'total_pnl': 0.0,
+                                'signals_today': 0,
+                                'total_trades': 0
+                            }
+                            
+                            if self.config_valid and self.db_manager:
+                                try:
+                                    session = self.db_manager.get_session()
+                                    if session:
+                                        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                                        
+                                        result = session.execute(text(
+                                            "SELECT COUNT(*) as total, "
+                                            "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
+                                            "SUM(pnl) as total_pnl "
+                                            "FROM trades WHERE status = 'closed'"
+                                        ))
+                                        row = result.fetchone()
+                                        if row:
+                                            total = int(row[0] or 0)
+                                            wins = int(row[1] or 0)
+                                            stats['total_trades'] = total
+                                            stats['total_pnl'] = float(row[2] or 0)
+                                            stats['win_rate'] = float(wins / total * 100) if total > 0 else 0.0
+                                        
+                                        today_result = session.execute(text(
+                                            "SELECT COUNT(*) FROM trades WHERE created_at >= :today"
+                                        ), {'today': today_start})
+                                        signals_today = today_result.scalar()
+                                        stats['signals_today'] = int(signals_today or 0)
+                                        
+                                        session.close()
+                                except Exception as e:
+                                    logger.debug(f"WebSocket: Error getting stats: {e}")
+                            
+                            ws_data = {
+                                'price': price_data,
+                                'active_position': active_position,
+                                'stats': stats,
+                                'timestamp': now.isoformat(),
+                                'connected': self.config_valid and self.market_data is not None and self.market_data.is_connected()
+                            }
+                            
+                            await ws.send_json(ws_data)
+                            await asyncio.sleep(1)
+                            
+                        except ConnectionResetError:
+                            logger.debug("WebSocket: Client connection reset")
+                            break
+                        except Exception as e:
+                            logger.debug(f"WebSocket: Error in data loop: {e}")
+                            await asyncio.sleep(1)
+                            
+                except asyncio.CancelledError:
+                    logger.debug("WebSocket: Connection cancelled")
+                except Exception as e:
+                    logger.debug(f"WebSocket error: {e}")
+                finally:
+                    if not ws.closed:
+                        await ws.close()
+                    logger.info("🔌 WebSocket client disconnected from /ws/dashboard")
+                
+                return ws
+            
             app = web.Application()
             app.router.add_get('/health', health_check)
             app.router.add_get('/', health_check)
@@ -1222,7 +1399,8 @@ class TradingBotOrchestrator:
             app.router.add_get('/api/dashboard', api_dashboard)
             app.router.add_get('/api/candles', api_candles)
             app.router.add_get('/api/trade-history', api_trade_history)
-            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /api/candles, /api/trade-history, /static/*")
+            app.router.add_get('/ws/dashboard', ws_dashboard)
+            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /api/candles, /api/trade-history, /ws/dashboard, /static/*")
             
             webhook_path = None
             if self.config_valid and self.config.TELEGRAM_BOT_TOKEN:

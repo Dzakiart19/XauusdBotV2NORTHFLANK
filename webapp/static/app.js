@@ -40,6 +40,11 @@
     var tpLine = null;
     var currentPriceLine = null;
     var lastActivePosition = null;
+    var websocket = null;
+    var wsReconnectTimer = null;
+    var wsReconnectAttempts = 0;
+    var MAX_WS_RECONNECT_ATTEMPTS = 10;
+    var useWebSocket = true;
 
     function initTelegram() {
         debugLog('initTelegram called');
@@ -552,16 +557,113 @@
 
     window.refreshData = refreshData;
 
-    function startAutoRefresh() {
-        debugLog('startAutoRefresh called');
+    function getWebSocketUrl() {
+        var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        return protocol + '//' + window.location.host + '/ws/dashboard';
+    }
+    
+    function connectWebSocket() {
+        if (!useWebSocket || websocket) return;
+        
+        try {
+            var wsUrl = getWebSocketUrl();
+            debugLog('Connecting to WebSocket: ' + wsUrl);
+            
+            websocket = new WebSocket(wsUrl);
+            
+            websocket.onopen = function() {
+                debugLog('WebSocket connected');
+                wsReconnectAttempts = 0;
+                updateConnectionStatus(true);
+                hideLoading();
+                
+                if (updateInterval) {
+                    clearInterval(updateInterval);
+                    updateInterval = null;
+                    debugLog('Polling stopped - using WebSocket');
+                }
+            };
+            
+            websocket.onmessage = function(event) {
+                try {
+                    var data = JSON.parse(event.data);
+                    updatePriceCard(data);
+                    updateSignalCard(data);
+                    updatePositionCard(data);
+                    updateStatsCard(data);
+                    updateRegimeCard(data);
+                    updateUpdateTime();
+                } catch (e) {
+                    debugLog('WebSocket message parse error: ' + e.message);
+                }
+            };
+            
+            websocket.onclose = function(event) {
+                debugLog('WebSocket closed: ' + event.code);
+                websocket = null;
+                
+                if (wsReconnectAttempts < MAX_WS_RECONNECT_ATTEMPTS) {
+                    wsReconnectAttempts++;
+                    var delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 30000);
+                    debugLog('WebSocket reconnecting in ' + delay + 'ms (attempt ' + wsReconnectAttempts + ')');
+                    wsReconnectTimer = setTimeout(connectWebSocket, delay);
+                } else {
+                    debugLog('WebSocket max reconnect attempts reached, falling back to polling');
+                    useWebSocket = false;
+                    startPolling();
+                }
+            };
+            
+            websocket.onerror = function(error) {
+                debugLog('WebSocket error');
+                updateConnectionStatus(false);
+            };
+            
+        } catch (e) {
+            debugLog('WebSocket connection error: ' + e.message);
+            useWebSocket = false;
+            startPolling();
+        }
+    }
+    
+    function disconnectWebSocket() {
+        if (wsReconnectTimer) {
+            clearTimeout(wsReconnectTimer);
+            wsReconnectTimer = null;
+        }
+        if (websocket) {
+            websocket.close();
+            websocket = null;
+        }
+    }
+    
+    function startPolling() {
+        debugLog('Starting polling fallback');
         if (updateInterval) clearInterval(updateInterval);
         refreshData();
         updateInterval = setInterval(refreshData, 3000);
-        debugLog('Auto-refresh started (interval: 3s)');
+        debugLog('Polling started (interval: 3s)');
+    }
+
+    function startAutoRefresh() {
+        debugLog('startAutoRefresh called');
+        
+        if (useWebSocket && 'WebSocket' in window) {
+            connectWebSocket();
+            refreshData();
+            updateCandleChart();
+            
+            if (!updateInterval) {
+                updateInterval = setInterval(updateCandleChart, 5000);
+            }
+        } else {
+            startPolling();
+        }
     }
 
     function stopAutoRefresh() {
         debugLog('stopAutoRefresh called');
+        disconnectWebSocket();
         if (updateInterval) {
             clearInterval(updateInterval);
             updateInterval = null;
