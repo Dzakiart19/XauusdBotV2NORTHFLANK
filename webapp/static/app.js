@@ -9,6 +9,8 @@ let candleSeries = null;
 let entryLine = null;
 let slLine = null;
 let tpLine = null;
+let currentPriceLine = null;
+let lastActivePosition = null;
 
 function initTelegram() {
     if (TelegramWebApp) {
@@ -149,13 +151,30 @@ function removePriceLines() {
             candleSeries.removePriceLine(tpLine);
             tpLine = null;
         }
+        if (currentPriceLine) {
+            candleSeries.removePriceLine(currentPriceLine);
+            currentPriceLine = null;
+        }
     }
 }
 
-function updatePriceLines(position) {
+function updatePriceLines(position, currentPrice) {
     removePriceLines();
     
-    if (!candleSeries || !position) return;
+    if (!candleSeries) return;
+    
+    if (currentPrice && currentPrice > 0) {
+        currentPriceLine = candleSeries.createPriceLine({
+            price: currentPrice,
+            color: '#5eaeff',
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dotted,
+            axisLabelVisible: true,
+            title: 'NOW'
+        });
+    }
+    
+    if (!position) return;
     
     const direction = (position.direction || 'BUY').toUpperCase();
     const entryColor = direction === 'BUY' ? '#22c55e' : '#ef4444';
@@ -167,7 +186,7 @@ function updatePriceLines(position) {
             lineWidth: 2,
             lineStyle: LightweightCharts.LineStyle.Solid,
             axisLabelVisible: true,
-            title: 'Entry'
+            title: direction === 'BUY' ? '📈 ENTRY' : '📉 ENTRY'
         });
     }
     
@@ -175,21 +194,45 @@ function updatePriceLines(position) {
         slLine = candleSeries.createPriceLine({
             price: position.stop_loss,
             color: '#ef4444',
-            lineWidth: 1,
+            lineWidth: 2,
             lineStyle: LightweightCharts.LineStyle.Dashed,
             axisLabelVisible: true,
-            title: 'SL'
+            title: '🛑 SL'
         });
     }
     
     if (position.take_profit) {
         tpLine = candleSeries.createPriceLine({
             price: position.take_profit,
-            color: '#22c55e',
-            lineWidth: 1,
+            color: '#ffd700',
+            lineWidth: 2,
             lineStyle: LightweightCharts.LineStyle.Dashed,
             axisLabelVisible: true,
-            title: 'TP'
+            title: '🎯 TP'
+        });
+    }
+    
+    if (chart && position.entry_price) {
+        const watermarkText = direction === 'BUY' ? '📈 LONG POSITION ACTIVE' : '📉 SHORT POSITION ACTIVE';
+        chart.applyOptions({
+            watermark: {
+                visible: true,
+                fontSize: 14,
+                horzAlign: 'center',
+                vertAlign: 'top',
+                color: 'rgba(255, 255, 255, 0.3)',
+                text: watermarkText
+            }
+        });
+    }
+}
+
+function clearChartWatermark() {
+    if (chart) {
+        chart.applyOptions({
+            watermark: {
+                visible: false
+            }
         });
     }
 }
@@ -223,10 +266,20 @@ async function updateCandleChart() {
         
         candleSeries.setData(uniqueData);
         
+        const currentPrice = data.current_price || (uniqueData.length > 0 ? uniqueData[uniqueData.length - 1].close : null);
+        
         if (data.active_position) {
-            updatePriceLines(data.active_position);
+            lastActivePosition = data.active_position;
+            updatePriceLines(data.active_position, currentPrice);
         } else {
+            if (lastActivePosition) {
+                clearChartWatermark();
+            }
+            lastActivePosition = null;
             removePriceLines();
+            if (currentPrice) {
+                updatePriceLines(null, currentPrice);
+            }
         }
         
     } catch (error) {
@@ -347,6 +400,10 @@ function updatePositionCard(data) {
         const pnl = pos.unrealized_pnl || 0;
         const isProfit = pnl >= 0;
         
+        const pnlPips = pos.current_pnl_pips || 0;
+        const distanceToTP = pos.distance_to_tp_pips || '--';
+        const distanceToSL = pos.distance_to_sl_pips || '--';
+        
         container.innerHTML = `
             <div class="position-header">
                 <span class="position-type ${direction.toLowerCase()}">${direction === 'BUY' ? '📈' : '📉'} ${direction}</span>
@@ -359,11 +416,25 @@ function updatePositionCard(data) {
                 </div>
                 <div class="signal-info-item">
                     <div class="signal-info-label">SL</div>
-                    <div class="signal-info-value">${formatPrice(pos.sl)}</div>
+                    <div class="signal-info-value" style="color: #ef4444;">${formatPrice(pos.sl)}</div>
                 </div>
                 <div class="signal-info-item">
                     <div class="signal-info-label">TP</div>
-                    <div class="signal-info-value">${formatPrice(pos.tp)}</div>
+                    <div class="signal-info-value" style="color: #ffd700;">${formatPrice(pos.tp)}</div>
+                </div>
+            </div>
+            <div class="position-details" style="margin-top: 8px;">
+                <div class="signal-info-item">
+                    <div class="signal-info-label">P/L Pips</div>
+                    <div class="signal-info-value ${pnlPips >= 0 ? 'positive' : 'negative'}">${pnlPips >= 0 ? '+' : ''}${pnlPips}</div>
+                </div>
+                <div class="signal-info-item">
+                    <div class="signal-info-label">To TP</div>
+                    <div class="signal-info-value" style="color: #ffd700;">${distanceToTP} pips</div>
+                </div>
+                <div class="signal-info-item">
+                    <div class="signal-info-label">To SL</div>
+                    <div class="signal-info-value" style="color: #ef4444;">${distanceToSL} pips</div>
                 </div>
             </div>
         `;
@@ -479,7 +550,7 @@ function startAutoRefresh() {
     
     refreshData();
     
-    updateInterval = setInterval(refreshData, 5000);
+    updateInterval = setInterval(refreshData, 2000);
 }
 
 function stopAutoRefresh() {

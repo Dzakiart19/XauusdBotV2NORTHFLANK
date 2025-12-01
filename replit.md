@@ -121,8 +121,18 @@ Perbaikan untuk meningkatkan akurasi sinyal dari ~50% ke target 80-90%:
   - 📡 Sinyal Terakhir
   - 📈 Posisi Aktif dengan P/L
   - 📉 Statistik Trading
-- Auto-update setiap 5 detik
+  - 📈 Candlestick Chart dengan Position Markers (Entry hijau, SL merah, TP gold)
+- **Auto-update setiap 2 detik** (dioptimasi dari 5 detik)
+- Title diubah menjadi "Xauusd Dzeck Trader"
 - Integrasi dengan Telegram Web App SDK
+
+**Trial System (Dec 1, 2025):**
+- ✅ Trial 3 hari otomatis untuk user baru
+- ✅ Auto-expire setelah 3 hari dengan notifikasi
+- ✅ Command `/trialstatus` - Cek status trial
+- ✅ Command `/buyaccess` - Info berlangganan dengan harga dan metode pembayaran
+- ✅ Hierarchy akses: AUTHORIZED_USER_IDS → ID_USER_PUBLIC → Active Trial
+- ✅ Semua pesan dalam Bahasa Indonesia
 
 **UI/UX Decisions:**
 - Telegram serves as the primary user interface.
@@ -135,7 +145,7 @@ Perbaikan untuk meningkatkan akurasi sinyal dari ~50% ke target 80-90%:
 - **Indicators:** EMA (5, 10, 20, 50), RSI (14), Stochastic (K=14, D=3), ATR (14), MACD (12,26,9), Volume, Twin Range Filter, Market Bias CEREBR.
 - **Risk Management:** Fixed SL ($1 per trade), dynamic TP (1.45x-2.50x R:R), max spread (5 pips), risk per trade (0.5%). Includes dynamic SL tightening and trailing stop activation. Lot size is fixed at 0.01.
 - **Access Control:** Private bot with dual-tier access.
-- **Commands:** Admin commands (`/riset`, `/status`, `/tasks`, `/analytics`, `/systemhealth`) and User commands (`/start`, `/help`, `/monitor`, `/getsignal`, `/status`, `/riwayat`, `/performa`, `/regime`, `/optimize`, `/rules`, `/dashboard`, `/stopdashboard`, `/refresh`).
+- **Commands:** Admin commands (`/riset`, `/status`, `/tasks`, `/analytics`, `/systemhealth`) and User commands (`/start`, `/help`, `/monitor`, `/getsignal`, `/status`, `/riwayat`, `/performa`, `/regime`, `/optimize`, `/rules`, `/dashboard`, `/stopdashboard`, `/refresh`, `/trialstatus`, `/buyaccess`).
 - **Anti-Duplicate Protection:** Employs a two-phase cache pattern (pending/confirmed status, hash-based tracking, thread-safe locking, TTL-backed signal cache with async cleanup) for race-condition-safe signal deduplication and anti-spam.
 - **Candle Data Persistence:** Stores M1, M5, and H1 candles in the database with immediate H1 save on candle close. Supports partial candle restore on restart.
 - **H1 Historical Loading (Nov 28, 2025):** H1 timeframe dimuat lengkap saat startup dengan immediate persistence, pending queue mechanism, dan thread-safe session management.

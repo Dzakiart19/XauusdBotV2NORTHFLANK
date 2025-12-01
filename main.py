@@ -953,7 +953,7 @@ class TradingBotOrchestrator:
                                 if regime:
                                     regime_data = {
                                         'trend': regime.regime_type if hasattr(regime, 'regime_type') else 'Unknown',
-                                        'volatility': regime.volatility_analysis.zone if hasattr(regime, 'volatility_analysis') and hasattr(regime.volatility_analysis, 'zone') else 'Normal',
+                                        'volatility': regime.volatility_analysis.volatility_zone if hasattr(regime, 'volatility_analysis') and hasattr(regime.volatility_analysis, 'volatility_zone') else 'Normal',
                                         'bias': regime.bias if hasattr(regime, 'bias') else 'NEUTRAL',
                                         'confidence': regime.confidence if hasattr(regime, 'confidence') else 0
                                     }

@@ -1966,6 +1966,8 @@ class TradingBot:
                 "/systemhealth - System health status\n"
                 "/tasks - Lihat scheduled tasks\n"
                 "/settings - Lihat konfigurasi\n"
+                "/trialstatus - Cek status trial\n"
+                "/buyaccess - Info berlangganan\n"
             )
             
             if self.is_admin(user.id):
@@ -4563,6 +4565,201 @@ class TradingBot:
             except (TelegramError, asyncio.CancelledError):
                 pass
 
+    async def trialstatus_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command untuk melihat status trial user."""
+        if update.effective_user is None or update.message is None or update.effective_chat is None:
+            return
+        
+        user = update.effective_user
+        message = update.message
+        chat = update.effective_chat
+        
+        if not await self._check_user_rate_limit(user.id):
+            try:
+                await message.reply_text("⚠️ Anda mengirim terlalu banyak request. Silakan tunggu sebentar.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+            return
+        
+        try:
+            if self.user_manager:
+                self.user_manager.update_user_activity(user.id)
+            
+            if user.id in self.config.AUTHORIZED_USER_IDS:
+                premium_msg = (
+                    "👑 *Status Akun Premium*\n\n"
+                    "✅ *Akun Premium Aktif*\n\n"
+                    "Anda adalah pengguna premium dengan akses penuh ke semua fitur bot.\n\n"
+                    "🎯 Fitur yang tersedia:\n"
+                    "• Sinyal trading real-time tanpa batas\n"
+                    "• Dashboard monitoring 24/7\n"
+                    "• Analisis market regime\n"
+                    "• Auto-optimization\n"
+                    "• Dan semua fitur premium lainnya!"
+                )
+                await message.reply_text(premium_msg, parse_mode='Markdown')
+                logger.info(f"Trialstatus command: user {mask_user_id(user.id)} is premium (AUTHORIZED_USER_IDS)")
+                return
+            
+            if hasattr(self.config, 'ID_USER_PUBLIC') and user.id in self.config.ID_USER_PUBLIC:
+                premium_msg = (
+                    "👑 *Status Akun Premium*\n\n"
+                    "✅ *Akun Premium Aktif*\n\n"
+                    "Anda adalah pengguna premium dengan akses penuh ke semua fitur bot.\n\n"
+                    "🎯 Fitur yang tersedia:\n"
+                    "• Sinyal trading real-time tanpa batas\n"
+                    "• Dashboard monitoring 24/7\n"
+                    "• Analisis market regime\n"
+                    "• Auto-optimization\n"
+                    "• Dan semua fitur premium lainnya!"
+                )
+                await message.reply_text(premium_msg, parse_mode='Markdown')
+                logger.info(f"Trialstatus command: user {mask_user_id(user.id)} is premium (ID_USER_PUBLIC)")
+                return
+            
+            if self.user_manager:
+                trial_info = self.user_manager.get_trial_info_message(user.id)
+                
+                if trial_info:
+                    await message.reply_text(trial_info, parse_mode='Markdown')
+                    logger.info(f"Trialstatus command: showed trial info for user {mask_user_id(user.id)}")
+                else:
+                    no_access_msg = (
+                        "⛔ *Tidak Ada Akses*\n\n"
+                        "Anda belum memiliki akses ke bot ini.\n\n"
+                        "🛒 *Ingin berlangganan?*\n"
+                        "Gunakan /buyaccess untuk informasi berlangganan.\n\n"
+                        "💡 Dapatkan akses penuh ke:\n"
+                        "• Sinyal trading real-time\n"
+                        "• Dashboard monitoring\n"
+                        "• Analisis market regime\n"
+                        "• Dan fitur premium lainnya!"
+                    )
+                    await message.reply_text(no_access_msg, parse_mode='Markdown')
+                    logger.info(f"Trialstatus command: user {mask_user_id(user.id)} has no access")
+            else:
+                error_msg = (
+                    "⚠️ *System Error*\n\n"
+                    "Tidak dapat mengecek status trial. Silakan coba lagi nanti."
+                )
+                await message.reply_text(error_msg, parse_mode='Markdown')
+                logger.warning(f"Trialstatus command: user_manager not available for user {mask_user_id(user.id)}")
+                
+        except asyncio.CancelledError:
+            logger.info(f"Trialstatus command cancelled for user {mask_user_id(user.id)}")
+            raise
+        except RetryAfter as e:
+            logger.warning(f"Rate limit pada trialstatus command: retry setelah {e.retry_after}s")
+        except BadRequest as e:
+            await self._handle_bad_request(chat.id, e, context="trialstatus_command")
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except ChatMigrated as e:
+            await self._handle_chat_migrated(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network/timeout error pada trialstatus command: {e}")
+            try:
+                await message.reply_text("⏳ Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except Conflict as e:
+            await self._handle_conflict_error(e)
+        except InvalidToken as e:
+            await self._handle_unauthorized_error(e)
+        except TelegramError as e:
+            logger.error(f"Telegram error pada trialstatus command: {e}")
+            try:
+                await message.reply_text("❌ Error mengecek status trial.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Data error pada trialstatus command: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await message.reply_text("❌ Error mengecek status trial.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+
+    async def buyaccess_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command untuk informasi berlangganan."""
+        if update.effective_user is None or update.message is None or update.effective_chat is None:
+            return
+        
+        user = update.effective_user
+        message = update.message
+        chat = update.effective_chat
+        
+        if not await self._check_user_rate_limit(user.id):
+            try:
+                await message.reply_text("⚠️ Anda mengirim terlalu banyak request. Silakan tunggu sebentar.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+            return
+        
+        try:
+            if self.user_manager:
+                self.user_manager.update_user_activity(user.id)
+            
+            buyaccess_msg = (
+                "💎 *Informasi Berlangganan*\n\n"
+                "Dapatkan akses penuh ke XAUUSD Trading Bot Pro!\n\n"
+                "📋 *Paket Berlangganan:*\n"
+                "├─ 1 Bulan: Rp 150.000\n"
+                "├─ 3 Bulan: Rp 400.000 _(hemat Rp 50.000)_\n"
+                "└─ 6 Bulan: Rp 750.000 _(hemat Rp 150.000)_\n\n"
+                "🎯 *Fitur Premium:*\n"
+                "• Sinyal trading real-time unlimited\n"
+                "• Dashboard monitoring 24/7\n"
+                "• Analisis market regime\n"
+                "• Auto-optimization strategy\n"
+                "• Support prioritas\n\n"
+                "💳 *Metode Pembayaran:*\n"
+                "• Transfer Bank (BCA, Mandiri, BNI, BRI)\n"
+                "• E-Wallet (GoPay, OVO, DANA, ShopeePay)\n"
+                "• QRIS\n\n"
+                "📱 *Cara Berlangganan:*\n"
+                "Hubungi admin untuk melakukan pembayaran dan aktivasi akun.\n\n"
+                "📞 *Kontak Admin:*\n"
+                "Telegram: @TradingBotAdmin\n\n"
+                "⏰ Aktivasi akun dilakukan maksimal 1x24 jam setelah pembayaran dikonfirmasi."
+            )
+            
+            await message.reply_text(buyaccess_msg, parse_mode='Markdown')
+            logger.info(f"Buyaccess command executed for user {mask_user_id(user.id)}")
+                
+        except asyncio.CancelledError:
+            logger.info(f"Buyaccess command cancelled for user {mask_user_id(user.id)}")
+            raise
+        except RetryAfter as e:
+            logger.warning(f"Rate limit pada buyaccess command: retry setelah {e.retry_after}s")
+        except BadRequest as e:
+            await self._handle_bad_request(chat.id, e, context="buyaccess_command")
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except ChatMigrated as e:
+            await self._handle_chat_migrated(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network/timeout error pada buyaccess command: {e}")
+            try:
+                await message.reply_text("⏳ Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except Conflict as e:
+            await self._handle_conflict_error(e)
+        except InvalidToken as e:
+            await self._handle_unauthorized_error(e)
+        except TelegramError as e:
+            logger.error(f"Telegram error pada buyaccess command: {e}")
+            try:
+                await message.reply_text("❌ Error menampilkan info berlangganan.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Data error pada buyaccess command: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await message.reply_text("❌ Error menampilkan info berlangganan.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+
     async def initialize(self):
         if not self.config.TELEGRAM_BOT_TOKEN:
             logger.error("Telegram bot token not configured!")
@@ -4610,6 +4807,8 @@ class TradingBot:
         self.app.add_handler(CommandHandler("dashboard", self.dashboard_command))
         self.app.add_handler(CommandHandler("stopdashboard", self.stopdashboard_command))
         self.app.add_handler(CommandHandler("refresh", self.refresh_command))
+        self.app.add_handler(CommandHandler("trialstatus", self.trialstatus_command))
+        self.app.add_handler(CommandHandler("buyaccess", self.buyaccess_command))
         
         self.app.add_error_handler(self._handle_telegram_error)
         logger.info("✅ Global error handler registered for Telegram updates")

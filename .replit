@@ -22,12 +22,13 @@ args = "Telegram Trading Bot"
 name = "Telegram Trading Bot"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "webview"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python main.py"
-
-[workflows.workflow.metadata]
-outputType = "console"
+waitForPort = 5000
 
 [[ports]]
 localPort = 5000
@@ -35,4 +36,13 @@ externalPort = 80
 
 [[ports]]
 localPort = 8080
-externalPort = 80
+externalPort = 8080
+
+[[ports]]
+localPort = 40451
+externalPort = 3001
+
+[userenv]
+
+[userenv.shared]
+PORT = "5000"
