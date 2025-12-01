@@ -396,6 +396,88 @@
         }
     }
 
+    function clearPriceLines() {
+        try {
+            if (entryLine && candleSeries) {
+                candleSeries.removePriceLine(entryLine);
+                entryLine = null;
+            }
+            if (slLine && candleSeries) {
+                candleSeries.removePriceLine(slLine);
+                slLine = null;
+            }
+            if (tpLine && candleSeries) {
+                candleSeries.removePriceLine(tpLine);
+                tpLine = null;
+            }
+            if (currentPriceLine && candleSeries) {
+                candleSeries.removePriceLine(currentPriceLine);
+                currentPriceLine = null;
+            }
+        } catch (e) {
+            debugLog('Error clearing price lines: ' + e.message);
+        }
+    }
+    
+    function updatePriceLines(position, currentPrice) {
+        if (!candleSeries) return;
+        
+        clearPriceLines();
+        
+        try {
+            if (currentPrice) {
+                currentPriceLine = candleSeries.createPriceLine({
+                    price: parseFloat(currentPrice),
+                    color: '#888888',
+                    lineWidth: 1,
+                    lineStyle: 2,
+                    axisLabelVisible: true,
+                    title: 'Current'
+                });
+            }
+            
+            if (position && position.entry_price) {
+                var isBuy = (position.direction || 'BUY').toUpperCase() === 'BUY';
+                
+                entryLine = candleSeries.createPriceLine({
+                    price: parseFloat(position.entry_price),
+                    color: '#3b82f6',
+                    lineWidth: 2,
+                    lineStyle: 0,
+                    axisLabelVisible: true,
+                    title: 'Entry'
+                });
+                debugLog('Entry line created at ' + position.entry_price);
+                
+                if (position.stop_loss) {
+                    slLine = candleSeries.createPriceLine({
+                        price: parseFloat(position.stop_loss),
+                        color: '#ef4444',
+                        lineWidth: 2,
+                        lineStyle: 0,
+                        axisLabelVisible: true,
+                        title: 'SL'
+                    });
+                    debugLog('SL line created at ' + position.stop_loss);
+                }
+                
+                if (position.take_profit) {
+                    tpLine = candleSeries.createPriceLine({
+                        price: parseFloat(position.take_profit),
+                        color: '#22c55e',
+                        lineWidth: 2,
+                        lineStyle: 0,
+                        axisLabelVisible: true,
+                        title: 'TP'
+                    });
+                    debugLog('TP line created at ' + position.take_profit);
+                }
+            }
+        } catch (e) {
+            debugLog('Error updating price lines: ' + e.message);
+        }
+    }
+
     function updateCandleChart() {
         debugLog('updateCandleChart called');
         return fetchCandlesData().then(function(data) {
@@ -423,6 +505,8 @@
             chartData.sort(function(a, b) { return a.time - b.time; });
             candleSeries.setData(chartData);
             debugLog('Chart updated with ' + chartData.length + ' candles');
+            
+            updatePriceLines(data.active_position, data.current_price);
         }).catch(function(error) {
             debugLog('Error updating chart: ' + error.message);
         });
