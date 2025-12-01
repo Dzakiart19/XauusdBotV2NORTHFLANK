@@ -9,7 +9,7 @@
     <title>XAUUSD Trading Dashboard</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/static/style.css?v=2">
+    <link rel="stylesheet" href="/static/style.css?v=4">
     <style>
         .debug-console {
             background: #0a0e27;
@@ -78,17 +78,17 @@
         <div class="header">
             <h1>XAUUSD</h1>
             <div class="subtitle">Xauusd Dzeck Trader</div>
-            <div id="user-greeting" class="user-greeting guest">👁️ Guest Mode</div>
+            <div id="user-greeting" class="user-greeting guest">👁️ Mode Tamu</div>
             <div class="status-indicator">
-                <span class="status-dot"></span>
-                <span class="status-text">CONNECTING...</span>
+                <span class="status-dot connecting"></span>
+                <span class="status-text connecting">MENYAMBUNG...</span>
             </div>
         </div>
         
         <div class="card">
             <div class="card-header">
-                <span class="card-title">Harga Real-Time</span>
-                <span class="card-icon">💰</span>
+                <span class="card-title">💰 Harga Real-Time</span>
+                <span class="card-badge live-badge">LIVE</span>
             </div>
             <div class="price-display">
                 <div class="price-main" id="price-main">Memuat...</div>
@@ -107,7 +107,7 @@
                         <div class="price-detail-value" id="price-spread">--</div>
                     </div>
                     <div class="price-detail">
-                        <div class="price-detail-label">24h Range</div>
+                        <div class="price-detail-label">24j Range</div>
                         <div class="price-detail-value" id="price-range">--</div>
                     </div>
                 </div>
@@ -116,8 +116,8 @@
         
         <div class="card">
             <div class="card-header">
-                <span class="card-title">Sinyal Terakhir</span>
-                <span class="card-icon">📡</span>
+                <span class="card-title">📡 Sinyal Terakhir</span>
+                <span class="card-icon">🔔</span>
             </div>
             <div class="signal-display">
                 <div class="signal-badge neutral" id="signal-badge">
@@ -148,8 +148,8 @@
         
         <div class="card position-card">
             <div class="card-header">
-                <span class="card-title">Posisi Aktif</span>
-                <span class="card-icon">📊</span>
+                <span class="card-title">📊 Posisi Aktif</span>
+                <span class="card-badge realtime-badge">REALTIME</span>
             </div>
             <div id="position-container">
                 <div class="no-position">
@@ -160,26 +160,26 @@
         
         <div class="card chart-card">
             <div class="card-header">
-                <span class="card-title">Chart XAUUSD M1</span>
-                <span class="card-icon">📈</span>
+                <span class="card-title">📈 Chart XAUUSD M1</span>
+                <span class="card-badge">AUTO UPDATE</span>
             </div>
             <div id="chart-container"></div>
         </div>
         
         <div class="card">
             <div class="card-header">
-                <span class="card-title">Market Regime</span>
-                <span class="card-icon">🎯</span>
+                <span class="card-title">🎯 Market Regime</span>
+                <span class="card-badge">30 DETIK</span>
             </div>
             <div class="regime-display" id="regime-tags">
-                <span class="regime-tag">Memuat...</span>
+                <span class="regime-tag loading">⏳ Menganalisis...</span>
             </div>
         </div>
         
         <div class="card">
             <div class="card-header">
-                <span class="card-title">Statistik</span>
-                <span class="card-icon">📉</span>
+                <span class="card-title">📉 Statistik</span>
+                <span class="card-icon">📊</span>
             </div>
             <div class="stats-grid">
                 <div class="stat-item">
@@ -203,8 +203,8 @@
         
         <div class="card">
             <div class="card-header">
-                <span class="card-title">Riwayat Trading</span>
-                <span class="card-icon">📜</span>
+                <span class="card-title">📜 Riwayat Trading</span>
+                <span class="card-badge">10 DETIK</span>
             </div>
             <div id="trade-history-container" class="trade-history">
                 <div class="loading-text">Memuat riwayat...</div>
@@ -212,11 +212,16 @@
         </div>
         
         <button class="refresh-btn" id="refresh-btn">
-            🔄 Refresh Data
+            🔄 Refresh Manual
         </button>
         
         <div class="update-time" id="update-time">
             Update terakhir: --
+        </div>
+        
+        <div class="footer-info">
+            <p>Dashboard auto-update setiap 2 detik</p>
+            <p>Sinyal trading unlimited 24/7</p>
         </div>
     </div>
     
@@ -263,7 +268,7 @@
             }
         }
         
-        debugLog('Dashboard HTML loaded - v2.0');
+        debugLog('Dashboard HTML loaded - v4.0 (Real-Time)');
         debugLog('User Agent: ' + navigator.userAgent.substring(0, 50));
         debugLog('LightweightCharts available: ' + (typeof LightweightCharts !== 'undefined'));
         debugLog('Telegram WebApp available: ' + (typeof window.Telegram !== 'undefined'));
@@ -284,7 +289,7 @@
     <script>
         debugLog('Before loading app.js');
     </script>
-    <script src="/static/app.js?v=20251201"></script>
+    <script src="/static/app.js?v=20251201v4"></script>
     <script>
         debugLog('After loading app.js - checking if loaded');
         if (typeof refreshData === 'function') {

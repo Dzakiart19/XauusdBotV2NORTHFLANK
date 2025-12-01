@@ -27,11 +27,13 @@
     }
 
     window.debugLog = debugLog;
-    debugLog('app.js loaded - v3.0 (IIFE)');
+    debugLog('app.js loaded - v4.0 (Real-Time Dashboard)');
 
     var isConnected = false;
     var lastUpdateTime = null;
     var updateInterval = null;
+    var chartUpdateInterval = null;
+    var historyUpdateInterval = null;
     var fetchInProgress = false;
     var chart = null;
     var candleSeries = null;
@@ -43,8 +45,16 @@
     var websocket = null;
     var wsReconnectTimer = null;
     var wsReconnectAttempts = 0;
-    var MAX_WS_RECONNECT_ATTEMPTS = 10;
+    var MAX_WS_RECONNECT_ATTEMPTS = 15;
     var useWebSocket = true;
+    var connectionState = 'disconnected';
+    var lastPriceData = null;
+    var lastDataHash = null;
+    
+    var ACTIVE_DATA_INTERVAL = 2000;
+    var HISTORY_DATA_INTERVAL = 10000;
+    var CHART_UPDATE_INTERVAL = 5000;
+    var WS_RECONNECT_TIMEOUT = 2000;
     
     var currentUserId = null;
     var currentUserFirstName = null;
@@ -69,13 +79,13 @@
         if (!greetingEl) return;
         
         if (currentUserFirstName) {
-            greetingEl.innerHTML = '👤 Welcome, <strong>' + currentUserFirstName + '</strong>';
+            greetingEl.innerHTML = '👤 Selamat datang, <strong>' + currentUserFirstName + '</strong>';
             greetingEl.className = 'user-greeting authenticated';
         } else if (currentUserId) {
             greetingEl.innerHTML = '👤 User ID: <strong>' + currentUserId + '</strong>';
             greetingEl.className = 'user-greeting authenticated';
         } else {
-            greetingEl.innerHTML = '👁️ Guest Mode';
+            greetingEl.innerHTML = '👁️ Mode Tamu';
             greetingEl.className = 'user-greeting guest';
         }
     }
@@ -103,6 +113,41 @@
         debugLog('User ID: ' + (currentUserId || 'anonymous'));
         debugLog('User Name: ' + (currentUserFirstName || 'unknown'));
         updateUserGreeting();
+    }
+
+    function setConnectionState(state) {
+        connectionState = state;
+        var statusDot = document.querySelector('.status-dot');
+        var statusText = document.querySelector('.status-text');
+        
+        if (statusDot && statusText) {
+            statusDot.classList.remove('offline', 'connecting', 'live');
+            
+            switch(state) {
+                case 'connected':
+                case 'live':
+                    statusDot.classList.add('live');
+                    statusText.textContent = 'LIVE';
+                    statusText.className = 'status-text live';
+                    isConnected = true;
+                    break;
+                case 'connecting':
+                case 'reconnecting':
+                    statusDot.classList.add('connecting');
+                    statusText.textContent = state === 'reconnecting' ? 'MENYAMBUNG ULANG...' : 'MENYAMBUNG...';
+                    statusText.className = 'status-text connecting';
+                    break;
+                case 'offline':
+                case 'disconnected':
+                default:
+                    statusDot.classList.add('offline');
+                    statusText.textContent = 'OFFLINE';
+                    statusText.className = 'status-text offline';
+                    isConnected = false;
+                    break;
+            }
+        }
+        debugLog('Connection state: ' + state);
     }
 
     function fetchWithRetry(url, maxRetries) {
@@ -143,7 +188,7 @@
                         reject(error);
                     } else {
                         attempt++;
-                        setTimeout(doFetch, 1000 * attempt);
+                        setTimeout(doFetch, 500 * attempt);
                     }
                 });
             }
@@ -211,18 +256,19 @@
         }
     }
 
+    function formatTimeShort(date) {
+        if (!date) return '--';
+        var hours = String(date.getHours()).padStart(2, '0');
+        var minutes = String(date.getMinutes()).padStart(2, '0');
+        var seconds = String(date.getSeconds()).padStart(2, '0');
+        return hours + ':' + minutes + ':' + seconds;
+    }
+
     function updateConnectionStatus(connected) {
-        isConnected = connected;
-        var statusDot = document.querySelector('.status-dot');
-        var statusText = document.querySelector('.status-text');
-        if (statusDot && statusText) {
-            if (connected) {
-                statusDot.classList.remove('offline');
-                statusText.textContent = 'LIVE';
-            } else {
-                statusDot.classList.add('offline');
-                statusText.textContent = 'OFFLINE';
-            }
+        if (connected) {
+            setConnectionState('live');
+        } else {
+            setConnectionState('offline');
         }
     }
 
@@ -244,7 +290,16 @@
 
         if (priceElement) {
             var midPrice = data.price.mid || ((data.price.bid + data.price.ask) / 2);
+            var oldPrice = parseFloat(priceElement.textContent) || 0;
             priceElement.textContent = formatPrice(midPrice);
+            
+            priceElement.classList.remove('price-up', 'price-down');
+            if (oldPrice > 0 && midPrice > oldPrice) {
+                priceElement.classList.add('price-up');
+            } else if (oldPrice > 0 && midPrice < oldPrice) {
+                priceElement.classList.add('price-down');
+            }
+            
             debugLog('Updated price-main: ' + formatPrice(midPrice));
         }
         if (changeElement) {
@@ -261,6 +316,8 @@
         if (rangeElement && data.price.high && data.price.low) {
             rangeElement.textContent = formatPrice(data.price.low) + ' - ' + formatPrice(data.price.high);
         }
+        
+        lastPriceData = data.price;
     }
 
     function updateSignalCard(data) {
@@ -303,24 +360,61 @@
             var pnl = pos.unrealized_pnl || 0;
             var isProfit = pnl >= 0;
             var pnlPips = pos.current_pnl_pips || 0;
+            var distanceToTp = pos.distance_to_tp_pips || 0;
+            var distanceToSl = pos.distance_to_sl_pips || 0;
+            
+            var tpProgress = 0;
+            var slProgress = 0;
+            var tpAlert = '';
+            var slAlert = '';
+            
+            if (pos.take_profit && pos.entry_price && pos.stop_loss) {
+                var totalTpDistance = Math.abs(pos.take_profit - pos.entry_price) * 10;
+                var totalSlDistance = Math.abs(pos.entry_price - pos.stop_loss) * 10;
+                
+                if (totalTpDistance > 0) {
+                    tpProgress = Math.min(100, Math.max(0, ((totalTpDistance - Math.abs(distanceToTp)) / totalTpDistance) * 100));
+                }
+                if (totalSlDistance > 0) {
+                    slProgress = Math.min(100, Math.max(0, ((totalSlDistance - Math.abs(distanceToSl)) / totalSlDistance) * 100));
+                }
+                
+                if (tpProgress >= 95) {
+                    tpAlert = ' 🎯 HAMPIR TP!';
+                }
+                if (slProgress >= 95) {
+                    slAlert = ' ⚠️ HAMPIR SL!';
+                }
+            }
+
+            var pnlClass = isProfit ? 'profit' : 'loss';
+            var pnlIcon = isProfit ? '📈' : '📉';
 
             container.innerHTML = '<div class="position-header">' +
                 '<span class="position-type ' + direction.toLowerCase() + '">' + (direction === 'BUY' ? '📈' : '📉') + ' ' + direction + '</span>' +
-                '<span class="position-pnl ' + (isProfit ? 'positive' : 'negative') + '">' + formatCurrency(pnl) + '</span>' +
+                '<span class="position-pnl ' + pnlClass + '">' + pnlIcon + ' ' + formatCurrency(pnl) + '</span>' +
                 '</div>' +
                 '<div class="position-details">' +
                 '<div class="signal-info-item"><div class="signal-info-label">Entry</div><div class="signal-info-value">' + formatPrice(pos.entry_price) + '</div></div>' +
-                '<div class="signal-info-item"><div class="signal-info-label">SL</div><div class="signal-info-value" style="color: #ef4444;">' + formatPrice(pos.sl || pos.stop_loss) + '</div></div>' +
-                '<div class="signal-info-item"><div class="signal-info-label">TP</div><div class="signal-info-value" style="color: #ffd700;">' + formatPrice(pos.tp || pos.take_profit) + '</div></div>' +
+                '<div class="signal-info-item"><div class="signal-info-label">SL</div><div class="signal-info-value sl-value">' + formatPrice(pos.sl || pos.stop_loss) + '</div></div>' +
+                '<div class="signal-info-item"><div class="signal-info-label">TP</div><div class="signal-info-value tp-value">' + formatPrice(pos.tp || pos.take_profit) + '</div></div>' +
                 '</div>' +
                 '<div class="position-details" style="margin-top: 8px;">' +
-                '<div class="signal-info-item"><div class="signal-info-label">P/L Pips</div><div class="signal-info-value ' + (pnlPips >= 0 ? 'positive' : 'negative') + '">' + (pnlPips >= 0 ? '+' : '') + pnlPips.toFixed(1) + '</div></div>' +
-                '<div class="signal-info-item"><div class="signal-info-label">To TP</div><div class="signal-info-value" style="color: #ffd700;">' + (pos.distance_to_tp_pips ? pos.distance_to_tp_pips.toFixed(1) : '--') + ' pips</div></div>' +
-                '<div class="signal-info-item"><div class="signal-info-label">To SL</div><div class="signal-info-value" style="color: #ef4444;">' + (pos.distance_to_sl_pips ? pos.distance_to_sl_pips.toFixed(1) : '--') + ' pips</div></div>' +
+                '<div class="signal-info-item"><div class="signal-info-label">P/L Pips</div><div class="signal-info-value ' + pnlClass + '">' + (pnlPips >= 0 ? '+' : '') + pnlPips.toFixed(1) + '</div></div>' +
+                '<div class="signal-info-item"><div class="signal-info-label">Ke TP' + tpAlert + '</div><div class="signal-info-value tp-distance">' + (distanceToTp ? distanceToTp.toFixed(1) : '--') + ' pips</div></div>' +
+                '<div class="signal-info-item"><div class="signal-info-label">Ke SL' + slAlert + '</div><div class="signal-info-value sl-distance">' + (distanceToSl ? distanceToSl.toFixed(1) : '--') + ' pips</div></div>' +
                 '</div>';
-            debugLog('Position updated: ' + direction + ' @ ' + pos.entry_price);
+            
+            if (tpAlert || slAlert) {
+                container.classList.add('position-alert');
+            } else {
+                container.classList.remove('position-alert');
+            }
+            
+            debugLog('Position updated: ' + direction + ' @ ' + pos.entry_price + ' P/L: ' + formatCurrency(pnl));
         } else {
             container.innerHTML = '<div class="no-position"><p>Tidak ada posisi aktif</p></div>';
+            container.classList.remove('position-alert');
             debugLog('No active position');
         }
     }
@@ -407,35 +501,61 @@
 
         if (data && data.regime && (data.regime.trend || data.regime.bias)) {
             var tags = [];
+            
             if (data.regime.trend) {
                 var trendText = String(data.regime.trend).toLowerCase();
-                var trendClass = trendText.indexOf('bullish') > -1 ? 'trend-up' :
-                                trendText.indexOf('bearish') > -1 ? 'trend-down' :
-                                trendText.indexOf('uptrend') > -1 ? 'trend-up' :
-                                trendText.indexOf('downtrend') > -1 ? 'trend-down' : '';
-                tags.push('<span class="regime-tag ' + trendClass + '">' + data.regime.trend + '</span>');
+                var trendClass = '';
+                var trendIcon = '📊';
+                
+                if (trendText.indexOf('bullish') > -1 || trendText.indexOf('uptrend') > -1 || trendText.indexOf('strong_trend') > -1) {
+                    trendClass = 'trend-up';
+                    trendIcon = '📈';
+                } else if (trendText.indexOf('bearish') > -1 || trendText.indexOf('downtrend') > -1) {
+                    trendClass = 'trend-down';
+                    trendIcon = '📉';
+                } else if (trendText.indexOf('range') > -1 || trendText.indexOf('sideways') > -1 || trendText.indexOf('consolidation') > -1) {
+                    trendClass = 'range';
+                    trendIcon = '↔️';
+                } else if (trendText.indexOf('uncertain') > -1 || trendText.indexOf('weak') > -1) {
+                    trendClass = 'uncertain';
+                    trendIcon = '❓';
+                }
+                
+                tags.push('<span class="regime-tag ' + trendClass + '">' + trendIcon + ' ' + data.regime.trend + '</span>');
                 debugLog('Regime trend: ' + data.regime.trend);
             }
+            
             if (data.regime.volatility) {
-                var volClass = String(data.regime.volatility).toLowerCase().indexOf('high') > -1 ? 'volatile' : '';
-                tags.push('<span class="regime-tag ' + volClass + '">' + data.regime.volatility + '</span>');
+                var volText = String(data.regime.volatility).toLowerCase();
+                var volClass = volText.indexOf('high') > -1 ? 'volatile' : volText.indexOf('low') > -1 ? 'calm' : '';
+                var volIcon = volText.indexOf('high') > -1 ? '🔥' : volText.indexOf('low') > -1 ? '😴' : '📊';
+                tags.push('<span class="regime-tag ' + volClass + '">' + volIcon + ' ' + data.regime.volatility + '</span>');
                 debugLog('Regime volatility: ' + data.regime.volatility);
             }
+            
             if (data.regime.bias) {
-                var biasClass = data.regime.bias === 'BUY' ? 'trend-up' : data.regime.bias === 'SELL' ? 'trend-down' : '';
-                tags.push('<span class="regime-tag ' + biasClass + '">Bias: ' + data.regime.bias + '</span>');
+                var biasClass = data.regime.bias === 'BUY' ? 'trend-up' : data.regime.bias === 'SELL' ? 'trend-down' : 'neutral';
+                var biasIcon = data.regime.bias === 'BUY' ? '🟢' : data.regime.bias === 'SELL' ? '🔴' : '⚪';
+                tags.push('<span class="regime-tag ' + biasClass + '">' + biasIcon + ' Bias: ' + data.regime.bias + '</span>');
                 debugLog('Regime bias: ' + data.regime.bias);
             }
+            
             if (data.regime.confidence !== undefined) {
                 var confPercent = (parseFloat(data.regime.confidence) * 100).toFixed(0);
-                tags.push('<span class="regime-tag">Confidence: ' + confPercent + '%</span>');
+                var confClass = confPercent >= 70 ? 'high-conf' : confPercent >= 40 ? 'med-conf' : 'low-conf';
+                tags.push('<span class="regime-tag ' + confClass + '">🎯 Kepercayaan: ' + confPercent + '%</span>');
                 debugLog('Regime confidence: ' + confPercent + '%');
             }
-            container.innerHTML = tags.length > 0 ? tags.join('') : '<span class="regime-tag">⏳ Analyzing...</span>';
+            
+            if (data.regime.session) {
+                tags.push('<span class="regime-tag session">🕐 ' + data.regime.session + '</span>');
+            }
+            
+            container.innerHTML = tags.length > 0 ? tags.join('') : '<span class="regime-tag loading">⏳ Menganalisis...</span>';
             debugLog('Regime tags rendered: ' + tags.length);
         } else {
             debugLog('No regime data available');
-            container.innerHTML = '<span class="regime-tag">⏳ Analyzing...</span>';
+            container.innerHTML = '<span class="regime-tag loading">⏳ Menganalisis...</span>';
         }
     }
 
@@ -443,7 +563,7 @@
         var element = document.getElementById('update-time');
         if (element) {
             lastUpdateTime = new Date();
-            element.textContent = 'Update terakhir: ' + formatTime(lastUpdateTime);
+            element.textContent = 'Update terakhir: ' + formatTimeShort(lastUpdateTime) + ' WIB';
         }
     }
 
@@ -552,7 +672,7 @@
                     lineWidth: 1,
                     lineStyle: 2,
                     axisLabelVisible: true,
-                    title: 'Current'
+                    title: 'Sekarang'
                 });
             }
             
@@ -654,6 +774,21 @@
         });
     }
 
+    function calculateDataHash(data) {
+        if (!data) return null;
+        try {
+            var hashStr = JSON.stringify({
+                price: data.price ? data.price.mid : null,
+                signal: data.last_signal ? data.last_signal.direction : null,
+                position: data.active_position ? data.active_position.unrealized_pnl : null,
+                regime: data.regime ? data.regime.trend : null
+            });
+            return hashStr;
+        } catch (e) {
+            return null;
+        }
+    }
+
     function refreshData() {
         if (fetchInProgress) {
             debugLog('Refresh skipped - fetch in progress');
@@ -663,15 +798,17 @@
         fetchInProgress = true;
         debugLog('refreshData() started');
 
-        var refreshBtn = document.getElementById('refresh-btn');
-        if (refreshBtn) refreshBtn.disabled = true;
-
         return fetchDashboardData().then(function(data) {
             if (!data) throw new Error('No data returned from API');
 
-            debugLog('Data received, updating UI...');
+            var newHash = calculateDataHash(data);
+            var dataChanged = newHash !== lastDataHash;
+            lastDataHash = newHash;
+
+            debugLog('Data received, updating UI... (changed: ' + dataChanged + ')');
             hideLoading();
-            updateConnectionStatus(true);
+            setConnectionState('live');
+            
             updatePriceCard(data);
             updateSignalCard(data);
             updatePositionCard(data);
@@ -681,17 +818,13 @@
 
             debugLog('UI updates complete');
             
-            fetchTradeHistory();
-            
-            return updateCandleChart();
         }).then(function() {
             debugLog('refreshData() completed successfully');
         }).catch(function(error) {
             debugLog('ERROR in refreshData: ' + error.message);
-            updateConnectionStatus(false);
+            setConnectionState('offline');
         }).finally(function() {
             fetchInProgress = false;
-            if (refreshBtn) refreshBtn.disabled = false;
         });
     }
 
@@ -708,31 +841,29 @@
         try {
             var wsUrl = getWebSocketUrl();
             debugLog('Connecting to WebSocket: ' + wsUrl);
+            setConnectionState('connecting');
             
             websocket = new WebSocket(wsUrl);
             
             websocket.onopen = function() {
                 debugLog('WebSocket connected');
                 wsReconnectAttempts = 0;
-                updateConnectionStatus(true);
+                setConnectionState('live');
                 hideLoading();
-                
-                if (updateInterval) {
-                    clearInterval(updateInterval);
-                    updateInterval = null;
-                    debugLog('Polling stopped - using WebSocket');
-                }
             };
             
             websocket.onmessage = function(event) {
                 try {
                     var data = JSON.parse(event.data);
+                    
                     updatePriceCard(data);
                     updateSignalCard(data);
                     updatePositionCard(data);
                     updateStatsCard(data);
                     updateRegimeCard(data);
                     updateUpdateTime();
+                    
+                    setConnectionState('live');
                 } catch (e) {
                     debugLog('WebSocket message parse error: ' + e.message);
                 }
@@ -744,8 +875,9 @@
                 
                 if (wsReconnectAttempts < MAX_WS_RECONNECT_ATTEMPTS) {
                     wsReconnectAttempts++;
-                    var delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 30000);
+                    var delay = Math.min(WS_RECONNECT_TIMEOUT * Math.pow(1.5, wsReconnectAttempts), 30000);
                     debugLog('WebSocket reconnecting in ' + delay + 'ms (attempt ' + wsReconnectAttempts + ')');
+                    setConnectionState('reconnecting');
                     wsReconnectTimer = setTimeout(connectWebSocket, delay);
                 } else {
                     debugLog('WebSocket max reconnect attempts reached, falling back to polling');
@@ -756,7 +888,7 @@
             
             websocket.onerror = function(error) {
                 debugLog('WebSocket error');
-                updateConnectionStatus(false);
+                setConnectionState('offline');
             };
             
         } catch (e) {
@@ -778,11 +910,30 @@
     }
     
     function startPolling() {
-        debugLog('Starting polling fallback');
+        debugLog('Starting polling with auto-refresh');
+        
         if (updateInterval) clearInterval(updateInterval);
+        if (chartUpdateInterval) clearInterval(chartUpdateInterval);
+        if (historyUpdateInterval) clearInterval(historyUpdateInterval);
+        
         refreshData();
-        updateInterval = setInterval(refreshData, 3000);
-        debugLog('Polling started (interval: 3s)');
+        updateCandleChart();
+        fetchTradeHistory();
+        
+        updateInterval = setInterval(function() {
+            refreshData();
+        }, ACTIVE_DATA_INTERVAL);
+        debugLog('Active data polling started (interval: ' + ACTIVE_DATA_INTERVAL + 'ms)');
+        
+        chartUpdateInterval = setInterval(function() {
+            updateCandleChart();
+        }, CHART_UPDATE_INTERVAL);
+        debugLog('Chart update started (interval: ' + CHART_UPDATE_INTERVAL + 'ms)');
+        
+        historyUpdateInterval = setInterval(function() {
+            fetchTradeHistory();
+        }, HISTORY_DATA_INTERVAL);
+        debugLog('History update started (interval: ' + HISTORY_DATA_INTERVAL + 'ms)');
     }
 
     function startAutoRefresh() {
@@ -790,11 +941,24 @@
         
         if (useWebSocket && 'WebSocket' in window) {
             connectWebSocket();
+            
             refreshData();
             updateCandleChart();
+            fetchTradeHistory();
+            
+            if (!chartUpdateInterval) {
+                chartUpdateInterval = setInterval(updateCandleChart, CHART_UPDATE_INTERVAL);
+            }
+            if (!historyUpdateInterval) {
+                historyUpdateInterval = setInterval(fetchTradeHistory, HISTORY_DATA_INTERVAL);
+            }
             
             if (!updateInterval) {
-                updateInterval = setInterval(updateCandleChart, 5000);
+                updateInterval = setInterval(function() {
+                    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                        refreshData();
+                    }
+                }, ACTIVE_DATA_INTERVAL);
             }
         } else {
             startPolling();
@@ -804,9 +968,18 @@
     function stopAutoRefresh() {
         debugLog('stopAutoRefresh called');
         disconnectWebSocket();
+        
         if (updateInterval) {
             clearInterval(updateInterval);
             updateInterval = null;
+        }
+        if (chartUpdateInterval) {
+            clearInterval(chartUpdateInterval);
+            chartUpdateInterval = null;
+        }
+        if (historyUpdateInterval) {
+            clearInterval(historyUpdateInterval);
+            historyUpdateInterval = null;
         }
     }
 
@@ -821,17 +994,20 @@
         if (refreshBtn) {
             refreshBtn.addEventListener('click', function() {
                 debugLog('Manual refresh triggered');
-                refreshData();
+                refreshData().then(function() {
+                    updateCandleChart();
+                    fetchTradeHistory();
+                });
             });
         }
 
         document.addEventListener('visibilitychange', function() {
             if (document.hidden) {
-                debugLog('Page hidden - stopping auto-refresh');
-                stopAutoRefresh();
+                debugLog('Page hidden - reducing update frequency');
             } else {
-                debugLog('Page visible - starting auto-refresh');
-                startAutoRefresh();
+                debugLog('Page visible - resuming full updates');
+                refreshData();
+                updateCandleChart();
             }
         });
     }
