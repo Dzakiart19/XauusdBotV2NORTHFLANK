@@ -8,6 +8,12 @@ from dataclasses import dataclass, field
 
 logger = setup_logger('Strategy')
 
+BUY_COOLDOWN_SECONDS = 60
+SELL_COOLDOWN_SECONDS = 60
+PATTERN_COOLDOWN_SECONDS = 45
+GLOBAL_MIN_COOLDOWN_SECONDS = 10
+OPPOSITE_SIGNAL_COOLDOWN_SECONDS = 45
+
 class StrategyError(Exception):
     """Base exception for strategy errors"""
     pass
@@ -407,6 +413,10 @@ class TradingStrategy:
         self.last_signal_price: Optional[float] = None
         self.last_signal_time: Optional[datetime] = None
         
+        self.last_buy_time: Optional[datetime] = None
+        self.last_sell_time: Optional[datetime] = None
+        self.last_pattern_cooldowns: Dict[str, datetime] = {}
+        
         self._regime_detector = None
         self._current_regime = None
     
@@ -474,18 +484,23 @@ class TradingStrategy:
     
     def should_generate_signal(self, candle_timestamp: Optional[datetime], 
                                 current_price: float, 
-                                signal_type: str) -> Tuple[bool, str]:
-        """Cek apakah boleh generate signal baru berdasarkan candle close tracking
+                                signal_type: str,
+                                pattern_type: Optional[str] = None) -> Tuple[bool, str]:
+        """Cek apakah boleh generate signal baru berdasarkan per-signal-type cooldown
         
-        Kriteria:
-        1. Candle baru (timestamp berbeda dari last_signal_candle_timestamp)
-        2. Minimum price movement dari last_signal_price
-        3. Cooldown dari last_signal_time
+        Smart Signal Cooldown System:
+        1. Global minimum cooldown (10 sec between any signals)
+        2. Per-signal-type cooldown (BUY: 60s, SELL: 60s)
+        3. Opposite signal reduced cooldown (45s instead of 60s)
+        4. Per-pattern cooldown (45s per pattern type)
+        5. Candle timestamp check (no duplicate signals per candle)
+        6. Minimum price movement check
         
         Args:
             candle_timestamp: Timestamp candle saat ini
             current_price: Harga close saat ini
             signal_type: Tipe signal ('BUY' atau 'SELL')
+            pattern_type: Pattern yang digunakan (inside_bar, pin_bar, etc.)
             
         Returns:
             Tuple[bool, str]: (can_generate, reason)
@@ -498,12 +513,54 @@ class TradingStrategy:
                 logger.info(reason)
                 return False, reason
         
-        cooldown_seconds = getattr(self.config, 'SIGNAL_COOLDOWN_SECONDS', 0)
-        if cooldown_seconds > 0 and self.last_signal_time is not None:
+        if self.last_signal_time is not None:
             time_since_last = (current_time - self.last_signal_time).total_seconds()
-            if time_since_last < cooldown_seconds:
-                remaining = cooldown_seconds - time_since_last
-                reason = f"🚫 Signal di-skip: Cooldown aktif (sisa {remaining:.0f} detik dari {cooldown_seconds}s)"
+            if time_since_last < GLOBAL_MIN_COOLDOWN_SECONDS:
+                remaining = GLOBAL_MIN_COOLDOWN_SECONDS - time_since_last
+                reason = f"🚫 Signal di-skip: Global minimum cooldown ({remaining:.0f}s sisa dari {GLOBAL_MIN_COOLDOWN_SECONDS}s)"
+                logger.info(reason)
+                return False, reason
+        
+        if signal_type == 'BUY':
+            if self.last_buy_time is not None:
+                time_since_last_buy = (current_time - self.last_buy_time).total_seconds()
+                if time_since_last_buy < BUY_COOLDOWN_SECONDS:
+                    remaining = BUY_COOLDOWN_SECONDS - time_since_last_buy
+                    reason = f"🚫 Signal di-skip: BUY cooldown aktif (sisa {remaining:.0f}s dari {BUY_COOLDOWN_SECONDS}s)"
+                    logger.info(reason)
+                    return False, reason
+            
+            if self.last_signal_type == 'SELL' and self.last_sell_time is not None:
+                time_since_last_sell = (current_time - self.last_sell_time).total_seconds()
+                if time_since_last_sell < OPPOSITE_SIGNAL_COOLDOWN_SECONDS:
+                    remaining = OPPOSITE_SIGNAL_COOLDOWN_SECONDS - time_since_last_sell
+                    reason = f"🚫 Signal di-skip: Opposite signal cooldown (BUY after SELL, sisa {remaining:.0f}s dari {OPPOSITE_SIGNAL_COOLDOWN_SECONDS}s)"
+                    logger.info(reason)
+                    return False, reason
+        
+        elif signal_type == 'SELL':
+            if self.last_sell_time is not None:
+                time_since_last_sell = (current_time - self.last_sell_time).total_seconds()
+                if time_since_last_sell < SELL_COOLDOWN_SECONDS:
+                    remaining = SELL_COOLDOWN_SECONDS - time_since_last_sell
+                    reason = f"🚫 Signal di-skip: SELL cooldown aktif (sisa {remaining:.0f}s dari {SELL_COOLDOWN_SECONDS}s)"
+                    logger.info(reason)
+                    return False, reason
+            
+            if self.last_signal_type == 'BUY' and self.last_buy_time is not None:
+                time_since_last_buy = (current_time - self.last_buy_time).total_seconds()
+                if time_since_last_buy < OPPOSITE_SIGNAL_COOLDOWN_SECONDS:
+                    remaining = OPPOSITE_SIGNAL_COOLDOWN_SECONDS - time_since_last_buy
+                    reason = f"🚫 Signal di-skip: Opposite signal cooldown (SELL after BUY, sisa {remaining:.0f}s dari {OPPOSITE_SIGNAL_COOLDOWN_SECONDS}s)"
+                    logger.info(reason)
+                    return False, reason
+        
+        if pattern_type and pattern_type in self.last_pattern_cooldowns:
+            last_pattern_time = self.last_pattern_cooldowns[pattern_type]
+            time_since_pattern = (current_time - last_pattern_time).total_seconds()
+            if time_since_pattern < PATTERN_COOLDOWN_SECONDS:
+                remaining = PATTERN_COOLDOWN_SECONDS - time_since_pattern
+                reason = f"🚫 Signal di-skip: Pattern {pattern_type} cooldown (sisa {remaining:.0f}s dari {PATTERN_COOLDOWN_SECONDS}s)"
                 logger.info(reason)
                 return False, reason
         
@@ -515,38 +572,47 @@ class TradingStrategy:
                 logger.info(reason)
                 return False, reason
         
-        tick_cooldown = getattr(self.config, 'TICK_COOLDOWN_FOR_SAME_SIGNAL', 60)
-        if (self.last_signal_type == signal_type and 
-            self.last_signal_time is not None and 
-            tick_cooldown > 0):
-            time_since_last = (current_time - self.last_signal_time).total_seconds()
-            if time_since_last < tick_cooldown:
-                remaining = tick_cooldown - time_since_last
-                reason = f"🚫 Signal di-skip: Signal {signal_type} yang sama dalam cooldown (sisa {remaining:.0f}s dari {tick_cooldown}s)"
-                logger.info(reason)
-                return False, reason
-        
         candle_info = f"candle {candle_timestamp}" if candle_timestamp else "realtime"
-        reason = f"✅ Signal diizinkan: Candle baru ({candle_info}), harga berbeda, cooldown clear"
+        pattern_info = f", pattern={pattern_type}" if pattern_type else ""
+        reason = f"✅ Signal diizinkan: Candle baru ({candle_info}){pattern_info}, per-type cooldown clear"
         logger.debug(reason)
         return True, reason
     
     def _update_signal_tracking(self, candle_timestamp: Optional[datetime],
                                   signal_type: str, 
-                                  entry_price: float):
+                                  entry_price: float,
+                                  pattern_type: Optional[str] = None):
         """Update tracking setelah signal berhasil di-generate
+        
+        Smart Signal Cooldown Tracking:
+        - Tracks general signal info (candle, type, price, time)
+        - Tracks per-signal-type times (last_buy_time, last_sell_time)
+        - Tracks per-pattern cooldowns
         
         Args:
             candle_timestamp: Timestamp candle saat signal di-generate
             signal_type: Tipe signal ('BUY' atau 'SELL')
             entry_price: Harga entry signal
+            pattern_type: Pattern yang digunakan (inside_bar, pin_bar, etc.)
         """
+        current_time = datetime.now(pytz.UTC)
+        
         self.last_signal_candle_timestamp = candle_timestamp
         self.last_signal_type = signal_type
         self.last_signal_price = entry_price
-        self.last_signal_time = datetime.now(pytz.UTC)
+        self.last_signal_time = current_time
         
-        logger.info(f"📝 Signal tracking updated: {signal_type} @ ${entry_price:.2f} | Candle: {candle_timestamp}")
+        if signal_type == 'BUY':
+            self.last_buy_time = current_time
+        elif signal_type == 'SELL':
+            self.last_sell_time = current_time
+        
+        if pattern_type:
+            self.last_pattern_cooldowns[pattern_type] = current_time
+            logger.debug(f"📊 Pattern cooldown set: {pattern_type} @ {current_time}")
+        
+        pattern_info = f", pattern={pattern_type}" if pattern_type else ""
+        logger.info(f"📝 Signal tracking updated: {signal_type} @ ${entry_price:.2f} | Candle: {candle_timestamp}{pattern_info}")
     
     def calculate_lot_with_volatility_zones(self, indicators: Dict, base_lot_size: float) -> Tuple[float, str, float]:
         """Calculate dynamic lot size berdasarkan ATR volatility zones.

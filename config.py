@@ -546,6 +546,9 @@ class Config:
     DRY_RUN = os.getenv('DRY_RUN', 'false').lower() == 'true'
     
     HEALTH_CHECK_PORT = _get_int_env('PORT', '8080')
+    HEALTH_CHECK_INTERVAL = _get_int_env('HEALTH_CHECK_INTERVAL', '60')
+    HEALTH_CHECK_TIMEOUT = _get_int_env('HEALTH_CHECK_TIMEOUT', '30')
+    HEALTH_CHECK_LONG_TIMEOUT = _get_int_env('HEALTH_CHECK_LONG_TIMEOUT', '35')
     
     TRADING_HOURS_START = _get_int_env('TRADING_HOURS_START', '0')
     TRADING_HOURS_END = _get_int_env('TRADING_HOURS_END', '23')

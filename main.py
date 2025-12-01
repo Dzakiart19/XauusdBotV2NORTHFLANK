@@ -73,6 +73,8 @@ class TaskInfo:
         return self.task.cancelled()
     
     def can_restart(self) -> bool:
+        if self.max_restarts < 0:
+            return True
         return self.restart_count < self.max_restarts
 
 
@@ -321,7 +323,8 @@ class TradingBotOrchestrator:
         task: asyncio.Task,
         priority: TaskPriority = TaskPriority.NORMAL,
         critical: bool = False,
-        cancel_timeout: float = 5.0
+        cancel_timeout: float = 5.0,
+        max_restarts: int = 3
     ) -> TaskInfo:
         async with self._task_registry_lock:
             if name in self._task_registry:
@@ -335,10 +338,11 @@ class TradingBotOrchestrator:
                 task=task,
                 priority=priority,
                 critical=critical,
-                cancel_timeout=cancel_timeout
+                cancel_timeout=cancel_timeout,
+                max_restarts=max_restarts
             )
             self._task_registry[name] = task_info
-            logger.debug(f"Task registered: {name} (priority={priority.name}, critical={critical})")
+            logger.debug(f"Task registered: {name} (priority={priority.name}, critical={critical}, max_restarts={max_restarts})")
             return task_info
     
     async def unregister_task(self, name: str, cancel: bool = False) -> bool:
@@ -1460,18 +1464,122 @@ class TradingBotOrchestrator:
         except Exception as e:
             logger.error(f"Failed to start health server: {e}")
     
+    async def _quick_check_market_data(self) -> dict:
+        """Quick check for market data WebSocket status (2 sec timeout)"""
+        try:
+            async with asyncio.timeout(2):
+                if not self.market_data:
+                    return {'status': 'ok', 'message': 'No market data client'}
+                return {
+                    'status': 'ok',
+                    'connected': self.market_data.is_connected(),
+                    'simulator': self.market_data.use_simulator,
+                    'reconnects': self.market_data.reconnect_attempts
+                }
+        except asyncio.TimeoutError:
+            return {'status': 'timeout', 'message': 'Market data check timed out'}
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+    
+    async def _quick_check_database(self) -> dict:
+        """Quick check for database connection pool (3 sec timeout)"""
+        try:
+            async with asyncio.timeout(3):
+                if not self.db_manager:
+                    return {'status': 'ok', 'message': 'No database manager'}
+                if hasattr(self.db_manager, 'engine') and self.db_manager.engine:
+                    def sync_check():
+                        with self.db_manager.engine.connect() as conn:
+                            conn.execute(text("SELECT 1"))
+                        return True
+                    
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, sync_check)
+                    return {'status': 'ok', 'message': 'Database connection healthy'}
+                return {'status': 'ok', 'message': 'Using SQLite'}
+        except asyncio.TimeoutError:
+            return {'status': 'timeout', 'message': 'Database check timed out'}
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+    
+    async def _quick_check_telegram(self) -> dict:
+        """Quick check for Telegram bot alive (2 sec timeout)"""
+        try:
+            async with asyncio.timeout(2):
+                if not self.telegram_bot:
+                    return {'status': 'ok', 'message': 'No telegram bot'}
+                if hasattr(self.telegram_bot, 'app') and self.telegram_bot.app:
+                    return {'status': 'ok', 'message': 'Telegram bot running'}
+                return {'status': 'warning', 'message': 'Telegram bot not initialized'}
+        except asyncio.TimeoutError:
+            return {'status': 'timeout', 'message': 'Telegram check timed out'}
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+    
+    async def _quick_check_memory(self) -> dict:
+        """Quick check for memory/CPU usage (1 sec timeout)"""
+        try:
+            async with asyncio.timeout(1):
+                mem_status = self.config.check_memory_status()
+                return {'status': 'ok', **mem_status}
+        except asyncio.TimeoutError:
+            return {'status': 'timeout', 'message': 'Memory check timed out'}
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+    
+    async def _run_all_quick_checks(self) -> dict:
+        """Run all quick health checks concurrently with total timeout"""
+        try:
+            async with asyncio.timeout(self.config.HEALTH_CHECK_LONG_TIMEOUT):
+                results = await asyncio.gather(
+                    self._quick_check_market_data(),
+                    self._quick_check_database(),
+                    self._quick_check_telegram(),
+                    self._quick_check_memory(),
+                    return_exceptions=True
+                )
+                
+                check_names = ['market_data', 'database', 'telegram', 'memory']
+                health_report = {}
+                
+                for name, result in zip(check_names, results):
+                    if isinstance(result, Exception):
+                        health_report[name] = {'status': 'error', 'message': str(result)}
+                        logger.warning(f"⚠️ Health check {name} failed: {result}")
+                    elif isinstance(result, dict):
+                        if result.get('status') != 'ok':
+                            health_report[name] = result
+                            logger.warning(f"⚠️ Health check {name}: {result.get('message', 'Unknown issue')}")
+                        else:
+                            health_report[name] = result
+                    else:
+                        health_report[name] = {'status': 'error', 'message': f'Unexpected result type: {type(result)}'}
+                
+                return health_report
+        except asyncio.TimeoutError:
+            logger.warning(f"⚠️ Quick health checks exceeded total timeout ({self.config.HEALTH_CHECK_LONG_TIMEOUT}s)")
+            return {'status': 'timeout', 'message': 'Quick checks timed out'}
+        except Exception as e:
+            logger.warning(f"⚠️ Error running quick health checks: {e}")
+            return {'status': 'error', 'message': str(e)}
+    
     async def _health_check_long_running(self):
-        """Monitor for stuck/long-running tasks with automatic restart capability"""
+        """Monitor for stuck/long-running tasks with automatic restart capability
+        
+        Optimized for quick checks with short timeouts to never block main loop.
+        Uses config-based intervals and runs checks concurrently.
+        """
         LONG_RUNNING_THRESHOLD_NORMAL = 300
         LONG_RUNNING_THRESHOLD_CRITICAL = 600
         WARNING_THRESHOLD = 120
-        CHECK_INTERVAL = 60
         
         while self.running and not self._shutdown_in_progress:
             try:
-                await asyncio.sleep(CHECK_INTERVAL)
+                await asyncio.sleep(self.config.HEALTH_CHECK_INTERVAL)
                 
                 now = datetime.now()
+                
+                await self._run_all_quick_checks()
                 
                 await self._check_market_data_health()
                 
@@ -1499,18 +1607,20 @@ class TradingBotOrchestrator:
                         threshold = LONG_RUNNING_THRESHOLD_CRITICAL if task_info.critical else LONG_RUNNING_THRESHOLD_NORMAL
                         
                         if task_age > WARNING_THRESHOLD and task_age <= threshold:
+                            max_restarts_str = "∞" if task_info.max_restarts < 0 else str(task_info.max_restarts)
                             logger.warning(
                                 f"🔥 LONG TASK: {task_name} running for {task_age:.0f}s "
                                 f"(priority={task_info.priority.name}, critical={task_info.critical}, "
-                                f"restarts={task_info.restart_count}/{task_info.max_restarts})"
+                                f"restarts={task_info.restart_count}/{max_restarts_str})"
                             )
                         
                         if task_age > threshold:
                             failure_count = self._task_failure_counts.get(task_name, 0)
+                            max_restarts_str = "∞" if task_info.max_restarts < 0 else str(task_info.max_restarts)
                             logger.error(
                                 f"💀 STUCK TASK: {task_name} exceeded {threshold}s threshold! "
                                 f"(age={task_age:.0f}s, critical={task_info.critical}, "
-                                f"failures={failure_count}, restarts={task_info.restart_count}/{task_info.max_restarts})"
+                                f"failures={failure_count}, restarts={task_info.restart_count}/{max_restarts_str})"
                             )
                             
                             if not task_info.critical:
@@ -1658,7 +1768,8 @@ class TradingBotOrchestrator:
                 task=health_check_task,
                 priority=TaskPriority.LOW,
                 critical=False,
-                cancel_timeout=5.0
+                cancel_timeout=3.0,
+                max_restarts=-1
             )
             
             logger.info("Loading candles from database...")

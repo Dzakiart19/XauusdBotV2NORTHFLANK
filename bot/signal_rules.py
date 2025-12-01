@@ -583,6 +583,112 @@ class AggressiveSignalRules:
         else:
             return 1.0
     
+    def _get_volatility_zone(self, atr_ratio: float) -> str:
+        """
+        Determine volatility zone from ATR ratio.
+        
+        Args:
+            atr_ratio: Current ATR / Average ATR ratio
+        
+        Returns:
+            Volatility zone: 'EXTREME_LOW', 'LOW', 'NORMAL', 'HIGH', 'EXTREME_HIGH'
+        """
+        if atr_ratio < 0.4:
+            return 'EXTREME_LOW'
+        elif atr_ratio < 0.7:
+            return 'LOW'
+        elif atr_ratio <= 1.3:
+            return 'NORMAL'
+        elif atr_ratio <= 2.0:
+            return 'HIGH'
+        else:
+            return 'EXTREME_HIGH'
+    
+    def _get_session_strength(self) -> str:
+        """
+        Determine session strength based on time of day.
+        Uses existing LOW_LIQUIDITY_HOURS and HIGH_LIQUIDITY_HOURS.
+        
+        Returns:
+            Session strength: 'STRONG', 'NORMAL', 'WEAK'
+        """
+        try:
+            current_hour = datetime.utcnow().hour
+            
+            if current_hour in self.HIGH_LIQUIDITY_HOURS:
+                return 'STRONG'
+            elif current_hour in self.LOW_LIQUIDITY_HOURS:
+                return 'WEAK'
+            else:
+                return 'NORMAL'
+        except Exception:
+            return 'NORMAL'
+    
+    def get_adaptive_volume_threshold(self, volatility_zone: str, session_strength: str, regime_type: str) -> float:
+        """
+        Get adaptive volume threshold based on volatility zone, session strength, and regime.
+        
+        Lower thresholds during quiet markets allow more signals.
+        Higher thresholds during volatile markets filter noise.
+        
+        Args:
+            volatility_zone: 'EXTREME_LOW', 'LOW', 'NORMAL', 'HIGH', 'EXTREME_HIGH'
+            session_strength: 'STRONG', 'NORMAL', 'WEAK'
+            regime_type: Current market regime type
+        
+        Returns:
+            Adaptive volume threshold (e.g., 0.4 means volume_ratio > 0.4 to pass)
+        """
+        volatility_thresholds = {
+            'EXTREME_LOW': 0.4,
+            'LOW': 0.5,
+            'NORMAL': 0.7,
+            'HIGH': 0.6,
+            'EXTREME_HIGH': 0.6
+        }
+        
+        threshold = volatility_thresholds.get(volatility_zone, 0.7)
+        
+        if session_strength == 'WEAK':
+            threshold -= 0.1
+        
+        threshold = max(0.2, threshold)
+        
+        logger.debug(f"Adaptive volume threshold: {threshold:.2f} (volatility={volatility_zone}, session={session_strength}, regime={regime_type})")
+        
+        return threshold
+    
+    def get_dynamic_adx_threshold(self, session_strength: str, volatility_zone: str) -> float:
+        """
+        Get dynamic ADX threshold based on session strength and volatility zone.
+        
+        This allows more signals during Tokyo session and quiet periods by lowering
+        the ADX threshold, while requiring stronger trends during volatile periods.
+        
+        Args:
+            session_strength: 'STRONG', 'NORMAL', 'WEAK'
+            volatility_zone: 'EXTREME_LOW', 'LOW', 'NORMAL', 'HIGH', 'EXTREME_HIGH'
+        
+        Returns:
+            Dynamic ADX threshold (minimum 8)
+        """
+        base_threshold = 15.0
+        
+        if session_strength == 'WEAK':
+            base_threshold = 12.0
+        
+        if volatility_zone == 'EXTREME_LOW':
+            base_threshold = min(base_threshold, 10.0)
+        elif volatility_zone == 'EXTREME_HIGH':
+            base_threshold = max(base_threshold, 20.0)
+        
+        hard_min = 8.0
+        final_threshold = max(hard_min, base_threshold)
+        
+        logger.info(f"Dynamic ADX threshold: {final_threshold:.1f} (session={session_strength}, volatility={volatility_zone}, base={base_threshold:.1f})")
+        
+        return final_threshold
+    
     def _calculate_final_confidence(self, 
                                      weighted_score: float,
                                      base_confidence: float,
@@ -845,11 +951,20 @@ class AggressiveSignalRules:
                     has_rsi_sell = True
             
             volume_ratio = volume / volume_avg if volume_avg > 0 else 1.0
-            if volume_ratio > 1.1:
+            
+            volatility_zone = self._get_volatility_zone(atr_ratio)
+            session_strength = self._get_session_strength()
+            adaptive_volume_threshold = self.get_adaptive_volume_threshold(
+                volatility_zone, session_strength, result.regime_type
+            )
+            logger.info(f"M1 Scalp adaptive volume filter: threshold={adaptive_volume_threshold:.2f}, "
+                       f"ratio={volume_ratio:.2f}, zone={volatility_zone}, session={session_strength}")
+            
+            if volume_ratio > adaptive_volume_threshold:
                 if close > ema_5:
                     buy_confluences.append(WeightedConfluence(
                         confluence_type=ConfluenceType.VOLUME_CONFIRMATION.value,
-                        description=f"Volume spike ({volume_ratio:.2f}x)",
+                        description=f"Volume spike ({volume_ratio:.2f}x, threshold={adaptive_volume_threshold:.2f})",
                         weight=self._get_confluence_weight(ConfluenceType.VOLUME_CONFIRMATION.value),
                         is_active=True
                     ))
@@ -857,7 +972,7 @@ class AggressiveSignalRules:
                 else:
                     sell_confluences.append(WeightedConfluence(
                         confluence_type=ConfluenceType.VOLUME_CONFIRMATION.value,
-                        description=f"Volume spike ({volume_ratio:.2f}x)",
+                        description=f"Volume spike ({volume_ratio:.2f}x, threshold={adaptive_volume_threshold:.2f})",
                         weight=self._get_confluence_weight(ConfluenceType.VOLUME_CONFIRMATION.value),
                         is_active=True
                     ))
@@ -1192,11 +1307,20 @@ class AggressiveSignalRules:
                 has_ema_sell = True
             
             volume_ratio = volume / volume_avg if volume_avg > 0 else 1.0
-            if volume_ratio > 1.2:
+            
+            volatility_zone = self._get_volatility_zone(atr_ratio)
+            session_strength = self._get_session_strength()
+            adaptive_volume_threshold = self.get_adaptive_volume_threshold(
+                volatility_zone, session_strength, result.regime_type
+            )
+            logger.info(f"M5 Swing adaptive volume filter: threshold={adaptive_volume_threshold:.2f}, "
+                       f"ratio={volume_ratio:.2f}, zone={volatility_zone}, session={session_strength}")
+            
+            if volume_ratio > adaptive_volume_threshold:
                 if close > ema_20:
                     buy_confluences.append(WeightedConfluence(
                         confluence_type=ConfluenceType.VOLUME_CONFIRMATION.value,
-                        description=f"Volume spike ({volume_ratio:.2f}x)",
+                        description=f"Volume spike ({volume_ratio:.2f}x, threshold={adaptive_volume_threshold:.2f})",
                         weight=self._get_confluence_weight(ConfluenceType.VOLUME_CONFIRMATION.value),
                         is_active=True
                     ))
@@ -1204,7 +1328,7 @@ class AggressiveSignalRules:
                 else:
                     sell_confluences.append(WeightedConfluence(
                         confluence_type=ConfluenceType.VOLUME_CONFIRMATION.value,
-                        description=f"Volume spike ({volume_ratio:.2f}x)",
+                        description=f"Volume spike ({volume_ratio:.2f}x, threshold={adaptive_volume_threshold:.2f})",
                         weight=self._get_confluence_weight(ConfluenceType.VOLUME_CONFIRMATION.value),
                         is_active=True
                     ))
@@ -1313,9 +1437,13 @@ class AggressiveSignalRules:
                         h1_candle_consistency = -1
                         has_trend_sell = True
             
-            has_adx_condition = adx > self.M5_ADX_THRESHOLD
+            dynamic_adx_threshold = self.get_dynamic_adx_threshold(session_strength, volatility_zone)
+            has_adx_condition = adx > dynamic_adx_threshold
             is_breakout = price_break_above or price_break_below
             has_momentum = has_adx_condition or is_breakout
+            
+            logger.info(f"M5 Swing ADX check: ADX={adx:.1f}, dynamic_threshold={dynamic_adx_threshold:.1f}, "
+                       f"has_adx_condition={has_adx_condition}, static_M5_ADX_THRESHOLD={self.M5_ADX_THRESHOLD}")
             
             if has_adx_condition:
                 if adx > adx_prev:
@@ -1898,10 +2026,17 @@ class AggressiveSignalRules:
             buy_confluences: List[WeightedConfluence] = []
             sell_confluences: List[WeightedConfluence] = []
             
+            volatility_zone = self._get_volatility_zone(atr_ratio)
+            session_strength = self._get_session_strength()
+            dynamic_adx_threshold = self.get_dynamic_adx_threshold(session_strength, volatility_zone)
+            
             volume_ratio = volume / volume_avg if volume_avg > 0 else 1.0
             has_volume_spike = volume_ratio >= self.BO_VOLUME_THRESHOLD
             adx_increasing = adx > adx_prev
-            has_adx_rising = adx_increasing and adx >= 20
+            has_adx_rising = adx_increasing and adx >= dynamic_adx_threshold
+            
+            logger.info(f"Breakout ADX check: ADX={adx:.1f}, dynamic_threshold={dynamic_adx_threshold:.1f}, "
+                       f"adx_increasing={adx_increasing}, has_adx_rising={has_adx_rising}")
             
             if breakout_up_10:
                 buy_confluences.append(WeightedConfluence(
