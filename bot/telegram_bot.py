@@ -2432,6 +2432,25 @@ class TradingBot:
             logger.debug(f"⚠️ Error fetching M5 data: {m5_error} - AUTO signal tetap lanjut tanpa M5")
             return None
     
+    async def _fetch_h1_indicators(self, indicator_engine) -> Optional[Dict]:
+        """Fetch H1 indicators untuk multi-timeframe confirmation.
+        
+        Fetches more candles than needed (50) to ensure enough margin for indicator calculation.
+        Returns None on failure - signal will continue without H1 data (no blocking).
+        """
+        try:
+            df_h1 = await self.market_data.get_historical_data('H1', 50)
+            if df_h1 is not None and len(df_h1) >= 10:
+                h1_indicators = indicator_engine.get_indicators(df_h1)
+                logger.debug(f"✅ H1 data loaded untuk confirmation ({len(df_h1)} candles)")
+                return h1_indicators
+            else:
+                logger.debug(f"⚠️ H1 data tidak cukup untuk confirmation ({len(df_h1) if df_h1 is not None else 0} candles) - signal tetap lanjut tanpa H1")
+                return None
+        except Exception as h1_error:
+            logger.debug(f"⚠️ Error fetching H1 data: {h1_error} - signal tetap lanjut tanpa H1")
+            return None
+    
     async def _dispatch_signal(self, ctx: MonitoringContext, signal: Dict, 
                                df_m1: pd.DataFrame, now: datetime) -> bool:
         """Dispatch signal ke user. Returns True jika berhasil."""
@@ -2492,6 +2511,7 @@ class TradingBot:
             return False
         
         m5_indicators = await self._fetch_m5_indicators(indicator_engine)
+        h1_indicators = await self._fetch_h1_indicators(indicator_engine)
         
         market_regime = None
         if self.market_regime_detector:
@@ -2541,7 +2561,8 @@ class TradingBot:
             signal = self.strategy.detect_signal(
                 indicators, 'M1', 
                 signal_source='auto',
-                m5_indicators=m5_indicators
+                m5_indicators=m5_indicators,
+                h1_indicators=h1_indicators
             )
             signal_rule_type = 'STRATEGY'
         

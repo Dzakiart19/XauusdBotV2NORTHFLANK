@@ -1218,6 +1218,637 @@ class TradingStrategy:
             logger.error(f"Error in check_m5_confirmation: {e}")
             return True, f"✅ M5 Confirmation: Error - {str(e)} (lanjut dengan M1)", 1.0
     
+    def check_h1_confirmation(self, h1_indicators: Optional[Dict], signal_type: str) -> Tuple[bool, str, float]:
+        """Memeriksa konfirmasi trend dari timeframe H1 untuk meningkatkan akurasi signal.
+        
+        H1 Confirmation memeriksa trend alignment di higher timeframe (H1) untuk memastikan
+        signal M1/M5 searah dengan trend H1. Ini adalah level tertinggi dari multi-timeframe confirmation.
+        
+        Kriteria H1 Confirmation:
+        1. EMA Alignment di H1 (EMA5 vs EMA20 vs EMA50) searah dengan signal
+        2. RSI H1 mendukung arah signal (> 50 untuk BUY, < 50 untuk SELL)
+        3. Overall trend structure confirmation
+        
+        Args:
+            h1_indicators: Dictionary indicator dari timeframe H1 (bisa None)
+            signal_type: 'BUY' atau 'SELL' dari M1/M5
+            
+        Returns:
+            Tuple[bool, str, float]: (passed, reason, score_multiplier)
+        """
+        try:
+            if not h1_indicators or not isinstance(h1_indicators, dict):
+                reason = "✅ H1 Confirmation: Data H1 tidak tersedia - lanjut dengan M1+M5"
+                logger.debug(reason)
+                return True, reason, 1.0
+            
+            if signal_type not in ['BUY', 'SELL']:
+                reason = f"❌ H1 Confirmation: Invalid signal_type: {signal_type}"
+                logger.warning(reason)
+                return False, reason, 0.0
+            
+            confirmations_passed = 0
+            confirmations_needed = 2
+            confirmation_details = []
+            ema_aligned = False
+            score_multiplier = 1.0
+            
+            ema_5_h1 = h1_indicators.get(f'ema_{self.config.EMA_PERIODS[0]}')
+            ema_20_h1 = h1_indicators.get(f'ema_{self.config.EMA_PERIODS[1]}')
+            ema_50_h1 = h1_indicators.get(f'ema_{self.config.EMA_PERIODS[2]}') if len(self.config.EMA_PERIODS) > 2 else None
+            close_h1 = h1_indicators.get('close')
+            
+            if is_valid_number(ema_5_h1) and is_valid_number(ema_20_h1):
+                ema5 = safe_float(ema_5_h1, 0.0)
+                ema20 = safe_float(ema_20_h1, 0.0)
+                ema50 = safe_float(ema_50_h1, 0.0) if is_valid_number(ema_50_h1) else None
+                
+                if signal_type == 'BUY':
+                    if ema5 > ema20:
+                        ema_aligned = True
+                        confirmations_passed += 1
+                        if ema50 and ema20 > ema50:
+                            confirmation_details.append(f"✅ EMA H1 STRONG bullish (EMA5>{ema20:.1f}>EMA50)")
+                        else:
+                            confirmation_details.append(f"✅ EMA H1 bullish (EMA5={ema5:.2f} > EMA20={ema20:.2f})")
+                    else:
+                        confirmation_details.append(f"⚠️ EMA H1 TIDAK bullish - 25% REDUCTION")
+                        score_multiplier = 0.75
+                elif signal_type == 'SELL':
+                    if ema5 < ema20:
+                        ema_aligned = True
+                        confirmations_passed += 1
+                        if ema50 and ema20 < ema50:
+                            confirmation_details.append(f"✅ EMA H1 STRONG bearish (EMA5<{ema20:.1f}<EMA50)")
+                        else:
+                            confirmation_details.append(f"✅ EMA H1 bearish (EMA5={ema5:.2f} < EMA20={ema20:.2f})")
+                    else:
+                        confirmation_details.append(f"⚠️ EMA H1 TIDAK bearish - 25% REDUCTION")
+                        score_multiplier = 0.75
+            else:
+                confirmation_details.append("EMA H1: data tidak tersedia")
+            
+            rsi_h1 = h1_indicators.get('rsi')
+            if is_valid_number(rsi_h1):
+                rsi = safe_float(rsi_h1, 50.0)
+                
+                if signal_type == 'BUY':
+                    if rsi > 40:
+                        confirmations_passed += 1
+                        confirmation_details.append(f"RSI H1 mendukung BUY ({rsi:.1f} > 40)")
+                    else:
+                        confirmation_details.append(f"RSI H1 tidak mendukung BUY ({rsi:.1f} <= 40)")
+                elif signal_type == 'SELL':
+                    if rsi < 60:
+                        confirmations_passed += 1
+                        confirmation_details.append(f"RSI H1 mendukung SELL ({rsi:.1f} < 60)")
+                    else:
+                        confirmation_details.append(f"RSI H1 tidak mendukung SELL ({rsi:.1f} >= 60)")
+            else:
+                confirmation_details.append("RSI H1: data tidak tersedia")
+            
+            macd_h1 = h1_indicators.get('macd')
+            macd_signal_h1 = h1_indicators.get('macd_signal')
+            if is_valid_number(macd_h1) and is_valid_number(macd_signal_h1):
+                macd = safe_float(macd_h1, 0.0)
+                macd_sig = safe_float(macd_signal_h1, 0.0)
+                
+                if signal_type == 'BUY' and macd > macd_sig:
+                    confirmations_passed += 1
+                    confirmation_details.append(f"MACD H1 bullish")
+                elif signal_type == 'SELL' and macd < macd_sig:
+                    confirmations_passed += 1
+                    confirmation_details.append(f"MACD H1 bearish")
+                else:
+                    confirmation_details.append(f"MACD H1 tidak mendukung {signal_type}")
+            
+            if confirmations_passed >= confirmations_needed:
+                score_info = "" if score_multiplier == 1.0 else f" [Score: {score_multiplier:.0%}]"
+                reason = f"✅ H1 Confirmation PASSED: {confirmations_passed}/{confirmations_needed} kriteria{score_info} ({', '.join(confirmation_details)})"
+                logger.info(reason)
+                return True, reason, score_multiplier
+            else:
+                score_info = "" if score_multiplier == 1.0 else f" [Score: {score_multiplier:.0%}]"
+                reason = f"⚠️ H1 Confirmation WEAK: Hanya {confirmations_passed}/{confirmations_needed} kriteria{score_info} ({', '.join(confirmation_details)})"
+                logger.info(reason)
+                return True, reason, score_multiplier * 0.85
+                
+        except (StrategyError, Exception) as e:
+            logger.error(f"Error in check_h1_confirmation: {e}")
+            return True, f"✅ H1 Confirmation: Error - {str(e)}", 1.0
+    
+    def check_multi_timeframe_confirmation(self, m1_indicators: Dict, m5_indicators: Optional[Dict], 
+                                           h1_indicators: Optional[Dict], signal_type: str) -> Tuple[bool, str, float, Dict]:
+        """Multi-Timeframe Confirmation - M1 + M5 + H1 alignment check.
+        
+        IMPORTANT: Score reduction ONLY happens when data IS available but NOT aligned.
+        When higher timeframe data (M5/H1) is missing, we continue with available data.
+        
+        Scoring (based on AVAILABLE timeframes only):
+        - All available TFs aligned: 100% confidence
+        - Partial alignment with available data: Proportional reduction
+        - Only M1 aligned + others NOT aligned (when available): 65-85% confidence
+        - No alignment: BLOCKED (only if M1 is not aligned)
+        
+        Args:
+            m1_indicators: Dictionary indicator dari timeframe M1 (wajib)
+            m5_indicators: Dictionary indicator dari timeframe M5 (optional)
+            h1_indicators: Dictionary indicator dari timeframe H1 (optional)
+            signal_type: 'BUY' atau 'SELL'
+            
+        Returns:
+            Tuple[bool, str, float, Dict]: (passed, reason, score_multiplier, mtf_data)
+        """
+        mtf_data = {
+            'm1_aligned': False,
+            'm5_aligned': False,
+            'h1_aligned': False,
+            'm5_available': False,
+            'h1_available': False,
+            'timeframes_aligned': 0,
+            'timeframes_available': 1,
+            'total_score': 0.0,
+            'details': []
+        }
+        
+        try:
+            if not m1_indicators:
+                return False, "❌ MTF: M1 data tidak tersedia", 0.0, mtf_data
+            
+            ema_5_m1 = m1_indicators.get(f'ema_{self.config.EMA_PERIODS[0]}')
+            ema_20_m1 = m1_indicators.get(f'ema_{self.config.EMA_PERIODS[1]}')
+            
+            if is_valid_number(ema_5_m1) and is_valid_number(ema_20_m1):
+                ema5 = safe_float(ema_5_m1, 0.0)
+                ema20 = safe_float(ema_20_m1, 0.0)
+                
+                if signal_type == 'BUY' and ema5 > ema20:
+                    mtf_data['m1_aligned'] = True
+                    mtf_data['timeframes_aligned'] += 1
+                    mtf_data['details'].append("M1: ✅ Bullish")
+                elif signal_type == 'SELL' and ema5 < ema20:
+                    mtf_data['m1_aligned'] = True
+                    mtf_data['timeframes_aligned'] += 1
+                    mtf_data['details'].append("M1: ✅ Bearish")
+                else:
+                    mtf_data['details'].append(f"M1: ⚠️ Tidak sejalan dengan {signal_type}")
+            else:
+                mtf_data['m1_aligned'] = True
+                mtf_data['timeframes_aligned'] += 1
+                mtf_data['details'].append("M1: ✅ (Data EMA tidak tersedia)")
+            
+            if m5_indicators:
+                mtf_data['m5_available'] = True
+                mtf_data['timeframes_available'] += 1
+                m5_passed, m5_reason, m5_score = self.check_m5_confirmation(m5_indicators, signal_type)
+                if m5_passed and m5_score >= 0.7:
+                    mtf_data['m5_aligned'] = True
+                    mtf_data['timeframes_aligned'] += 1
+                    mtf_data['details'].append("M5: ✅ Aligned")
+                else:
+                    mtf_data['details'].append("M5: ⚠️ Tidak aligned")
+            else:
+                mtf_data['details'].append("M5: - (Data tidak tersedia)")
+            
+            if h1_indicators:
+                mtf_data['h1_available'] = True
+                mtf_data['timeframes_available'] += 1
+                h1_passed, h1_reason, h1_score = self.check_h1_confirmation(h1_indicators, signal_type)
+                if h1_passed and h1_score >= 0.75:
+                    mtf_data['h1_aligned'] = True
+                    mtf_data['timeframes_aligned'] += 1
+                    mtf_data['details'].append("H1: ✅ Aligned")
+                else:
+                    mtf_data['details'].append("H1: ⚠️ Tidak aligned")
+            else:
+                mtf_data['details'].append("H1: - (Data tidak tersedia)")
+            
+            aligned_count = mtf_data['timeframes_aligned']
+            available_count = mtf_data['timeframes_available']
+            details_str = ", ".join(mtf_data['details'])
+            
+            if aligned_count == available_count and mtf_data['m1_aligned']:
+                mtf_data['total_score'] = 1.0
+                reason = f"✅ MTF STRONG: Semua timeframe tersedia aligned ({aligned_count}/{available_count}) - {details_str}"
+                logger.info(reason)
+                return True, reason, 1.0, mtf_data
+            elif mtf_data['m1_aligned']:
+                if available_count == 1:
+                    mtf_data['total_score'] = 1.0
+                    reason = f"✅ MTF OK: M1 aligned (hanya M1 tersedia) - {details_str}"
+                    logger.info(reason)
+                    return True, reason, 1.0, mtf_data
+                elif available_count == 2:
+                    if aligned_count == 2:
+                        mtf_data['total_score'] = 1.0
+                        reason = f"✅ MTF STRONG: Semua tersedia aligned ({aligned_count}/{available_count}) - {details_str}"
+                    else:
+                        mtf_data['total_score'] = 0.85
+                        reason = f"⚠️ MTF PARTIAL: M1 aligned, HTF tidak aligned ({aligned_count}/{available_count}) - {details_str}"
+                    logger.info(reason)
+                    return True, reason, mtf_data['total_score'], mtf_data
+                else:
+                    if aligned_count >= 3:
+                        mtf_data['total_score'] = 1.0
+                        reason = f"✅ MTF STRONG: Semua timeframe aligned (3/3) - {details_str}"
+                    elif aligned_count >= 2:
+                        if mtf_data['m5_aligned']:
+                            mtf_data['total_score'] = 0.90
+                            reason = f"✅ MTF GOOD: M1+M5 aligned ({aligned_count}/3) - {details_str}"
+                        elif mtf_data['h1_aligned']:
+                            mtf_data['total_score'] = 0.85
+                            reason = f"✅ MTF OK: M1+H1 aligned ({aligned_count}/3) - {details_str}"
+                        else:
+                            mtf_data['total_score'] = 0.80
+                            reason = f"⚠️ MTF PARTIAL: {aligned_count}/3 aligned - {details_str}"
+                    else:
+                        mtf_data['total_score'] = 0.65
+                        reason = f"⚠️ MTF WEAK: Hanya M1 aligned ({aligned_count}/3) - {details_str}"
+                    logger.info(reason)
+                    return True, reason, mtf_data['total_score'], mtf_data
+            else:
+                mtf_data['total_score'] = 0.0
+                reason = f"❌ MTF BLOCKED: M1 tidak aligned - {details_str}"
+                logger.info(reason)
+                return False, reason, 0.0, mtf_data
+                
+        except (StrategyError, Exception) as e:
+            logger.error(f"Error in check_multi_timeframe_confirmation: {e}")
+            return True, f"✅ MTF: Error - {str(e)}", 1.0, mtf_data
+    
+    def check_macd_divergence(self, indicators: Dict, signal_type: str, 
+                              price_history: Optional[List] = None, 
+                              macd_history: Optional[List] = None) -> Tuple[bool, str, float]:
+        """Detect MACD divergence patterns for enhanced signal quality.
+        
+        IMPORTANT: This returns a CONFIDENCE BOOST only, never blocks signals.
+        Uses stricter criteria to reduce false positive divergence detections.
+        
+        MACD Divergence Detection (strict criteria):
+        - Bullish Regular: Price makes clear lower low (<= -0.1%), MACD makes higher low (>= +5%)
+        - Bearish Regular: Price makes clear higher high (>= +0.1%), MACD makes lower high (<= -5%)
+        - Minimum difference thresholds prevent constant false detections
+        
+        Args:
+            indicators: Dictionary of calculated indicators
+            signal_type: 'BUY' or 'SELL'
+            price_history: Optional list of recent prices
+            macd_history: Optional list of recent MACD values
+            
+        Returns:
+            Tuple of (has_divergence, description, confidence_boost)
+            Note: Returns (False, ..., 0.0) when no divergence - NEVER blocks signals
+        """
+        try:
+            macd_hist = macd_history or indicators.get('macd_history', [])
+            price_hist = price_history or indicators.get('price_history', [])
+            
+            if not macd_hist or len(macd_hist) < 8:
+                return False, "MACD Divergence: Data tidak cukup", 0.0
+            
+            if not price_hist or len(price_hist) < 8:
+                return False, "MACD Divergence: Price history tidak cukup", 0.0
+            
+            macd_clean = [safe_float(m, 0.0) for m in macd_hist[-15:] if is_valid_number(m)]
+            price_clean = [safe_float(p, 0.0) for p in price_hist[-15:] if is_valid_number(p)]
+            
+            if len(macd_clean) < 8 or len(price_clean) < 8:
+                return False, "MACD Divergence: Data bersih tidak cukup", 0.0
+            
+            recent_window = 3
+            lookback_start = -8
+            lookback_end = -recent_window
+            
+            current_macd = sum(macd_clean[-recent_window:]) / recent_window
+            prev_macd_values = macd_clean[lookback_start:lookback_end]
+            prev_macd_low = min(prev_macd_values)
+            prev_macd_high = max(prev_macd_values)
+            
+            current_price = sum(price_clean[-recent_window:]) / recent_window
+            prev_price_values = price_clean[lookback_start:lookback_end]
+            prev_price_low = min(prev_price_values)
+            prev_price_high = max(prev_price_values)
+            
+            min_price_diff_pct = 0.001
+            min_macd_diff_pct = 0.05
+            
+            if signal_type == 'BUY':
+                price_diff_pct = (current_price - prev_price_low) / prev_price_low if prev_price_low != 0 else 0
+                macd_diff_pct = (current_macd - prev_macd_low) / abs(prev_macd_low) if prev_macd_low != 0 else 0
+                
+                if price_diff_pct <= -min_price_diff_pct and macd_diff_pct >= min_macd_diff_pct:
+                    strength = min(abs(macd_diff_pct) * 0.5, 0.15)
+                    return True, f"🔄 BULLISH DIVERGENCE: Price ↓{price_diff_pct:.2%} MACD ↑{macd_diff_pct:.2%}", strength
+                    
+            elif signal_type == 'SELL':
+                price_diff_pct = (current_price - prev_price_high) / prev_price_high if prev_price_high != 0 else 0
+                macd_diff_pct = (current_macd - prev_macd_high) / abs(prev_macd_high) if prev_macd_high != 0 else 0
+                
+                if price_diff_pct >= min_price_diff_pct and macd_diff_pct <= -min_macd_diff_pct:
+                    strength = min(abs(macd_diff_pct) * 0.5, 0.15)
+                    return True, f"🔄 BEARISH DIVERGENCE: Price ↑{price_diff_pct:.2%} MACD ↓{macd_diff_pct:.2%}", strength
+            
+            return False, "Tidak ada MACD divergence", 0.0
+            
+        except (StrategyError, Exception) as e:
+            logger.debug(f"Error in check_macd_divergence: {e}")
+            return False, f"MACD Divergence Error: {str(e)}", 0.0
+    
+    def check_atr_volatility_filter(self, indicators: Dict, signal_type: str, 
+                                     atr_history: Optional[List] = None) -> Tuple[bool, str, float, str]:
+        """ATR-based volatility filter to skip signals during extreme volatility.
+        
+        Volatility Zones:
+        - EXTREME_LOW (< 20th percentile): Skip - market terlalu quiet, breakout risk
+        - LOW (20-40th percentile): Allow with caution - reduce position size
+        - NORMAL (40-60th percentile): Ideal - full confidence
+        - HIGH (60-80th percentile): Allow - good for momentum trades
+        - EXTREME_HIGH (> 80th percentile): Skip - terlalu volatile, SL risk tinggi
+        
+        Args:
+            indicators: Dictionary of calculated indicators
+            signal_type: 'BUY' or 'SELL'
+            atr_history: Optional list of historical ATR values
+            
+        Returns:
+            Tuple of (is_valid, reason, confidence_multiplier, volatility_zone)
+        """
+        try:
+            atr = indicators.get('atr')
+            atr_hist = atr_history or indicators.get('atr_history', [])
+            
+            if not is_valid_number(atr):
+                return True, "✅ ATR Filter: Data tidak tersedia - signal diizinkan", 1.0, "unknown"
+            
+            atr_val = safe_float(atr, 0.0)
+            
+            if atr_val <= 0:
+                return True, "✅ ATR Filter: ATR = 0 - signal diizinkan", 1.0, "unknown"
+            
+            if atr_hist and len(atr_hist) >= 20:
+                atr_clean = [safe_float(a, 0.0) for a in atr_hist[-100:] if is_valid_number(a) and a > 0]
+                if len(atr_clean) >= 10:
+                    sorted_atr = sorted(atr_clean)
+                    p20 = sorted_atr[int(len(sorted_atr) * 0.2)]
+                    p40 = sorted_atr[int(len(sorted_atr) * 0.4)]
+                    p60 = sorted_atr[int(len(sorted_atr) * 0.6)]
+                    p80 = sorted_atr[int(len(sorted_atr) * 0.8)]
+                    
+                    if atr_val < p20:
+                        zone = "EXTREME_LOW"
+                        reason = f"❌ ATR EXTREME LOW: ATR({atr_val:.4f}) < P20({p20:.4f}) - Volatilitas terlalu rendah, SKIP"
+                        logger.info(reason)
+                        return False, reason, 0.0, zone
+                    elif atr_val < p40:
+                        zone = "LOW"
+                        reason = f"⚠️ ATR LOW: ATR({atr_val:.4f}) - Volatilitas rendah, reduced confidence"
+                        logger.info(reason)
+                        return True, reason, 0.8, zone
+                    elif atr_val < p60:
+                        zone = "NORMAL"
+                        reason = f"✅ ATR NORMAL: ATR({atr_val:.4f}) - Volatilitas ideal"
+                        logger.info(reason)
+                        return True, reason, 1.0, zone
+                    elif atr_val < p80:
+                        zone = "HIGH"
+                        reason = f"✅ ATR HIGH: ATR({atr_val:.4f}) - Good for momentum"
+                        logger.info(reason)
+                        return True, reason, 1.0, zone
+                    else:
+                        zone = "EXTREME_HIGH"
+                        reason = f"❌ ATR EXTREME HIGH: ATR({atr_val:.4f}) > P80({p80:.4f}) - Volatilitas terlalu tinggi, SKIP"
+                        logger.info(reason)
+                        return False, reason, 0.0, zone
+            
+            atr_typical_low = 0.5
+            atr_typical_high = 5.0
+            
+            if atr_val < atr_typical_low:
+                zone = "LOW"
+                reason = f"⚠️ ATR LOW: ATR({atr_val:.4f}) < {atr_typical_low} - Volatilitas rendah"
+                return True, reason, 0.8, zone
+            elif atr_val > atr_typical_high:
+                zone = "EXTREME_HIGH"
+                reason = f"❌ ATR EXTREME HIGH: ATR({atr_val:.4f}) > {atr_typical_high} - SKIP signal"
+                return False, reason, 0.0, zone
+            else:
+                zone = "NORMAL"
+                reason = f"✅ ATR NORMAL: ATR({atr_val:.4f}) - Volatilitas acceptable"
+                return True, reason, 1.0, zone
+                
+        except (StrategyError, Exception) as e:
+            logger.error(f"Error in check_atr_volatility_filter: {e}")
+            return True, f"✅ ATR Filter: Error - {str(e)}", 1.0, "unknown"
+    
+    def check_enhanced_volume_confirmation(self, indicators: Dict, signal_type: str,
+                                            volume_history: Optional[List] = None) -> Tuple[bool, str, float]:
+        """Enhanced volume confirmation with multiple checks.
+        
+        Volume Confirmation Criteria:
+        1. Volume > 1.0x average (basic confirmation)
+        2. Volume increasing for last 3 candles (momentum building)
+        3. Volume spike > 1.5x (strong confirmation)
+        4. Price-volume divergence check
+        
+        Args:
+            indicators: Dictionary of calculated indicators
+            signal_type: 'BUY' or 'SELL'
+            volume_history: Optional list of recent volume values
+            
+        Returns:
+            Tuple of (is_valid, reason, confidence_multiplier)
+        """
+        try:
+            volume = indicators.get('volume')
+            volume_avg = indicators.get('volume_avg')
+            vol_hist = volume_history or indicators.get('volume_history', [])
+            
+            if not is_valid_number(volume) or not is_valid_number(volume_avg):
+                return True, "✅ Volume: Data tidak tersedia - signal diizinkan", 0.85
+            
+            vol = safe_float(volume, 0.0)
+            vol_avg = safe_float(volume_avg, 1.0)
+            
+            if vol_avg <= 0:
+                return True, "✅ Volume: Average = 0 - signal diizinkan", 0.85
+            
+            volume_ratio = vol / vol_avg
+            
+            volume_increasing = False
+            increasing_count = 0
+            if vol_hist and len(vol_hist) >= 3:
+                vol_clean = [safe_float(v, 0.0) for v in vol_hist[-5:] if is_valid_number(v)]
+                if len(vol_clean) >= 3:
+                    for i in range(1, len(vol_clean)):
+                        if vol_clean[i] > vol_clean[i-1]:
+                            increasing_count += 1
+                    volume_increasing = increasing_count >= 2
+            
+            is_spike = volume_ratio >= 1.5
+            is_strong = volume_ratio >= 1.2
+            is_normal = volume_ratio >= 1.0
+            is_weak = volume_ratio >= 0.7
+            
+            if is_spike and volume_increasing:
+                reason = f"✅ VOLUME SPIKE + INCREASING: {volume_ratio:.1%} dengan momentum building"
+                logger.info(reason)
+                return True, reason, 1.15
+            elif is_spike:
+                reason = f"✅ VOLUME SPIKE: {volume_ratio:.1%} - Strong confirmation"
+                logger.info(reason)
+                return True, reason, 1.1
+            elif is_strong and volume_increasing:
+                reason = f"✅ VOLUME STRONG + INCREASING: {volume_ratio:.1%}"
+                logger.info(reason)
+                return True, reason, 1.05
+            elif is_strong:
+                reason = f"✅ VOLUME STRONG: {volume_ratio:.1%}"
+                logger.info(reason)
+                return True, reason, 1.0
+            elif is_normal:
+                reason = f"✅ VOLUME NORMAL: {volume_ratio:.1%}"
+                logger.info(reason)
+                return True, reason, 0.95
+            elif is_weak:
+                reason = f"⚠️ VOLUME WEAK: {volume_ratio:.1%} - reduced confidence"
+                logger.info(reason)
+                return True, reason, 0.8
+            else:
+                reason = f"❌ VOLUME TOO LOW: {volume_ratio:.1%} < 70% average - SKIP"
+                logger.info(reason)
+                return False, reason, 0.0
+                
+        except (StrategyError, Exception) as e:
+            logger.error(f"Error in check_enhanced_volume_confirmation: {e}")
+            return True, f"✅ Volume: Error - {str(e)}", 0.9
+    
+    def check_support_resistance_levels(self, indicators: Dict, signal_type: str,
+                                         price_history: Optional[List] = None) -> Tuple[bool, str, float, Dict]:
+        """Auto-detect support/resistance levels and check signal alignment.
+        
+        S/R Level Detection:
+        - Identify swing highs/lows from price history
+        - Calculate proximity to S/R levels
+        - Boost confidence for signals at key levels
+        
+        Args:
+            indicators: Dictionary of calculated indicators
+            signal_type: 'BUY' or 'SELL'
+            price_history: Optional list of recent prices
+            
+        Returns:
+            Tuple of (is_valid, reason, confidence_boost, sr_data)
+        """
+        sr_data = {
+            'support_levels': [],
+            'resistance_levels': [],
+            'near_support': False,
+            'near_resistance': False,
+            'distance_to_support': None,
+            'distance_to_resistance': None
+        }
+        
+        try:
+            close = indicators.get('close')
+            high = indicators.get('high')
+            low = indicators.get('low')
+            price_hist = price_history or indicators.get('price_history', [])
+            high_hist = indicators.get('high_history', [])
+            low_hist = indicators.get('low_history', [])
+            
+            if not is_valid_number(close):
+                return True, "✅ S/R: Data tidak tersedia", 0.0, sr_data
+            
+            current_price = safe_float(close, 0.0)
+            
+            if len(price_hist) < 20:
+                return True, "✅ S/R: Price history tidak cukup", 0.0, sr_data
+            
+            prices = [safe_float(p, 0.0) for p in price_hist[-50:] if is_valid_number(p)]
+            
+            if len(prices) < 20:
+                return True, "✅ S/R: Data bersih tidak cukup", 0.0, sr_data
+            
+            swing_highs = []
+            swing_lows = []
+            
+            for i in range(2, len(prices) - 2):
+                if prices[i] > prices[i-1] and prices[i] > prices[i-2] and \
+                   prices[i] > prices[i+1] and prices[i] > prices[i+2]:
+                    swing_highs.append(prices[i])
+                
+                if prices[i] < prices[i-1] and prices[i] < prices[i-2] and \
+                   prices[i] < prices[i+1] and prices[i] < prices[i+2]:
+                    swing_lows.append(prices[i])
+            
+            cluster_threshold = current_price * 0.002
+            
+            resistance_levels = []
+            for high_price in sorted(swing_highs, reverse=True)[:5]:
+                if high_price > current_price:
+                    is_new_level = True
+                    for existing in resistance_levels:
+                        if abs(high_price - existing) < cluster_threshold:
+                            is_new_level = False
+                            break
+                    if is_new_level:
+                        resistance_levels.append(high_price)
+            
+            support_levels = []
+            for low_price in sorted(swing_lows)[:5]:
+                if low_price < current_price:
+                    is_new_level = True
+                    for existing in support_levels:
+                        if abs(low_price - existing) < cluster_threshold:
+                            is_new_level = False
+                            break
+                    if is_new_level:
+                        support_levels.append(low_price)
+            
+            sr_data['support_levels'] = sorted(support_levels, reverse=True)[:3]
+            sr_data['resistance_levels'] = sorted(resistance_levels)[:3]
+            
+            proximity_threshold = current_price * 0.003
+            
+            confidence_boost = 0.0
+            reason_parts = []
+            
+            if support_levels:
+                nearest_support = max(support_levels)
+                sr_data['distance_to_support'] = current_price - nearest_support
+                if sr_data['distance_to_support'] < proximity_threshold:
+                    sr_data['near_support'] = True
+                    if signal_type == 'BUY':
+                        confidence_boost += 0.10
+                        reason_parts.append(f"Near Support ({nearest_support:.2f}) - BUY boosted")
+                    else:
+                        confidence_boost -= 0.05
+                        reason_parts.append(f"Near Support ({nearest_support:.2f}) - SELL weakened")
+            
+            if resistance_levels:
+                nearest_resistance = min(resistance_levels)
+                sr_data['distance_to_resistance'] = nearest_resistance - current_price
+                if sr_data['distance_to_resistance'] < proximity_threshold:
+                    sr_data['near_resistance'] = True
+                    if signal_type == 'SELL':
+                        confidence_boost += 0.10
+                        reason_parts.append(f"Near Resistance ({nearest_resistance:.2f}) - SELL boosted")
+                    else:
+                        confidence_boost -= 0.05
+                        reason_parts.append(f"Near Resistance ({nearest_resistance:.2f}) - BUY weakened")
+            
+            if not reason_parts:
+                reason = "✅ S/R: Harga tidak di level kunci"
+            else:
+                reason = f"S/R Analysis: {', '.join(reason_parts)}"
+            
+            logger.info(reason)
+            return True, reason, max(0.0, confidence_boost), sr_data
+            
+        except (StrategyError, Exception) as e:
+            logger.error(f"Error in check_support_resistance_levels: {e}")
+            return True, f"✅ S/R: Error - {str(e)}", 0.0, sr_data
+    
     def check_rsi_level_filter(self, indicators: Dict, signal_type: str) -> Tuple[bool, str, float]:
         """Check RSI level filter - BLOCKING extreme levels + divergence check
         
@@ -2330,10 +2961,10 @@ class TradingStrategy:
             logger.error(f"Error in calculate_sl_tp: {e}")
             return None, None, None, None
         
-    def detect_signal(self, indicators: Dict, timeframe: str = 'M1', signal_source: str = 'auto', current_spread: float = 0.0, candle_timestamp: Optional[datetime] = None, m5_indicators: Optional[Dict] = None) -> Optional[Dict]:  # pyright: ignore[reportGeneralTypeIssues]
+    def detect_signal(self, indicators: Dict, timeframe: str = 'M1', signal_source: str = 'auto', current_spread: float = 0.0, candle_timestamp: Optional[datetime] = None, m5_indicators: Optional[Dict] = None, h1_indicators: Optional[Dict] = None) -> Optional[Dict]:  # pyright: ignore[reportGeneralTypeIssues]
         """Detect trading signal with multi-confirmation strategy
         
-        Uses professional multi-confirmation approach with 7 MANDATORY filters untuk AUTO:
+        Uses professional multi-confirmation approach with ENHANCED filters untuk AUTO:
         1. Trend Filter (MANDATORY): EMA5 > EMA20 > EMA50 alignment + price position
         2. Momentum Filter (MANDATORY): RSI in entry range + direction + Stochastic confirmation
         3. Volume/VWAP Filter (MANDATORY): Volume above average + VWAP position
@@ -2341,10 +2972,14 @@ class TradingStrategy:
         5. Session Filter (MANDATORY): London-NY overlap
         6. Spread Filter (MANDATORY): Spread < MAX_SPREAD_PIPS
         7. ADX Filter (MANDATORY untuk AUTO): ADX >= 15 (BLOCKING)
-        8. M5 Confirmation (MANDATORY untuk AUTO): Trend alignment dengan M5 timeframe
+        8. Multi-Timeframe Confirmation (M1+M5+H1 harus sejalan)
+        9. ATR Volatility Filter (skip saat volatilitas ekstrem)
+        10. Enhanced Volume Confirmation
+        11. Divergence Detection (RSI + MACD)
+        12. Support/Resistance Level Analysis
         
-        Untuk AUTO signals: Semua 8 filter HARUS pass.
-        Untuk MANUAL signals: ADX dan M5 confirmation opsional (informational only).
+        Untuk AUTO signals: Filter wajib HARUS pass + MTF confirmation.
+        Untuk MANUAL signals: ADX dan MTF confirmation opsional (informational only).
         
         Args:
             indicators: Dictionary of calculated indicators dari M1
@@ -2352,7 +2987,8 @@ class TradingStrategy:
             signal_source: Source of signal ('auto' atau 'manual')
             current_spread: Current spread in price units
             candle_timestamp: Timestamp candle untuk tracking (opsional)
-            m5_indicators: Dictionary of calculated indicators dari M5 (opsional untuk M5 confirmation)
+            m5_indicators: Dictionary of calculated indicators dari M5 (opsional)
+            h1_indicators: Dictionary of calculated indicators dari H1 (opsional)
         
         Note: This function is intentionally complex due to multi-indicator trading logic.
         Pyright complexity warning is suppressed as it does not affect runtime behavior.
@@ -2419,13 +3055,39 @@ class TradingStrategy:
                 if mc_result['all_mandatory_passed']:
                     potential_signal = mc_result['signal_type']
                     
-                    m5_passed, m5_reason, m5_score_mult = self.check_m5_confirmation(m5_indicators, potential_signal)
-                    confidence_reasons.append(m5_reason)
+                    mtf_passed, mtf_reason, mtf_score, mtf_data = self.check_multi_timeframe_confirmation(
+                        indicators, m5_indicators, h1_indicators, potential_signal
+                    )
+                    confidence_reasons.append(mtf_reason)
                     
-                    if not m5_passed:
-                        logger.info(f"🚫 AUTO Signal BLOCKED: M5 confirmation failed - {m5_reason}")
-                        logger.info(f"📊 Signal {potential_signal} ditolak karena M5 tidak konfirmasi trend M1")
+                    if not mtf_passed:
+                        logger.info(f"🚫 AUTO Signal BLOCKED: Multi-Timeframe confirmation failed - {mtf_reason}")
+                        logger.info(f"📊 Signal {potential_signal} ditolak karena MTF tidak aligned")
                         return None
+                    
+                    atr_passed, atr_reason, atr_mult, volatility_zone = self.check_atr_volatility_filter(indicators, potential_signal)
+                    confidence_reasons.append(atr_reason)
+                    
+                    if not atr_passed:
+                        logger.info(f"🚫 AUTO Signal BLOCKED: ATR volatility filter - {atr_reason}")
+                        logger.info(f"📊 Signal {potential_signal} ditolak karena volatilitas {volatility_zone}")
+                        return None
+                    
+                    vol_passed, vol_reason, vol_mult = self.check_enhanced_volume_confirmation(indicators, potential_signal)
+                    confidence_reasons.append(vol_reason)
+                    
+                    if not vol_passed:
+                        logger.info(f"🚫 AUTO Signal BLOCKED: Volume too low - {vol_reason}")
+                        logger.info(f"📊 Signal {potential_signal} ditolak karena volume tidak mencukupi")
+                        return None
+                    
+                    macd_has_div, macd_div_reason, macd_div_boost = self.check_macd_divergence(indicators, potential_signal)
+                    if macd_has_div:
+                        confidence_reasons.append(macd_div_reason)
+                    
+                    sr_passed, sr_reason, sr_boost, sr_data = self.check_support_resistance_levels(indicators, potential_signal)
+                    if sr_boost != 0:
+                        confidence_reasons.append(sr_reason)
                     
                     is_aligned, alignment_reason = self.check_regime_alignment(
                         potential_signal, indicators, m1_df=None, m5_df=None
@@ -2437,10 +3099,13 @@ class TradingStrategy:
                     
                     confidence_reasons.append(alignment_reason)
                     
-                    if m5_score_mult < 1.0:
-                        adjusted_score = adjusted_score * m5_score_mult
-                        confidence_reasons.append(f"⚠️ M5 Misalignment Score Reduction: {m5_score_mult:.0%}")
-                        logger.info(f"📉 M5 EMA misalignment - score reduced to {adjusted_score:.0f}%")
+                    total_multiplier = mtf_score * atr_mult * vol_mult
+                    total_boost = macd_div_boost + sr_boost
+                    adjusted_score = (adjusted_score * total_multiplier) + (total_boost * 10)
+                    
+                    if total_multiplier < 1.0:
+                        confidence_reasons.append(f"⚠️ Score Adjustment: MTF={mtf_score:.0%}, ATR={atr_mult:.0%}, Vol={vol_mult:.0%}")
+                        logger.info(f"📉 Score adjusted by multipliers - final score: {adjusted_score:.0f}%")
                     
                     signal = potential_signal
                     close_price = safe_float(close, 0.0)
