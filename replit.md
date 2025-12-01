@@ -126,6 +126,13 @@ Perbaikan untuk meningkatkan akurasi sinyal dari ~50% ke target 80-90%:
 - Title diubah menjadi "Xauusd Dzeck Trader"
 - Integrasi dengan Telegram Web App SDK
 
+**Bug Fixes (Dec 1, 2025 - Session 2):**
+- ✅ Fixed 6 LSP errors in main.py - timestamp conversion for numpy datetime64
+- ✅ Added `_convert_timestamp_to_string()` helper method for safe timestamp handling
+- ✅ Fixed InFailedSqlTransaction error in position_tracker.py - added rollback before query
+- ✅ Improved database session handling with null checks
+- Catatan: Telegram token invalid - perlu diperbarui oleh user
+
 **Trial System (Dec 1, 2025):**
 - ✅ Trial 3 hari otomatis untuk user baru
 - ✅ Auto-expire setelah 3 hari dengan notifikasi
