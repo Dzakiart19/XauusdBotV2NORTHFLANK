@@ -190,8 +190,21 @@ class MessageFormatter:
         reason = _safe_string(exit_data.get('reason'), 'CLOSED')
         duration = exit_data.get('duration', 'N/A')
         
-        result_icon = "✅" if result == 'WIN' else "❌"
-        result_text = "TP HIT" if reason == 'TP_HIT' else ("SL HIT" if reason in ['SL_HIT', 'DYNAMIC_SL_HIT'] else result)
+        if result in ['UNKNOWN', 'N/A', ''] or result is None:
+            result = 'WIN' if pl >= 0 else 'LOSS'
+        
+        is_profit = pl >= 0
+        result_icon = "✅" if is_profit else "❌"
+        
+        if reason == 'TP_HIT':
+            result_text = "TP HIT - PROFIT"
+        elif reason in ['SL_HIT', 'DYNAMIC_SL_HIT']:
+            if is_profit:
+                result_text = "TRAILING SL - PROFIT LOCKED"
+            else:
+                result_text = "SL HIT"
+        else:
+            result_text = "WIN" if is_profit else "LOSS"
         
         price_diff = abs(exit_price - entry)
         pl_pips = price_diff * _safe_numeric(pip_value, 10.0)

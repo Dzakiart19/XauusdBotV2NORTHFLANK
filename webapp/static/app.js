@@ -300,6 +300,58 @@
         }
     }
 
+    function fetchTradeHistory() {
+        debugLog('fetchTradeHistory called');
+        return fetchWithRetry('/api/trade-history?limit=10').then(function(data) {
+            if (data && data.trades) {
+                debugLog('Trade history received: ' + data.trades.length + ' trades');
+                updateTradeHistoryCard(data.trades);
+            }
+            return data;
+        }).catch(function(error) {
+            debugLog('Error fetching trade history: ' + error.message);
+        });
+    }
+
+    function updateTradeHistoryCard(trades) {
+        debugLog('updateTradeHistoryCard called');
+        var container = document.getElementById('trade-history-container');
+        if (!container) return;
+
+        if (!trades || trades.length === 0) {
+            container.innerHTML = '<div class="no-trades">Belum ada riwayat trading</div>';
+            return;
+        }
+
+        var html = '';
+        trades.forEach(function(trade) {
+            var signalType = (trade.signal_type || 'BUY').toUpperCase();
+            var isProfit = trade.pnl >= 0;
+            var pnlText = isProfit ? '+$' + Math.abs(trade.pnl).toFixed(2) : '-$' + Math.abs(trade.pnl).toFixed(2);
+            var statusClass = trade.status === 'CLOSED' ? (isProfit ? 'win' : 'loss') : 'open';
+            var statusIcon = trade.status === 'CLOSED' ? (isProfit ? '✅' : '❌') : '⏳';
+            var statusText = trade.status === 'CLOSED' ? (isProfit ? 'WIN' : 'LOSS') : 'OPEN';
+            
+            var tradeTime = trade.signal_time ? formatTime(trade.signal_time) : '--';
+            
+            html += '<div class="trade-history-item">';
+            html += '<div class="trade-info">';
+            html += '<div class="trade-type ' + signalType.toLowerCase() + '">' + (signalType === 'BUY' ? '📈' : '📉') + ' ' + signalType + '</div>';
+            html += '<div class="trade-details">Entry: $' + formatPrice(trade.entry_price) + ' | ' + tradeTime + '</div>';
+            html += '</div>';
+            html += '<div class="trade-result">';
+            if (trade.status === 'CLOSED') {
+                html += '<div class="trade-pnl ' + (isProfit ? 'positive' : 'negative') + '">' + pnlText + '</div>';
+            }
+            html += '<div class="trade-status ' + statusClass + '">' + statusIcon + ' ' + statusText + '</div>';
+            html += '</div>';
+            html += '</div>';
+        });
+
+        container.innerHTML = html;
+        debugLog('Trade history updated with ' + trades.length + ' trades');
+    }
+
     function updateRegimeCard(data) {
         debugLog('updateRegimeCard called');
         var container = document.getElementById('regime-tags');
@@ -580,6 +632,9 @@
             updateUpdateTime();
 
             debugLog('UI updates complete');
+            
+            fetchTradeHistory();
+            
             return updateCandleChart();
         }).then(function() {
             debugLog('refreshData() completed successfully');

@@ -1296,7 +1296,7 @@ class PositionTracker:
         
         actual_pl = self.risk_manager.calculate_pl(entry_price, exit_price, signal_type)
         
-        trade_result = None
+        trade_result = 'WIN' if actual_pl >= 0 else 'LOSS'
         
         session = None
         try:
@@ -1319,8 +1319,7 @@ class PositionTracker:
                 trade.exit_price = exit_price
                 trade.actual_pl = actual_pl
                 trade.close_time = datetime.now(pytz.UTC)
-                trade.result = 'WIN' if actual_pl > 0 else 'LOSS'
-                trade_result = trade.result
+                trade.result = trade_result
                 
             session.commit()
             
@@ -1398,9 +1397,10 @@ class PositionTracker:
                         except asyncio.TimeoutError:
                             logger.error(f"Failed to send exit notification to user {user_id}: asyncio.TimeoutError after 10s")
                             try:
-                                result_emoji = '✅' if trade_result == 'WIN' else '❌'
+                                result_emoji = '✅' if actual_pl >= 0 else '❌'
                                 pl_text = f"+${actual_pl:.2f}" if actual_pl >= 0 else f"-${abs(actual_pl):.2f}"
-                                simple_msg = f"{result_emoji} TRADE CLOSED\nEntry: ${entry_price:.2f}\nExit: ${exit_price:.2f}\nP/L: {pl_text}"
+                                result_status = "PROFIT LOCKED" if actual_pl >= 0 and reason in ['SL_HIT', 'DYNAMIC_SL_HIT'] else ("WIN" if actual_pl >= 0 else "LOSS")
+                                simple_msg = f"{result_emoji} TRADE CLOSED - {result_status}\nEntry: ${entry_price:.2f}\nExit: ${exit_price:.2f}\nP/L: {pl_text}"
                                 await asyncio.wait_for(
                                     self.telegram_app.bot.send_message(chat_id=user_id, text=simple_msg),
                                     timeout=5.0
@@ -1411,9 +1411,10 @@ class PositionTracker:
                         except TimedOut as telegram_err:
                             logger.error(f"Failed to send exit notification to user {user_id}: telegram.error.TimedOut")
                             try:
-                                result_emoji = '✅' if trade_result == 'WIN' else '❌'
+                                result_emoji = '✅' if actual_pl >= 0 else '❌'
                                 pl_text = f"+${actual_pl:.2f}" if actual_pl >= 0 else f"-${abs(actual_pl):.2f}"
-                                simple_msg = f"{result_emoji} TRADE CLOSED\nEntry: ${entry_price:.2f}\nExit: ${exit_price:.2f}\nP/L: {pl_text}"
+                                result_status = "PROFIT LOCKED" if actual_pl >= 0 and reason in ['SL_HIT', 'DYNAMIC_SL_HIT'] else ("WIN" if actual_pl >= 0 else "LOSS")
+                                simple_msg = f"{result_emoji} TRADE CLOSED - {result_status}\nEntry: ${entry_price:.2f}\nExit: ${exit_price:.2f}\nP/L: {pl_text}"
                                 await asyncio.wait_for(
                                     self.telegram_app.bot.send_message(chat_id=user_id, text=simple_msg),
                                     timeout=5.0

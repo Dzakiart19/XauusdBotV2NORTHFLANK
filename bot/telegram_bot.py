@@ -3275,9 +3275,11 @@ class TradingBot:
                 msg += f"Entry: ${trade.entry_price:.2f}\n"
                 
                 if trade.status == 'CLOSED':
-                    result_emoji = "✅" if trade.result == 'WIN' else "❌"
+                    is_profit = trade.actual_pl is not None and trade.actual_pl >= 0
+                    result_emoji = "✅" if is_profit else "❌"
+                    pl_text = f"+${trade.actual_pl:.2f}" if trade.actual_pl >= 0 else f"-${abs(trade.actual_pl):.2f}"
                     msg += f"Exit: ${trade.exit_price:.2f}\n"
-                    msg += f"P/L: ${trade.actual_pl:.2f} {result_emoji}\n"
+                    msg += f"P/L: {pl_text} {result_emoji}\n"
                 else:
                     msg += f"Status: {trade.status}\n"
                 
@@ -3328,9 +3330,9 @@ class TradingBot:
                 return
             
             total_trades = len(all_trades)
-            wins = len([t for t in all_trades if t.result == 'WIN'])
-            losses = len([t for t in all_trades if t.result == 'LOSS'])
-            total_pl = sum([t.actual_pl for t in all_trades if t.actual_pl])
+            wins = len([t for t in all_trades if t.actual_pl is not None and t.actual_pl >= 0])
+            losses = len([t for t in all_trades if t.actual_pl is not None and t.actual_pl < 0])
+            total_pl = sum([t.actual_pl for t in all_trades if t.actual_pl is not None])
             
             win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
             
