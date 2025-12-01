@@ -4,6 +4,13 @@
 This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision.
 
 ## Recent Changes (December 2025)
+- **Adaptive Volume Filter**: Dynamic volume threshold based on volatility zone (LOW: 0.3-0.5, NORMAL: 0.5-0.6, HIGH: 0.6-0.7) and session strength, replacing rigid 1.1x check
+- **Dynamic ADX Threshold**: ADX threshold adapts to market conditions (8-20 range vs fixed 22), with session and volatility modifiers
+- **Parallel Timeframe Signal Generation**: M1, M5, H1 signals generated concurrently with asyncio.gather and 15s timeout per check, with voting system for direction alignment
+- **Smart Signal Cooldown**: Per-signal-type cooldown (BUY/SELL tracked separately) instead of global cooldown, allowing alternating signals
+- **Health Monitor Fix**: Parallel quick checks (200ms timeout), removed max_restarts limit for unlimited auto-restart capability
+- **Per-User Web Dashboard**: Telegram user authentication for web app with isolated data views per user
+- **Auto-Pin /help**: The /start command now automatically sends and pins the /help message for easy access
 - **Enhanced Inside Bar Pattern Detection**: New `detect_inside_bar_pattern()` method with consolidation levels (1-3), breakout potential analysis, mother bar tracking, squeeze ratio calculation, and confidence modifiers
 - **Breakout Confirmation System**: New `check_breakout_confirmation()` method validating ATR expansion, volume, RSI/MACD momentum alignment, and M5 breakout confirmation with non-blocking confidence scoring (0.7-1.0)
 - **Session TP/SL Optimization**: New `get_session_tp_sl_multiplier()` method for session-based TP/SL adjustment (STRONGEST: 1.15x TP, STRONG: 1.05-1.10x, MEDIUM: 0.95x, WEAK: 0.80x)
