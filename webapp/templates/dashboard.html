@@ -210,14 +210,22 @@
     </div>
     
     <script>
-        const DEBUG = true;
+        var DEBUG = (function() {
+            try {
+                var urlParams = new URLSearchParams(window.location.search);
+                if (urlParams.get('debug') === 'true') return true;
+                if (urlParams.get('debug') === 'false') return false;
+            } catch (e) {}
+            return false;
+        })();
+        
         let loadingHidden = false;
         
         function debugLog(msg) {
             const timestamp = new Date().toLocaleTimeString('id-ID', { hour12: false });
             const fullMsg = `[${timestamp}] ${msg}`;
-            console.log('[DASHBOARD] ' + fullMsg);
             if (DEBUG) {
+                console.log('[DASHBOARD] ' + fullMsg);
                 const debugEl = document.getElementById('debug-console');
                 if (debugEl) {
                     debugEl.classList.add('active');

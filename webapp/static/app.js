@@ -1,18 +1,28 @@
 "use strict";
 
 (function() {
-    const DEBUG = true;
-    const TelegramWebApp = window.Telegram ? window.Telegram.WebApp : null;
+    var DEBUG = (function() {
+        try {
+            var urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('debug') === 'true') return true;
+            if (urlParams.get('debug') === 'false') return false;
+        } catch (e) {}
+        return false;
+    })();
+    
+    var TelegramWebApp = window.Telegram ? window.Telegram.WebApp : null;
 
     function debugLog(msg) {
         var timestamp = new Date().toLocaleTimeString('id-ID', { hour12: false });
         var fullMsg = '[' + timestamp + '] ' + msg;
-        console.log('[APP] ' + fullMsg);
-        var debugEl = document.getElementById('debug-console');
-        if (debugEl && DEBUG) {
-            debugEl.classList.add('active');
-            debugEl.innerHTML += fullMsg + '<br>';
-            debugEl.scrollTop = debugEl.scrollHeight;
+        if (DEBUG) {
+            console.log('[APP] ' + fullMsg);
+            var debugEl = document.getElementById('debug-console');
+            if (debugEl) {
+                debugEl.classList.add('active');
+                debugEl.innerHTML += fullMsg + '<br>';
+                debugEl.scrollTop = debugEl.scrollHeight;
+            }
         }
     }
 
