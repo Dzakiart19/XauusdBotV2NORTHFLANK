@@ -1870,6 +1870,149 @@ class IndicatorEngine:
             self._logger.warning(f"Gagal mendeteksi inside bar: {str(e)}")
             return default_result
     
+    def detect_inside_bar_pattern(self, df: pd.DataFrame, lookback: int = 3) -> Dict:
+        """
+        BATCH 2 - IMPROVEMENT 2: Enhanced Inside Bar Pattern Detection
+        
+        Deteksi Inside Bar Pattern untuk identifikasi market consolidation.
+        Inside Bar = candle terbaru HIGH < previous HIGH dan LOW > previous LOW
+        
+        Args:
+            df: DataFrame with OHLC data
+            lookback: Number of candles to check for consecutive inside bars (default: 3)
+        
+        Returns:
+            Dict with:
+            - is_inside_bar: Boolean
+            - consolidation_level: 1-3 (semakin tinggi = consolidation semakin kuat)
+            - breakout_potential: 'high'/'medium'/'low'
+            - nearest_resistance: Resistance level untuk breakout
+            - nearest_support: Support level untuk breakout
+            - confidence_modifier: 0.85-1.0 (boost jika clear inside bars)
+            - consecutive_inside_bars: Number of consecutive inside bars
+            - mother_bar_range: Range of the mother bar
+            - squeeze_ratio: Compression ratio (current/mother range)
+        
+        Pattern Logic:
+        - Cek candle terakhir untuk inside bar sequence
+        - Inside bar = high[i] < high[i-1] AND low[i] > low[i-1]
+        - Consolidation strength = jumlah consecutive inside bars
+        - Breakout potential tinggi jika setelah 3+ inside bars
+        - Non-blocking: confidence modifier 0.85-1.0
+        """
+        default_result = {
+            'is_inside_bar': False,
+            'consolidation_level': 0,
+            'breakout_potential': 'none',
+            'nearest_resistance': 0.0,
+            'nearest_support': 0.0,
+            'confidence_modifier': 1.0,
+            'consecutive_inside_bars': 0,
+            'mother_bar_range': 0.0,
+            'squeeze_ratio': 1.0,
+            'description': 'No inside bar pattern detected'
+        }
+        
+        if not self._validate_dataframe(df, ['high', 'low', 'close']):
+            return default_result
+        
+        min_required = lookback + 2
+        if len(df) < min_required:
+            return default_result
+        
+        try:
+            high = self._get_column_series(df, 'high')
+            low = self._get_column_series(df, 'low')
+            close = self._get_column_series(df, 'close')
+            
+            current_high = safe_series_operation(high, 'value', -1, 0.0)
+            current_low = safe_series_operation(low, 'value', -1, 0.0)
+            prev_high = safe_series_operation(high, 'value', -2, 0.0)
+            prev_low = safe_series_operation(low, 'value', -2, 0.0)
+            
+            if current_high <= 0 or current_low <= 0 or prev_high <= 0 or prev_low <= 0:
+                return default_result
+            
+            is_inside = (current_high < prev_high) and (current_low > prev_low)
+            
+            if not is_inside:
+                return default_result
+            
+            consecutive_inside_bars = 1
+            mother_bar_high = prev_high
+            mother_bar_low = prev_low
+            
+            for i in range(2, min(lookback + 2, len(df))):
+                bar_high = safe_series_operation(high, 'value', -i, 0.0)
+                bar_low = safe_series_operation(low, 'value', -i, 0.0)
+                prev_bar_high = safe_series_operation(high, 'value', -(i + 1), 0.0)
+                prev_bar_low = safe_series_operation(low, 'value', -(i + 1), 0.0)
+                
+                if prev_bar_high <= 0 or prev_bar_low <= 0:
+                    break
+                
+                if (bar_high < prev_bar_high) and (bar_low > prev_bar_low):
+                    consecutive_inside_bars += 1
+                    mother_bar_high = prev_bar_high
+                    mother_bar_low = prev_bar_low
+                else:
+                    break
+            
+            mother_bar_range = mother_bar_high - mother_bar_low
+            current_range = current_high - current_low
+            
+            if mother_bar_range > 1e-10:
+                squeeze_ratio = current_range / mother_bar_range
+            else:
+                squeeze_ratio = 1.0
+            
+            if np.isnan(squeeze_ratio) or np.isinf(squeeze_ratio):
+                squeeze_ratio = 1.0
+            
+            if consecutive_inside_bars >= 3:
+                consolidation_level = 3
+                breakout_potential = 'high'
+                confidence_modifier = 1.0
+            elif consecutive_inside_bars == 2:
+                consolidation_level = 2
+                breakout_potential = 'medium'
+                confidence_modifier = 0.95
+            else:
+                consolidation_level = 1
+                breakout_potential = 'low' if squeeze_ratio > 0.5 else 'medium'
+                confidence_modifier = 0.90 if squeeze_ratio < 0.5 else 0.85
+            
+            if squeeze_ratio < 0.3:
+                confidence_modifier = min(confidence_modifier + 0.05, 1.0)
+                if breakout_potential == 'low':
+                    breakout_potential = 'medium'
+            
+            description = (
+                f"Inside bar pattern: {consecutive_inside_bars} consecutive, "
+                f"consolidation level {consolidation_level}, "
+                f"breakout potential {breakout_potential}, "
+                f"squeeze ratio {squeeze_ratio:.2f}"
+            )
+            
+            self._logger.debug(description)
+            
+            return {
+                'is_inside_bar': True,
+                'consolidation_level': consolidation_level,
+                'breakout_potential': breakout_potential,
+                'nearest_resistance': float(mother_bar_high),
+                'nearest_support': float(mother_bar_low),
+                'confidence_modifier': float(confidence_modifier),
+                'consecutive_inside_bars': consecutive_inside_bars,
+                'mother_bar_range': float(mother_bar_range),
+                'squeeze_ratio': float(squeeze_ratio),
+                'description': description
+            }
+            
+        except Exception as e:
+            self._logger.warning(f"Gagal mendeteksi inside bar pattern: {str(e)}")
+            return default_result
+    
     def detect_pin_bar(self, df: pd.DataFrame, signal_type: str = 'BUY') -> Dict:
         """
         Detect Pin Bar (rejection candle) pattern.

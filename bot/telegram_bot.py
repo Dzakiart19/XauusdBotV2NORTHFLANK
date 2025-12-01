@@ -4866,6 +4866,177 @@ class TradingBot:
             except (TelegramError, asyncio.CancelledError):
                 pass
 
+    async def winstats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        BATCH 3 - IMPROVEMENT 5: Enhanced Win Stats Command
+        
+        Command untuk menampilkan statistik win rate lengkap dengan breakdown
+        per signal type, session, pattern, dan volatility zone.
+        """
+        if update.effective_user is None or update.message is None or update.effective_chat is None:
+            return
+        
+        user = update.effective_user
+        message = update.message
+        chat = update.effective_chat
+        
+        if not await self._check_user_rate_limit(user.id):
+            try:
+                await message.reply_text("Anda mengirim terlalu banyak request. Silakan tunggu sebentar.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+            return
+        
+        try:
+            if self.user_manager:
+                self.user_manager.update_user_activity(user.id)
+            
+            days = 30
+            if context.args and len(context.args) > 0:
+                try:
+                    days = int(context.args[0])
+                    if days < 1 or days > 365:
+                        days = 30
+                except (ValueError, TypeError):
+                    days = 30
+            
+            if not self.db_manager:
+                await message.reply_text("Database tidak tersedia. Coba lagi nanti.")
+                return
+            
+            stats = self.db_manager.get_enhanced_win_stats(days=days)
+            
+            if not stats or stats['overall']['total_trades'] == 0:
+                no_data_msg = (
+                    f"*Win Rate Statistics ({days} Hari)*\n\n"
+                    "Belum ada data trading untuk periode ini.\n\n"
+                    "Gunakan /monitor untuk mulai trading."
+                )
+                await message.reply_text(no_data_msg, parse_mode='Markdown')
+                return
+            
+            overall = stats['overall']
+            win_rate = overall['win_rate']
+            total = overall['total_trades']
+            wins = overall['wins']
+            losses = overall['losses']
+            total_pnl = overall['total_pnl']
+            avg_pnl = overall['avg_pnl']
+            
+            if win_rate >= 60:
+                wr_emoji = "EXCELLENT"
+            elif win_rate >= 50:
+                wr_emoji = "GOOD"
+            elif win_rate >= 40:
+                wr_emoji = "MODERATE"
+            else:
+                wr_emoji = "NEEDS WORK"
+            
+            msg_parts = [
+                f"*Win Rate Statistics ({days} Hari)*\n",
+                f"\n*OVERALL PERFORMANCE ({wr_emoji})*",
+                f"Win Rate: {win_rate:.1f}%",
+                f"Total: {total} trades ({wins}W / {losses}L)",
+                f"PnL: {total_pnl:+.2f} | Avg: {avg_pnl:+.2f}",
+            ]
+            
+            rr = stats.get('avg_risk_reward', 0)
+            if rr > 0:
+                msg_parts.append(f"Risk:Reward: 1:{rr:.2f}")
+            
+            consecutive = stats.get('consecutive', {})
+            if consecutive:
+                cur_w = consecutive.get('current_wins', 0)
+                cur_l = consecutive.get('current_losses', 0)
+                max_w = consecutive.get('max_wins', 0)
+                max_l = consecutive.get('max_losses', 0)
+                msg_parts.append(f"\n*STREAK*")
+                msg_parts.append(f"Current: {cur_w}W / {cur_l}L")
+                msg_parts.append(f"Max: {max_w}W / {max_l}L")
+            
+            by_type = stats.get('by_signal_type', {})
+            if by_type:
+                msg_parts.append(f"\n*BY SIGNAL TYPE*")
+                for sig_type, data in by_type.items():
+                    wr = data['win_rate']
+                    t = data['total_trades']
+                    w = data['wins']
+                    l = data['losses']
+                    msg_parts.append(f"{sig_type}: {wr:.1f}% ({w}W/{l}L)")
+            
+            by_session = stats.get('by_session', {})
+            if by_session:
+                msg_parts.append(f"\n*BY SESSION*")
+                sorted_sessions = sorted(by_session.items(), key=lambda x: x[1]['win_rate'], reverse=True)[:3]
+                for sess_name, data in sorted_sessions:
+                    wr = data['win_rate']
+                    t = data['total_trades']
+                    short_name = sess_name[:15] + '...' if len(sess_name) > 15 else sess_name
+                    msg_parts.append(f"{short_name}: {wr:.1f}% ({t} trades)")
+            
+            by_pattern = stats.get('by_pattern', {})
+            if by_pattern:
+                msg_parts.append(f"\n*BY PATTERN*")
+                sorted_patterns = sorted(by_pattern.items(), key=lambda x: x[1]['win_rate'], reverse=True)[:3]
+                for pattern_name, data in sorted_patterns:
+                    wr = data['win_rate']
+                    t = data['total_trades']
+                    short_name = pattern_name[:15] + '...' if len(pattern_name) > 15 else pattern_name
+                    msg_parts.append(f"{short_name}: {wr:.1f}% ({t} trades)")
+            
+            best = stats.get('best_performing', {})
+            if any(best.values()):
+                msg_parts.append(f"\n*BEST PERFORMING*")
+                if best.get('signal_type'):
+                    msg_parts.append(f"Type: {best['signal_type']}")
+                if best.get('session'):
+                    sess = best['session'][:15] + '...' if len(best['session']) > 15 else best['session']
+                    msg_parts.append(f"Session: {sess}")
+                if best.get('pattern'):
+                    pat = best['pattern'][:15] + '...' if len(best['pattern']) > 15 else best['pattern']
+                    msg_parts.append(f"Pattern: {pat}")
+            
+            msg_parts.append(f"\n_Gunakan /winstats [days] untuk periode berbeda_")
+            
+            final_msg = '\n'.join(msg_parts)
+            
+            await message.reply_text(final_msg, parse_mode='Markdown')
+            logger.info(f"Winstats command: showed stats for user {mask_user_id(user.id)} ({days} days)")
+            
+        except asyncio.CancelledError:
+            logger.info(f"Winstats command cancelled for user {mask_user_id(user.id)}")
+            raise
+        except RetryAfter as e:
+            logger.warning(f"Rate limit pada winstats command: retry setelah {e.retry_after}s")
+        except BadRequest as e:
+            await self._handle_bad_request(chat.id, e, context="winstats_command")
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except ChatMigrated as e:
+            await self._handle_chat_migrated(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network/timeout error pada winstats command: {e}")
+            try:
+                await message.reply_text("Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except Conflict as e:
+            await self._handle_conflict_error(e)
+        except InvalidToken as e:
+            await self._handle_unauthorized_error(e)
+        except TelegramError as e:
+            logger.error(f"Telegram error pada winstats command: {e}")
+            try:
+                await message.reply_text("Error mengambil statistik.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Data error pada winstats command: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await message.reply_text("Error mengambil statistik.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+
     async def initialize(self):
         if not self.config.TELEGRAM_BOT_TOKEN:
             logger.error("Telegram bot token not configured!")
@@ -4915,6 +5086,7 @@ class TradingBot:
         self.app.add_handler(CommandHandler("refresh", self.refresh_command))
         self.app.add_handler(CommandHandler("trialstatus", self.trialstatus_command))
         self.app.add_handler(CommandHandler("buyaccess", self.buyaccess_command))
+        self.app.add_handler(CommandHandler("winstats", self.winstats_command))
         
         self.app.add_error_handler(self._handle_telegram_error)
         logger.info("✅ Global error handler registered for Telegram updates")

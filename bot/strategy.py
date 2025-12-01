@@ -1977,6 +1977,210 @@ class TradingStrategy:
             result['reason'] = f"Error: {str(e)}"
             return result
     
+    def check_breakout_confirmation(self, indicators: Dict, m5_indicators: Optional[Dict],
+                                     signal_type: str) -> Tuple[bool, str, float]:
+        """
+        BATCH 2 - IMPROVEMENT 6: Breakout Confirmation
+        
+        Konfirmasi breakout dengan validasi:
+        1. ATR expansion (current ATR > average ATR untuk kekuatan)
+        2. Volume confirmation (volume > average untuk breakout valid)
+        3. Momentum direction alignment (MACD/RSI selaras dengan breakout direction)
+        
+        Non-blocking approach: Score modifier 0.7-1.0 berdasarkan confirmation strength
+        
+        Args:
+            indicators: Dictionary of M1 calculated indicators
+            m5_indicators: Optional M5 timeframe indicators
+            signal_type: 'BUY' or 'SELL'
+            
+        Returns:
+            Tuple of (passed, reason, confidence_score)
+            - passed: True if breakout criteria met
+            - reason: Explanation string
+            - confidence_score: 0.7-1.0 based on confirmation strength
+        """
+        try:
+            if not indicators or not isinstance(indicators, dict):
+                return True, "✅ Breakout check: No data - allowing signal", 1.0
+            
+            criteria_met = 0
+            total_criteria = 4
+            details = []
+            
+            atr = safe_float(indicators.get('atr', 0), 0.0)
+            atr_ma = safe_float(indicators.get('atr_ma', atr), atr)
+            
+            if atr > 0 and atr_ma > 0:
+                atr_ratio = atr / atr_ma
+                if atr_ratio > 1.2:
+                    criteria_met += 1
+                    details.append(f"ATR↑{atr_ratio:.2f}x")
+                elif atr_ratio > 1.0:
+                    criteria_met += 0.5
+                    details.append(f"ATR→{atr_ratio:.2f}x")
+                else:
+                    details.append(f"ATR↓{atr_ratio:.2f}x")
+            else:
+                criteria_met += 0.5
+                details.append("ATR:N/A")
+            
+            volume = safe_float(indicators.get('volume', 0), 0.0)
+            volume_avg = safe_float(indicators.get('volume_avg', volume), volume)
+            
+            if volume > 0 and volume_avg > 0:
+                volume_ratio = volume / volume_avg
+                if volume_ratio > 1.5:
+                    criteria_met += 1
+                    details.append(f"VOL↑{volume_ratio:.2f}x")
+                elif volume_ratio > 1.0:
+                    criteria_met += 0.5
+                    details.append(f"VOL→{volume_ratio:.2f}x")
+                else:
+                    details.append(f"VOL↓{volume_ratio:.2f}x")
+            else:
+                criteria_met += 0.5
+                details.append("VOL:N/A")
+            
+            rsi = safe_float(indicators.get('rsi', 50), 50.0)
+            if signal_type == 'BUY':
+                if rsi > 60:
+                    criteria_met += 1
+                    details.append(f"RSI✅{rsi:.0f}")
+                elif rsi > 50:
+                    criteria_met += 0.5
+                    details.append(f"RSI→{rsi:.0f}")
+                else:
+                    details.append(f"RSI❌{rsi:.0f}")
+            else:
+                if rsi < 40:
+                    criteria_met += 1
+                    details.append(f"RSI✅{rsi:.0f}")
+                elif rsi < 50:
+                    criteria_met += 0.5
+                    details.append(f"RSI→{rsi:.0f}")
+                else:
+                    details.append(f"RSI❌{rsi:.0f}")
+            
+            macd = safe_float(indicators.get('macd', 0), 0.0)
+            macd_signal = safe_float(indicators.get('macd_signal', 0), 0.0)
+            
+            if signal_type == 'BUY':
+                if macd > macd_signal and macd > 0:
+                    criteria_met += 1
+                    details.append("MACD✅")
+                elif macd > macd_signal or macd > 0:
+                    criteria_met += 0.5
+                    details.append("MACD→")
+                else:
+                    details.append("MACD❌")
+            else:
+                if macd < macd_signal and macd < 0:
+                    criteria_met += 1
+                    details.append("MACD✅")
+                elif macd < macd_signal or macd < 0:
+                    criteria_met += 0.5
+                    details.append("MACD→")
+                else:
+                    details.append("MACD❌")
+            
+            if m5_indicators and isinstance(m5_indicators, dict):
+                m5_close = safe_float(m5_indicators.get('close', 0), 0.0)
+                m5_high = safe_float(m5_indicators.get('high', 0), 0.0)
+                m5_low = safe_float(m5_indicators.get('low', 0), 0.0)
+                
+                if m5_close > 0 and m5_high > 0:
+                    if signal_type == 'BUY' and m5_close >= m5_high * 0.98:
+                        criteria_met += 0.5
+                        details.append("M5:Break↑")
+                    elif signal_type == 'SELL' and m5_close <= m5_low * 1.02:
+                        criteria_met += 0.5
+                        details.append("M5:Break↓")
+            
+            score = criteria_met / total_criteria
+            
+            if score >= 1.0:
+                confidence_score = 1.0
+                status = "🔥 STRONG"
+            elif score >= 0.75:
+                confidence_score = 0.90
+                status = "✅ GOOD"
+            elif score >= 0.5:
+                confidence_score = 0.80
+                status = "⚠️ MODERATE"
+            else:
+                confidence_score = 0.70
+                status = "⚡ WEAK"
+            
+            details_str = ' '.join(details)
+            reason = f"{status} Breakout ({criteria_met:.1f}/{total_criteria}): {details_str}"
+            
+            logger.debug(f"Breakout confirmation for {signal_type}: {reason}")
+            
+            return True, reason, confidence_score
+            
+        except Exception as e:
+            logger.warning(f"Error in check_breakout_confirmation: {e}")
+            return True, f"✅ Breakout check error - allowing signal: {str(e)}", 0.85
+    
+    def get_session_tp_sl_multiplier(self, current_time: Optional[datetime] = None,
+                                      signal_type: str = 'BUY') -> Tuple[str, float, float]:
+        """
+        BATCH 3 - IMPROVEMENT 3: Session Optimization untuk TP/SL Adjustment
+        
+        Analisis kekuatan signal berdasarkan intraday session dan return multiplier
+        untuk adjust TP/SL target.
+        
+        Session definitions:
+        - Tokyo Session (21:00-06:00 UTC): Medium volatility
+        - London Session (07:00-16:00 UTC): HIGH - Best directional moves
+        - New York Session (13:00-22:00 UTC): HIGH - Good execution quality
+        - London-NY Overlap (13:00-16:00 UTC): VERY HIGH - Max liquidity
+        - Asia-London Overlap (07:00-08:00 UTC): HIGH - Good transition
+        
+        Args:
+            current_time: Optional datetime in UTC
+            signal_type: 'BUY' or 'SELL'
+            
+        Returns:
+            Tuple of (session_name, tp_multiplier, sl_multiplier)
+            - tp_multiplier: 0.8-1.15x untuk adjust TP target
+            - sl_multiplier: 0.9-1.1x untuk adjust SL buffer
+        """
+        try:
+            session_info = self.analyze_session_strength(current_time)
+            session_name = session_info.get('current_session', 'Unknown')
+            session_strength = session_info.get('session_strength', 'WEAK')
+            
+            if session_strength == 'STRONGEST':
+                tp_multiplier = 1.15
+                sl_multiplier = 1.05
+            elif session_strength == 'STRONG':
+                if 'London-NY' in session_name or 'Overlap' in session_name:
+                    tp_multiplier = 1.10
+                    sl_multiplier = 1.02
+                else:
+                    tp_multiplier = 1.05
+                    sl_multiplier = 1.0
+            elif session_strength == 'MEDIUM':
+                tp_multiplier = 0.95
+                sl_multiplier = 0.98
+            else:
+                tp_multiplier = 0.80
+                sl_multiplier = 0.95
+            
+            if session_name == 'Weekend (Closed)':
+                tp_multiplier = 0.5
+                sl_multiplier = 0.8
+            
+            logger.debug(f"Session TP/SL: {session_name} -> TP:{tp_multiplier:.2f}x SL:{sl_multiplier:.2f}x")
+            
+            return session_name, float(tp_multiplier), float(sl_multiplier)
+            
+        except Exception as e:
+            logger.warning(f"Error in get_session_tp_sl_multiplier: {e}")
+            return 'Unknown', 1.0, 1.0
+    
     def check_macd_divergence(self, indicators: Dict, signal_type: str, 
                               price_history: Optional[List] = None, 
                               macd_history: Optional[List] = None) -> Tuple[bool, str, float]:

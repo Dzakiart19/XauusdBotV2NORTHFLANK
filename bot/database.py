@@ -5,7 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError, OperationalError, IntegrityError, Ti
 from sqlalchemy.exc import DatabaseError as SQLAlchemyDatabaseError
 from sqlalchemy.pool import QueuePool
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import time
 import threading
@@ -2269,6 +2269,216 @@ class DatabaseManager:
         except (OperationalError, SQLAlchemyError) as e:
             logger.error(f"❌ Database error getting signal performance: {e}")
             return None
+        finally:
+            if session:
+                session.close()
+
+    @retry_on_db_error(max_retries=3, initial_delay=0.1)
+    def get_enhanced_win_stats(self, days: int = 30) -> Dict[str, Any]:
+        """
+        BATCH 3 - IMPROVEMENT 4: Enhanced Win Rate Tracking
+        
+        Get comprehensive win rate statistics for the specified period.
+        
+        Args:
+            days: Number of days to look back (default: 30)
+            
+        Returns:
+            Dict containing:
+            - overall: Overall win rate stats
+            - by_signal_type: Win rate breakdown by BUY/SELL
+            - by_session: Win rate breakdown by trading session
+            - by_pattern: Win rate breakdown by pattern used
+            - avg_risk_reward: Average Risk:Reward ratio
+            - consecutive: Current and max consecutive wins/losses
+            - best_performing: Best performing signal type/session/pattern
+            - summary: Text summary for display
+        """
+        result = {
+            'overall': {
+                'total_trades': 0,
+                'wins': 0,
+                'losses': 0,
+                'win_rate': 0.0,
+                'total_pnl': 0.0,
+                'avg_pnl': 0.0
+            },
+            'by_signal_type': {},
+            'by_session': {},
+            'by_pattern': {},
+            'avg_risk_reward': 0.0,
+            'consecutive': {
+                'current_wins': 0,
+                'current_losses': 0,
+                'max_wins': 0,
+                'max_losses': 0
+            },
+            'best_performing': {
+                'signal_type': None,
+                'session': None,
+                'pattern': None
+            },
+            'summary': 'No trading data available'
+        }
+        
+        session = None
+        try:
+            session = self.get_session()
+            
+            cutoff_date = datetime.utcnow() - timedelta(days=days)
+            
+            all_trades = session.query(SignalPerformance).filter(
+                SignalPerformance.result.isnot(None),
+                SignalPerformance.created_at >= cutoff_date
+            ).order_by(SignalPerformance.closed_at.desc()).all()
+            
+            if not all_trades:
+                logger.info(f"No completed trades found in last {days} days")
+                return result
+            
+            total = len(all_trades)
+            wins = sum(1 for t in all_trades if t.result == 'WIN')
+            losses = sum(1 for t in all_trades if t.result == 'LOSS')
+            total_pnl = sum(t.pnl or 0 for t in all_trades)
+            
+            result['overall'] = {
+                'total_trades': total,
+                'wins': wins,
+                'losses': losses,
+                'win_rate': (wins / total * 100) if total > 0 else 0.0,
+                'total_pnl': total_pnl,
+                'avg_pnl': total_pnl / total if total > 0 else 0.0
+            }
+            
+            best_type_wr = 0
+            for signal_type in ['BUY', 'SELL']:
+                type_trades = [t for t in all_trades if t.signal_type == signal_type]
+                t_total = len(type_trades)
+                if t_total > 0:
+                    t_wins = sum(1 for t in type_trades if t.result == 'WIN')
+                    t_losses = sum(1 for t in type_trades if t.result == 'LOSS')
+                    t_pnl = sum(t.pnl or 0 for t in type_trades)
+                    win_rate = (t_wins / t_total * 100) if t_total > 0 else 0.0
+                    result['by_signal_type'][signal_type] = {
+                        'total_trades': t_total,
+                        'wins': t_wins,
+                        'losses': t_losses,
+                        'win_rate': win_rate,
+                        'avg_pnl': t_pnl / t_total if t_total > 0 else 0.0
+                    }
+                    if win_rate > best_type_wr and t_total >= 3:
+                        best_type_wr = win_rate
+                        result['best_performing']['signal_type'] = signal_type
+            
+            sessions = set(t.session_time for t in all_trades if t.session_time)
+            best_session_wr = 0
+            for sess in sessions:
+                sess_trades = [t for t in all_trades if t.session_time == sess]
+                s_total = len(sess_trades)
+                if s_total > 0:
+                    s_wins = sum(1 for t in sess_trades if t.result == 'WIN')
+                    s_losses = sum(1 for t in sess_trades if t.result == 'LOSS')
+                    s_pnl = sum(t.pnl or 0 for t in sess_trades)
+                    win_rate = (s_wins / s_total * 100) if s_total > 0 else 0.0
+                    result['by_session'][sess] = {
+                        'total_trades': s_total,
+                        'wins': s_wins,
+                        'losses': s_losses,
+                        'win_rate': win_rate,
+                        'avg_pnl': s_pnl / s_total if s_total > 0 else 0.0
+                    }
+                    if win_rate > best_session_wr and s_total >= 3:
+                        best_session_wr = win_rate
+                        result['best_performing']['session'] = sess
+            
+            patterns = set(t.pattern_used for t in all_trades if t.pattern_used)
+            best_pattern_wr = 0
+            for pattern in patterns:
+                pattern_trades = [t for t in all_trades if t.pattern_used == pattern]
+                p_total = len(pattern_trades)
+                if p_total > 0:
+                    p_wins = sum(1 for t in pattern_trades if t.result == 'WIN')
+                    p_losses = sum(1 for t in pattern_trades if t.result == 'LOSS')
+                    p_pnl = sum(t.pnl or 0 for t in pattern_trades)
+                    win_rate = (p_wins / p_total * 100) if p_total > 0 else 0.0
+                    result['by_pattern'][pattern] = {
+                        'total_trades': p_total,
+                        'wins': p_wins,
+                        'losses': p_losses,
+                        'win_rate': win_rate,
+                        'avg_pnl': p_pnl / p_total if p_total > 0 else 0.0
+                    }
+                    if win_rate > best_pattern_wr and p_total >= 3:
+                        best_pattern_wr = win_rate
+                        result['best_performing']['pattern'] = pattern
+            
+            win_trades = [t for t in all_trades if t.result == 'WIN' and t.pnl is not None and t.pnl > 0]
+            loss_trades = [t for t in all_trades if t.result == 'LOSS' and t.pnl is not None and t.pnl < 0]
+            
+            if win_trades and loss_trades:
+                avg_win = sum(t.pnl for t in win_trades) / len(win_trades)
+                avg_loss = abs(sum(t.pnl for t in loss_trades) / len(loss_trades))
+                if avg_loss > 0:
+                    result['avg_risk_reward'] = round(avg_win / avg_loss, 2)
+            
+            current_wins = 0
+            current_losses = 0
+            max_wins = 0
+            max_losses = 0
+            temp_wins = 0
+            temp_losses = 0
+            
+            completed_trades = [t for t in all_trades if t.result in ('WIN', 'LOSS')]
+            
+            for trade in completed_trades:
+                if trade.result == 'WIN':
+                    temp_wins += 1
+                    temp_losses = 0
+                    if temp_wins > max_wins:
+                        max_wins = temp_wins
+                else:
+                    temp_losses += 1
+                    temp_wins = 0
+                    if temp_losses > max_losses:
+                        max_losses = temp_losses
+            
+            for trade in completed_trades:
+                if trade.result == 'WIN':
+                    current_wins += 1
+                else:
+                    break
+            
+            for trade in completed_trades:
+                if trade.result == 'LOSS':
+                    current_losses += 1
+                else:
+                    break
+            
+            result['consecutive'] = {
+                'current_wins': current_wins,
+                'current_losses': current_losses,
+                'max_wins': max_wins,
+                'max_losses': max_losses
+            }
+            
+            wr = result['overall']['win_rate']
+            rr = result['avg_risk_reward']
+            summary = (
+                f"Win Rate: {wr:.1f}% ({wins}W/{losses}L) | "
+                f"R:R {rr:.2f} | "
+                f"Streak: {current_wins}W/{current_losses}L (Max: {max_wins}W/{max_losses}L)"
+            )
+            result['summary'] = summary
+            
+            logger.info(f"📊 Enhanced win stats ({days} days): {summary}")
+            return result
+            
+        except (OperationalError, SQLAlchemyError) as e:
+            logger.error(f"❌ Database error getting enhanced win stats: {e}")
+            return result
+        except (ValueError, TypeError, ZeroDivisionError, AttributeError) as e:
+            logger.error(f"❌ Error calculating enhanced win stats: {type(e).__name__}: {e}")
+            return result
         finally:
             if session:
                 session.close()
