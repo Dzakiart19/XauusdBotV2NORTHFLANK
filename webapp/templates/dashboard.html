@@ -9,7 +9,7 @@
     <title>XAUUSD Trading Dashboard</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/static/style.css?v=4">
+    <link rel="stylesheet" href="/static/style.css?v=5">
     <style>
         .debug-console {
             background: #0a0e27;
@@ -78,7 +78,7 @@
         <div class="header">
             <h1>XAUUSD</h1>
             <div class="subtitle">Xauusd Dzeck Trader</div>
-            <div id="user-greeting" class="user-greeting guest">👁️ Mode Tamu</div>
+            <div id="user-greeting" class="user-greeting guest">Mode Tamu</div>
             <div class="status-indicator">
                 <span class="status-dot connecting"></span>
                 <span class="status-text connecting">MENYAMBUNG...</span>
@@ -87,7 +87,7 @@
         
         <div class="card">
             <div class="card-header">
-                <span class="card-title">💰 Harga Real-Time</span>
+                <span class="card-title">Harga Real-Time</span>
                 <span class="card-badge live-badge">LIVE</span>
             </div>
             <div class="price-display">
@@ -116,12 +116,12 @@
         
         <div class="card">
             <div class="card-header">
-                <span class="card-title">📡 Sinyal Terakhir</span>
-                <span class="card-icon">🔔</span>
+                <span class="card-title">Sinyal Terakhir</span>
+                <span class="card-icon"></span>
             </div>
             <div class="signal-display">
                 <div class="signal-badge neutral" id="signal-badge">
-                    ⏳ Menunggu Sinyal
+                    Menunggu Sinyal
                 </div>
                 <div class="signal-info">
                     <div class="signal-info-item">
@@ -130,17 +130,35 @@
                     </div>
                     <div class="signal-info-item">
                         <div class="signal-info-label">SL</div>
-                        <div class="signal-info-value" id="signal-sl">--</div>
+                        <div class="signal-info-value sl-value" id="signal-sl">--</div>
                     </div>
                     <div class="signal-info-item">
                         <div class="signal-info-label">TP</div>
-                        <div class="signal-info-value" id="signal-tp">--</div>
+                        <div class="signal-info-value tp-value" id="signal-tp">--</div>
                     </div>
                 </div>
                 <div class="signal-info" style="margin-top: 8px;">
-                    <div class="signal-info-item" style="grid-column: span 3;">
+                    <div class="signal-info-item">
+                        <div class="signal-info-label">TTL (Sisa Waktu)</div>
+                        <div class="signal-info-value" id="signal-ttl">--</div>
+                    </div>
+                    <div class="signal-info-item">
+                        <div class="signal-info-label">Win Rate</div>
+                        <div class="signal-info-value" id="signal-winrate">--</div>
+                    </div>
+                    <div class="signal-info-item">
+                        <div class="signal-info-label">Kepercayaan</div>
+                        <div class="signal-info-value" id="signal-confidence">--</div>
+                    </div>
+                </div>
+                <div class="signal-info" style="margin-top: 8px;">
+                    <div class="signal-info-item" style="grid-column: span 2;">
                         <div class="signal-info-label">Waktu Sinyal</div>
                         <div class="signal-info-value" id="signal-time">--</div>
+                    </div>
+                    <div class="signal-info-item">
+                        <div class="signal-info-label">Akurasi Entry</div>
+                        <div class="signal-info-value" id="signal-accuracy">--</div>
                     </div>
                 </div>
             </div>
@@ -148,7 +166,7 @@
         
         <div class="card position-card">
             <div class="card-header">
-                <span class="card-title">📊 Posisi Aktif</span>
+                <span class="card-title">Posisi Aktif</span>
                 <span class="card-badge realtime-badge">REALTIME</span>
             </div>
             <div id="position-container">
@@ -160,26 +178,26 @@
         
         <div class="card chart-card">
             <div class="card-header">
-                <span class="card-title">📈 Chart XAUUSD M1</span>
-                <span class="card-badge">AUTO UPDATE</span>
+                <span class="card-title">Chart XAUUSD M1</span>
+                <span class="card-badge">EMA 9/21</span>
             </div>
             <div id="chart-container"></div>
         </div>
         
         <div class="card">
             <div class="card-header">
-                <span class="card-title">🎯 Market Regime</span>
+                <span class="card-title">Market Regime</span>
                 <span class="card-badge">30 DETIK</span>
             </div>
             <div class="regime-display" id="regime-tags">
-                <span class="regime-tag loading">⏳ Menganalisis...</span>
+                <span class="regime-tag loading">Menganalisis...</span>
             </div>
         </div>
         
         <div class="card">
             <div class="card-header">
-                <span class="card-title">📉 Statistik</span>
-                <span class="card-icon">📊</span>
+                <span class="card-title">Statistik</span>
+                <span class="card-icon"></span>
             </div>
             <div class="stats-grid">
                 <div class="stat-item">
@@ -203,7 +221,7 @@
         
         <div class="card">
             <div class="card-header">
-                <span class="card-title">📜 Riwayat Trading</span>
+                <span class="card-title">Riwayat Trading</span>
                 <span class="card-badge">10 DETIK</span>
             </div>
             <div id="trade-history-container" class="trade-history">
@@ -212,7 +230,7 @@
         </div>
         
         <button class="refresh-btn" id="refresh-btn">
-            🔄 Refresh Manual
+            Refresh Manual
         </button>
         
         <div class="update-time" id="update-time">
@@ -224,6 +242,8 @@
             <p>Sinyal trading unlimited 24/7</p>
         </div>
     </div>
+    
+    <div id="toast-container" class="toast-container"></div>
     
     <script>
         var DEBUG = (function() {
@@ -268,7 +288,7 @@
             }
         }
         
-        debugLog('Dashboard HTML loaded - v4.0 (Real-Time)');
+        debugLog('Dashboard HTML loaded - v5.0 (Enhanced)');
         debugLog('User Agent: ' + navigator.userAgent.substring(0, 50));
         debugLog('LightweightCharts available: ' + (typeof LightweightCharts !== 'undefined'));
         debugLog('Telegram WebApp available: ' + (typeof window.Telegram !== 'undefined'));
@@ -289,7 +309,7 @@
     <script>
         debugLog('Before loading app.js');
     </script>
-    <script src="/static/app.js?v=20251201v4"></script>
+    <script src="/static/app.js?v=20251201v5"></script>
     <script>
         debugLog('After loading app.js - checking if loaded');
         if (typeof refreshData === 'function') {

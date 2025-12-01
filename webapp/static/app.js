@@ -10,6 +10,14 @@
         return false;
     })();
     
+    var FPS_MODE = (function() {
+        try {
+            var urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get('fps') === '1';
+        } catch (e) {}
+        return false;
+    })();
+    
     var TelegramWebApp = window.Telegram ? window.Telegram.WebApp : null;
 
     function debugLog(msg) {
@@ -27,7 +35,7 @@
     }
 
     window.debugLog = debugLog;
-    debugLog('app.js loaded - v4.0 (Real-Time Dashboard)');
+    debugLog('app.js loaded - v5.1 (Enhanced Dashboard)');
 
     var isConnected = false;
     var lastUpdateTime = null;
@@ -37,6 +45,9 @@
     var fetchInProgress = false;
     var chart = null;
     var candleSeries = null;
+    var emaSeries9 = null;
+    var emaSeries21 = null;
+    var emaSeriesInitialized = false;
     var entryLine = null;
     var slLine = null;
     var tpLine = null;
@@ -46,18 +57,250 @@
     var wsReconnectTimer = null;
     var wsReconnectAttempts = 0;
     var MAX_WS_RECONNECT_ATTEMPTS = 15;
-    var useWebSocket = true;
+    var useWebSocket = false;
     var connectionState = 'disconnected';
     var lastPriceData = null;
     var lastDataHash = null;
+    
+    var cachedCandleData = null;
+    var lastCandleDataFetch = 0;
+    var CANDLE_CACHE_DURATION = 2000;
     
     var ACTIVE_DATA_INTERVAL = 2000;
     var HISTORY_DATA_INTERVAL = 10000;
     var CHART_UPDATE_INTERVAL = 5000;
     var WS_RECONNECT_TIMEOUT = 2000;
+    var REGIME_TIMEOUT = 5000;
+    var MAX_VISIBLE_TRADES = 50;
+    var TRADES_PER_PAGE = 20;
     
     var currentUserId = null;
     var currentUserFirstName = null;
+    
+    var audioAlertEnabled = true;
+    var lastAlertTime = 0;
+    var ALERT_COOLDOWN = 10000;
+    
+    var lastSignalId = null;
+    var lastPositionStatus = null;
+    
+    var tpAlertFired = {};
+    var slAlertFired = {};
+    
+    var fpsCounter = {
+        frames: 0,
+        lastTime: performance.now(),
+        fps: 0
+    };
+    
+    var apiResponseTimes = [];
+    var MAX_RESPONSE_TIMES = 20;
+    
+    var tradeHistoryBuffer = [];
+    var visibleTradeEnd = 20;
+    var isLoadingMoreTrades = false;
+
+    function calculateEMA(data, period) {
+        if (!data || data.length < period) return [];
+        var k = 2 / (period + 1);
+        var emaData = [];
+        var sum = 0;
+        for (var i = 0; i < period; i++) {
+            sum += data[i].close;
+        }
+        var prevEma = sum / period;
+        emaData.push({ time: data[period - 1].time, value: prevEma });
+        
+        for (var i = period; i < data.length; i++) {
+            var ema = (data[i].close - prevEma) * k + prevEma;
+            emaData.push({ time: data[i].time, value: ema });
+            prevEma = ema;
+        }
+        return emaData;
+    }
+
+    function showToast(message, type, duration) {
+        type = type || 'info';
+        duration = duration || 3000;
+        
+        var container = document.getElementById('toast-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'toast-container';
+            container.className = 'toast-container';
+            document.body.appendChild(container);
+        }
+        
+        if (container.children.length > 3) {
+            return;
+        }
+        
+        var toast = document.createElement('div');
+        toast.className = 'toast toast-' + type;
+        
+        var icon = '';
+        switch(type) {
+            case 'success': icon = '✅'; break;
+            case 'error': icon = '❌'; break;
+            case 'warning': icon = '⚠️'; break;
+            case 'signal': icon = '📡'; break;
+            case 'position': icon = '📊'; break;
+            default: icon = 'ℹ️';
+        }
+        
+        toast.innerHTML = '<span class="toast-icon">' + icon + '</span><span class="toast-message">' + message + '</span>';
+        container.appendChild(toast);
+        
+        requestAnimationFrame(function() {
+            toast.classList.add('toast-show');
+        });
+        
+        setTimeout(function() {
+            toast.classList.remove('toast-show');
+            toast.classList.add('toast-hide');
+            setTimeout(function() {
+                if (toast.parentNode) {
+                    toast.parentNode.removeChild(toast);
+                }
+            }, 300);
+        }, duration);
+    }
+
+    function playAlertSound(type, positionId) {
+        if (!audioAlertEnabled) return;
+        
+        var alertKey = positionId + '_' + type;
+        if (type === 'tp' && tpAlertFired[alertKey]) return;
+        if (type === 'sl' && slAlertFired[alertKey]) return;
+        
+        var now = Date.now();
+        if (now - lastAlertTime < ALERT_COOLDOWN) return;
+        lastAlertTime = now;
+        
+        if (type === 'tp') tpAlertFired[alertKey] = true;
+        if (type === 'sl') slAlertFired[alertKey] = true;
+        
+        try {
+            var audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            var oscillator = audioContext.createOscillator();
+            var gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            if (type === 'tp') {
+                oscillator.frequency.value = 880;
+                oscillator.type = 'sine';
+            } else if (type === 'sl') {
+                oscillator.frequency.value = 440;
+                oscillator.type = 'sawtooth';
+            } else {
+                oscillator.frequency.value = 660;
+                oscillator.type = 'square';
+            }
+            
+            gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+            
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + 0.5);
+        } catch (e) {
+            debugLog('Audio alert error: ' + e.message);
+        }
+    }
+
+    function resetAlertFlags(positionId) {
+        if (positionId) {
+            delete tpAlertFired[positionId + '_tp'];
+            delete slAlertFired[positionId + '_sl'];
+        } else {
+            tpAlertFired = {};
+            slAlertFired = {};
+        }
+    }
+
+    function formatPipsAndUSD(pips, usd) {
+        var pipsStr = (pips >= 0 ? '+' : '') + pips.toFixed(1) + ' pips';
+        var usdStr = (usd >= 0 ? '+' : '') + '$' + Math.abs(usd).toFixed(2);
+        return pipsStr + ' / ' + usdStr;
+    }
+
+    function calculateTTL(signalTimestamp, maxAge) {
+        maxAge = maxAge || 3600000;
+        if (!signalTimestamp) return null;
+        
+        var signalTime = new Date(signalTimestamp).getTime();
+        var now = Date.now();
+        var elapsed = now - signalTime;
+        var remaining = maxAge - elapsed;
+        
+        if (remaining <= 0) return 'Kadaluarsa';
+        
+        var minutes = Math.floor(remaining / 60000);
+        var seconds = Math.floor((remaining % 60000) / 1000);
+        
+        if (minutes > 0) {
+            return minutes + 'm ' + seconds + 's';
+        }
+        return seconds + 's';
+    }
+
+    function getConfidenceGrade(confidence) {
+        if (confidence >= 80) return { grade: 'A', color: 'high-conf', label: 'Sangat Tinggi' };
+        if (confidence >= 60) return { grade: 'B', color: 'med-conf', label: 'Tinggi' };
+        if (confidence >= 40) return { grade: 'C', color: 'low-conf', label: 'Sedang' };
+        return { grade: 'D', color: 'very-low-conf', label: 'Rendah' };
+    }
+
+    function updateFPSCounter() {
+        if (!FPS_MODE) return;
+        
+        fpsCounter.frames++;
+        var now = performance.now();
+        var elapsed = now - fpsCounter.lastTime;
+        
+        if (elapsed >= 1000) {
+            fpsCounter.fps = Math.round((fpsCounter.frames * 1000) / elapsed);
+            fpsCounter.frames = 0;
+            fpsCounter.lastTime = now;
+            
+            var fpsEl = document.getElementById('fps-counter');
+            if (fpsEl) {
+                fpsEl.textContent = 'FPS: ' + fpsCounter.fps;
+                fpsEl.className = 'perf-badge ' + (fpsCounter.fps >= 30 ? 'good' : fpsCounter.fps >= 15 ? 'warning' : 'bad');
+            }
+        }
+        
+        requestAnimationFrame(updateFPSCounter);
+    }
+
+    function updateMemoryUsage() {
+        if (!FPS_MODE || !performance.memory) return;
+        
+        var memEl = document.getElementById('memory-usage');
+        if (memEl) {
+            var usedMB = Math.round(performance.memory.usedJSHeapSize / 1048576);
+            var totalMB = Math.round(performance.memory.totalJSHeapSize / 1048576);
+            memEl.textContent = 'MEM: ' + usedMB + '/' + totalMB + ' MB';
+            memEl.className = 'perf-badge ' + (usedMB < totalMB * 0.7 ? 'good' : usedMB < totalMB * 0.9 ? 'warning' : 'bad');
+        }
+    }
+
+    function updateAPIResponseTime(responseTime) {
+        apiResponseTimes.push(responseTime);
+        if (apiResponseTimes.length > MAX_RESPONSE_TIMES) {
+            apiResponseTimes.shift();
+        }
+        
+        if (!FPS_MODE) return;
+        
+        var avgTime = apiResponseTimes.reduce(function(a, b) { return a + b; }, 0) / apiResponseTimes.length;
+        var apiEl = document.getElementById('api-response-time');
+        if (apiEl) {
+            apiEl.textContent = 'API: ' + Math.round(avgTime) + 'ms';
+            apiEl.className = 'perf-badge ' + (avgTime < 200 ? 'good' : avgTime < 500 ? 'warning' : 'bad');
+        }
+    }
 
     function getTelegramUserId() {
         if (TelegramWebApp && TelegramWebApp.initDataUnsafe && TelegramWebApp.initDataUnsafe.user) {
@@ -79,13 +322,13 @@
         if (!greetingEl) return;
         
         if (currentUserFirstName) {
-            greetingEl.innerHTML = '👤 Selamat datang, <strong>' + currentUserFirstName + '</strong>';
+            greetingEl.innerHTML = 'Selamat datang, <strong>' + currentUserFirstName + '</strong>';
             greetingEl.className = 'user-greeting authenticated';
         } else if (currentUserId) {
-            greetingEl.innerHTML = '👤 User ID: <strong>' + currentUserId + '</strong>';
+            greetingEl.innerHTML = 'User ID: <strong>' + currentUserId + '</strong>';
             greetingEl.className = 'user-greeting authenticated';
         } else {
-            greetingEl.innerHTML = '👁️ Mode Tamu';
+            greetingEl.innerHTML = 'Mode Tamu';
             greetingEl.className = 'user-greeting guest';
         }
     }
@@ -152,6 +395,8 @@
 
     function fetchWithRetry(url, maxRetries) {
         maxRetries = maxRetries || 3;
+        var startTime = performance.now();
+        
         return new Promise(function(resolve, reject) {
             var attempt = 1;
             function doFetch() {
@@ -170,6 +415,9 @@
                     }
                     return response.text();
                 }).then(function(text) {
+                    var responseTime = performance.now() - startTime;
+                    updateAPIResponseTime(responseTime);
+                    
                     debugLog('Response length: ' + text.length + ' chars');
                     if (!text || text.trim() === '') {
                         throw new Error('Empty response body');
@@ -185,6 +433,7 @@
                 }).catch(function(error) {
                     debugLog('Attempt ' + attempt + '/' + maxRetries + ' failed: ' + error.message);
                     if (attempt >= maxRetries) {
+                        showToast('Koneksi gagal: ' + error.message, 'error');
                         reject(error);
                     } else {
                         attempt++;
@@ -210,11 +459,20 @@
         });
     }
 
-    function fetchCandlesData() {
+    function fetchCandlesData(forceRefresh) {
         debugLog('fetchCandlesData called');
+        
+        var now = Date.now();
+        if (!forceRefresh && cachedCandleData && (now - lastCandleDataFetch) < CANDLE_CACHE_DURATION) {
+            debugLog('Using cached candle data (age: ' + (now - lastCandleDataFetch) + 'ms)');
+            return Promise.resolve(cachedCandleData);
+        }
+        
         return fetchWithRetry('/api/candles?timeframe=M1&limit=100').then(function(data) {
             if (data && data.candles) {
                 debugLog('Candles data received: ' + data.candles.length + ' candles');
+                cachedCandleData = data;
+                lastCandleDataFetch = now;
             }
             return data;
         });
@@ -327,6 +585,10 @@
         var slElement = document.getElementById('signal-sl');
         var tpElement = document.getElementById('signal-tp');
         var timeElement = document.getElementById('signal-time');
+        var ttlElement = document.getElementById('signal-ttl');
+        var winRateElement = document.getElementById('signal-winrate');
+        var confidenceElement = document.getElementById('signal-confidence');
+        var accuracyElement = document.getElementById('signal-accuracy');
 
         if (!signalBadge) return;
 
@@ -335,10 +597,39 @@
             var icon = direction === 'BUY' ? '📈' : '📉';
             signalBadge.innerHTML = icon + ' ' + direction;
             signalBadge.className = 'signal-badge ' + direction.toLowerCase();
+            
             if (entryElement) entryElement.textContent = formatPrice(data.last_signal.entry_price);
             if (slElement) slElement.textContent = formatPrice(data.last_signal.sl);
             if (tpElement) tpElement.textContent = formatPrice(data.last_signal.tp);
             if (timeElement) timeElement.textContent = formatTime(data.last_signal.timestamp);
+            
+            if (ttlElement) {
+                var ttl = calculateTTL(data.last_signal.timestamp, 3600000);
+                ttlElement.textContent = ttl || '--';
+                ttlElement.className = 'signal-info-value ' + (ttl === 'Kadaluarsa' ? 'expired' : 'active');
+            }
+            
+            if (winRateElement) {
+                var winRate = data.signal_stats ? data.signal_stats.win_rate : null;
+                winRateElement.textContent = winRate !== null ? winRate.toFixed(1) + '%' : '--';
+            }
+            
+            if (confidenceElement) {
+                var confidence = data.last_signal.confidence || (data.regime ? data.regime.confidence * 100 : 50);
+                var gradeInfo = getConfidenceGrade(confidence);
+                confidenceElement.innerHTML = '<span class="grade-badge ' + gradeInfo.color + '">' + gradeInfo.grade + '</span> ' + gradeInfo.label;
+            }
+            
+            if (accuracyElement) {
+                var accuracy = data.signal_stats ? data.signal_stats.entry_accuracy : null;
+                accuracyElement.textContent = accuracy !== null ? accuracy.toFixed(1) + '%' : '--';
+            }
+            
+            var signalId = data.last_signal.timestamp + '_' + direction;
+            if (lastSignalId !== signalId) {
+                showToast('Sinyal baru: ' + direction + ' @ ' + formatPrice(data.last_signal.entry_price), 'signal');
+                lastSignalId = signalId;
+            }
         } else {
             signalBadge.innerHTML = '⏳ Menunggu Sinyal';
             signalBadge.className = 'signal-badge neutral';
@@ -346,6 +637,10 @@
             if (slElement) slElement.textContent = '--';
             if (tpElement) tpElement.textContent = '--';
             if (timeElement) timeElement.textContent = '--';
+            if (ttlElement) ttlElement.textContent = '--';
+            if (winRateElement) winRateElement.textContent = '--';
+            if (confidenceElement) confidenceElement.textContent = '--';
+            if (accuracyElement) accuracyElement.textContent = '--';
         }
     }
 
@@ -362,6 +657,8 @@
             var pnlPips = pos.current_pnl_pips || 0;
             var distanceToTp = pos.distance_to_tp_pips || 0;
             var distanceToSl = pos.distance_to_sl_pips || 0;
+            
+            var positionId = pos.id || pos.entry_price + '_' + pos.signal_time;
             
             var tpProgress = 0;
             var slProgress = 0;
@@ -380,30 +677,64 @@
                 }
                 
                 if (tpProgress >= 95) {
-                    tpAlert = ' 🎯 HAMPIR TP!';
+                    tpAlert = ' 🎯';
+                    if (audioAlertEnabled) {
+                        playAlertSound('tp', positionId);
+                    }
                 }
                 if (slProgress >= 95) {
-                    slAlert = ' ⚠️ HAMPIR SL!';
+                    slAlert = ' ⚠️';
+                    if (audioAlertEnabled) {
+                        playAlertSound('sl', positionId);
+                    }
                 }
             }
 
             var pnlClass = isProfit ? 'profit' : 'loss';
             var pnlIcon = isProfit ? '📈' : '📉';
+            
+            var trailingSL = pos.trailing_sl || pos.stop_loss;
+            var hasTrailing = pos.trailing_sl && pos.trailing_sl !== pos.stop_loss;
 
             container.innerHTML = '<div class="position-header">' +
                 '<span class="position-type ' + direction.toLowerCase() + '">' + (direction === 'BUY' ? '📈' : '📉') + ' ' + direction + '</span>' +
-                '<span class="position-pnl ' + pnlClass + '">' + pnlIcon + ' ' + formatCurrency(pnl) + '</span>' +
+                '<span class="position-pnl ' + pnlClass + '">' + pnlIcon + ' ' + formatPipsAndUSD(pnlPips, pnl) + '</span>' +
                 '</div>' +
                 '<div class="position-details">' +
                 '<div class="signal-info-item"><div class="signal-info-label">Entry</div><div class="signal-info-value">' + formatPrice(pos.entry_price) + '</div></div>' +
-                '<div class="signal-info-item"><div class="signal-info-label">SL</div><div class="signal-info-value sl-value">' + formatPrice(pos.sl || pos.stop_loss) + '</div></div>' +
+                '<div class="signal-info-item"><div class="signal-info-label">SL' + (hasTrailing ? ' 🔄' : '') + '</div><div class="signal-info-value sl-value">' + formatPrice(trailingSL) + '</div></div>' +
                 '<div class="signal-info-item"><div class="signal-info-label">TP</div><div class="signal-info-value tp-value">' + formatPrice(pos.tp || pos.take_profit) + '</div></div>' +
                 '</div>' +
-                '<div class="position-details" style="margin-top: 8px;">' +
-                '<div class="signal-info-item"><div class="signal-info-label">P/L Pips</div><div class="signal-info-value ' + pnlClass + '">' + (pnlPips >= 0 ? '+' : '') + pnlPips.toFixed(1) + '</div></div>' +
-                '<div class="signal-info-item"><div class="signal-info-label">Ke TP' + tpAlert + '</div><div class="signal-info-value tp-distance">' + (distanceToTp ? distanceToTp.toFixed(1) : '--') + ' pips</div></div>' +
-                '<div class="signal-info-item"><div class="signal-info-label">Ke SL' + slAlert + '</div><div class="signal-info-value sl-distance">' + (distanceToSl ? distanceToSl.toFixed(1) : '--') + ' pips</div></div>' +
+                '<div class="progress-section">' +
+                '<div class="progress-item">' +
+                '<div class="progress-label">Ke TP' + tpAlert + '</div>' +
+                '<div class="progress-bar-container">' +
+                '<div class="progress-bar progress-tp" style="width: ' + tpProgress + '%"></div>' +
+                '</div>' +
+                '<div class="progress-value">' + tpProgress.toFixed(0) + '% (' + (distanceToTp ? distanceToTp.toFixed(1) : '--') + ' pips)</div>' +
+                '</div>' +
+                '<div class="progress-item">' +
+                '<div class="progress-label">Ke SL' + slAlert + '</div>' +
+                '<div class="progress-bar-container">' +
+                '<div class="progress-bar progress-sl" style="width: ' + slProgress + '%"></div>' +
+                '</div>' +
+                '<div class="progress-value">' + slProgress.toFixed(0) + '% (' + (distanceToSl ? distanceToSl.toFixed(1) : '--') + ' pips)</div>' +
+                '</div>' +
+                '</div>' +
+                '<div class="audio-toggle">' +
+                '<label class="toggle-label">' +
+                '<input type="checkbox" id="audio-alert-toggle" ' + (audioAlertEnabled ? 'checked' : '') + '>' +
+                '<span class="toggle-text">🔔 Audio Alert 95%</span>' +
+                '</label>' +
                 '</div>';
+            
+            var audioToggle = document.getElementById('audio-alert-toggle');
+            if (audioToggle) {
+                audioToggle.addEventListener('change', function() {
+                    audioAlertEnabled = this.checked;
+                    showToast('Audio alert ' + (audioAlertEnabled ? 'aktif' : 'nonaktif'), 'info');
+                });
+            }
             
             if (tpAlert || slAlert) {
                 container.classList.add('position-alert');
@@ -411,10 +742,23 @@
                 container.classList.remove('position-alert');
             }
             
+            if (lastPositionStatus === 'closed') {
+                showToast('Posisi baru dibuka: ' + direction + ' @ ' + formatPrice(pos.entry_price), 'position');
+                resetAlertFlags();
+            }
+            lastPositionStatus = 'open';
+            
             debugLog('Position updated: ' + direction + ' @ ' + pos.entry_price + ' P/L: ' + formatCurrency(pnl));
         } else {
             container.innerHTML = '<div class="no-position"><p>Tidak ada posisi aktif</p></div>';
             container.classList.remove('position-alert');
+            
+            if (lastPositionStatus === 'open') {
+                showToast('Posisi telah ditutup', 'position');
+                resetAlertFlags();
+            }
+            lastPositionStatus = 'closed';
+            
             debugLog('No active position');
         }
     }
@@ -440,14 +784,15 @@
 
     function fetchTradeHistory() {
         debugLog('fetchTradeHistory called');
-        var url = '/api/trade-history?limit=10';
+        var url = '/api/trade-history?limit=' + MAX_VISIBLE_TRADES;
         if (currentUserId) {
             url += '&user_id=' + encodeURIComponent(currentUserId);
         }
         return fetchWithRetry(url).then(function(data) {
             if (data && data.trades) {
                 debugLog('Trade history received: ' + data.trades.length + ' trades');
-                updateTradeHistoryCard(data.trades);
+                tradeHistoryBuffer = data.trades;
+                renderVisibleTrades();
             }
             return data;
         }).catch(function(error) {
@@ -455,18 +800,21 @@
         });
     }
 
-    function updateTradeHistoryCard(trades) {
-        debugLog('updateTradeHistoryCard called');
+    function renderVisibleTrades() {
+        debugLog('renderVisibleTrades called');
         var container = document.getElementById('trade-history-container');
         if (!container) return;
 
-        if (!trades || trades.length === 0) {
+        if (!tradeHistoryBuffer || tradeHistoryBuffer.length === 0) {
             container.innerHTML = '<div class="no-trades">Belum ada riwayat trading</div>';
             return;
         }
 
-        var html = '';
-        trades.forEach(function(trade) {
+        var endIndex = Math.min(visibleTradeEnd, tradeHistoryBuffer.length);
+        var visibleTrades = tradeHistoryBuffer.slice(0, endIndex);
+
+        var html = '<div class="trade-list" id="trade-list">';
+        visibleTrades.forEach(function(trade, index) {
             var signalType = (trade.signal_type || 'BUY').toUpperCase();
             var isProfit = trade.pnl >= 0;
             var pnlText = isProfit ? '+$' + Math.abs(trade.pnl).toFixed(2) : '-$' + Math.abs(trade.pnl).toFixed(2);
@@ -476,7 +824,7 @@
             
             var tradeTime = trade.signal_time ? formatTime(trade.signal_time) : '--';
             
-            html += '<div class="trade-history-item">';
+            html += '<div class="trade-history-item" data-index="' + index + '">';
             html += '<div class="trade-info">';
             html += '<div class="trade-type ' + signalType.toLowerCase() + '">' + (signalType === 'BUY' ? '📈' : '📉') + ' ' + signalType + '</div>';
             html += '<div class="trade-details">Entry: $' + formatPrice(trade.entry_price) + ' | ' + tradeTime + '</div>';
@@ -489,17 +837,54 @@
             html += '</div>';
             html += '</div>';
         });
+        html += '</div>';
+        
+        var remaining = tradeHistoryBuffer.length - endIndex;
+        if (remaining > 0) {
+            var loadCount = Math.min(TRADES_PER_PAGE, remaining);
+            html += '<div class="load-more-container">';
+            html += '<button class="load-more-btn" id="load-more-trades">Muat ' + loadCount + ' trade lagi (' + remaining + ' tersisa)</button>';
+            html += '</div>';
+        }
 
         container.innerHTML = html;
-        debugLog('Trade history updated with ' + trades.length + ' trades');
+        
+        var loadMoreBtn = document.getElementById('load-more-trades');
+        if (loadMoreBtn) {
+            loadMoreBtn.addEventListener('click', function() {
+                if (!isLoadingMoreTrades) {
+                    isLoadingMoreTrades = true;
+                    visibleTradeEnd = Math.min(visibleTradeEnd + TRADES_PER_PAGE, tradeHistoryBuffer.length);
+                    renderVisibleTrades();
+                    isLoadingMoreTrades = false;
+                    debugLog('Loaded more trades, now showing ' + visibleTradeEnd);
+                }
+            });
+        }
+        
+        debugLog('Trade history rendered: ' + visibleTrades.length + ' of ' + tradeHistoryBuffer.length + ' trades');
     }
+
+    function updateTradeHistoryCard(trades) {
+        tradeHistoryBuffer = trades;
+        visibleTradeEnd = Math.min(20, trades.length);
+        renderVisibleTrades();
+    }
+
+    var regimeTimeout = null;
+    var lastRegimeUpdate = 0;
 
     function updateRegimeCard(data) {
         debugLog('updateRegimeCard called');
         var container = document.getElementById('regime-tags');
         if (!container) return;
 
+        if (regimeTimeout) {
+            clearTimeout(regimeTimeout);
+        }
+
         if (data && data.regime && (data.regime.trend || data.regime.bias)) {
+            lastRegimeUpdate = Date.now();
             var tags = [];
             
             if (data.regime.trend) {
@@ -521,7 +906,7 @@
                     trendIcon = '❓';
                 }
                 
-                tags.push('<span class="regime-tag ' + trendClass + '">' + trendIcon + ' ' + data.regime.trend + '</span>');
+                tags.push('<span class="regime-tag ' + trendClass + ' regime-animate">' + trendIcon + ' ' + data.regime.trend + '</span>');
                 debugLog('Regime trend: ' + data.regime.trend);
             }
             
@@ -529,34 +914,47 @@
                 var volText = String(data.regime.volatility).toLowerCase();
                 var volClass = volText.indexOf('high') > -1 ? 'volatile' : volText.indexOf('low') > -1 ? 'calm' : '';
                 var volIcon = volText.indexOf('high') > -1 ? '🔥' : volText.indexOf('low') > -1 ? '😴' : '📊';
-                tags.push('<span class="regime-tag ' + volClass + '">' + volIcon + ' ' + data.regime.volatility + '</span>');
+                tags.push('<span class="regime-tag ' + volClass + ' regime-animate">' + volIcon + ' ' + data.regime.volatility + '</span>');
                 debugLog('Regime volatility: ' + data.regime.volatility);
             }
             
             if (data.regime.bias) {
                 var biasClass = data.regime.bias === 'BUY' ? 'trend-up' : data.regime.bias === 'SELL' ? 'trend-down' : 'neutral';
                 var biasIcon = data.regime.bias === 'BUY' ? '🟢' : data.regime.bias === 'SELL' ? '🔴' : '⚪';
-                tags.push('<span class="regime-tag ' + biasClass + '">' + biasIcon + ' Bias: ' + data.regime.bias + '</span>');
+                tags.push('<span class="regime-tag ' + biasClass + ' regime-animate">' + biasIcon + ' Bias: ' + data.regime.bias + '</span>');
                 debugLog('Regime bias: ' + data.regime.bias);
             }
             
             if (data.regime.confidence !== undefined) {
                 var confPercent = (parseFloat(data.regime.confidence) * 100).toFixed(0);
-                var confClass = confPercent >= 70 ? 'high-conf' : confPercent >= 40 ? 'med-conf' : 'low-conf';
-                tags.push('<span class="regime-tag ' + confClass + '">🎯 Kepercayaan: ' + confPercent + '%</span>');
+                var confClass = confPercent >= 80 ? 'high-conf' : confPercent >= 50 ? 'med-conf' : 'low-conf';
+                tags.push('<span class="regime-tag ' + confClass + ' regime-animate">🎯 Kepercayaan: ' + confPercent + '%</span>');
                 debugLog('Regime confidence: ' + confPercent + '%');
             }
             
             if (data.regime.session) {
-                tags.push('<span class="regime-tag session">🕐 ' + data.regime.session + '</span>');
+                tags.push('<span class="regime-tag session regime-animate">🕐 ' + data.regime.session + '</span>');
             }
             
             container.innerHTML = tags.length > 0 ? tags.join('') : '<span class="regime-tag loading">⏳ Menganalisis...</span>';
             debugLog('Regime tags rendered: ' + tags.length);
         } else {
-            debugLog('No regime data available');
-            container.innerHTML = '<span class="regime-tag loading">⏳ Menganalisis...</span>';
+            var timeSinceLastUpdate = Date.now() - lastRegimeUpdate;
+            if (timeSinceLastUpdate > REGIME_TIMEOUT || lastRegimeUpdate === 0) {
+                debugLog('No regime data available - showing timeout message');
+                container.innerHTML = '<span class="regime-tag uncertain regime-animate">❓ Data tidak tersedia</span>';
+            } else {
+                debugLog('Waiting for regime data...');
+                container.innerHTML = '<span class="regime-tag loading">⏳ Menganalisis...</span>';
+            }
         }
+        
+        regimeTimeout = setTimeout(function() {
+            var timeSinceLastUpdate = Date.now() - lastRegimeUpdate;
+            if (timeSinceLastUpdate > REGIME_TIMEOUT) {
+                container.innerHTML = '<span class="regime-tag uncertain regime-animate">❓ Timeout - coba refresh</span>';
+            }
+        }, REGIME_TIMEOUT);
     }
 
     function updateUpdateTime() {
@@ -577,34 +975,88 @@
 
     function initChart() {
         var container = document.getElementById('chart-container');
-        debugLog('initChart: container=' + (container ? 'found' : 'not found') + ', LWC=' + (typeof LightweightCharts !== 'undefined'));
-
-        if (!container || typeof LightweightCharts === 'undefined') {
+        if (!container) {
+            debugLog('Chart container not found');
             return false;
         }
 
+        debugLog('Initializing chart...');
         try {
-            chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth,
-                height: 300,
-                layout: { background: { type: 'solid', color: '#1a1a2e' }, textColor: '#ffffff' },
-                grid: { vertLines: { color: '#2a2a4e' }, horzLines: { color: '#2a2a4e' } },
-                rightPriceScale: { borderColor: '#2a2a4e' },
-                timeScale: { borderColor: '#2a2a4e', timeVisible: true }
-            });
+            if (typeof LightweightCharts === 'undefined') {
+                debugLog('LightweightCharts not loaded');
+                container.innerHTML = '<div class="chart-error">Chart library tidak tersedia</div>';
+                return false;
+            }
 
-            if (typeof chart.addCandlestickSeries === 'function') {
+            var chartWidth = container.clientWidth || 350;
+            var chartHeight = 300;
+
+            if (LightweightCharts.createChart) {
+                chart = LightweightCharts.createChart(container, {
+                    width: chartWidth,
+                    height: chartHeight,
+                    layout: {
+                        background: { type: 'solid', color: '#1a1a2e' },
+                        textColor: '#d1d4dc',
+                    },
+                    grid: {
+                        vertLines: { color: 'rgba(42, 46, 57, 0.6)' },
+                        horzLines: { color: 'rgba(42, 46, 57, 0.6)' },
+                    },
+                    crosshair: {
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                    },
+                    rightPriceScale: {
+                        borderColor: 'rgba(197, 203, 206, 0.4)',
+                        scaleMargins: {
+                            top: 0.1,
+                            bottom: 0.1,
+                        },
+                    },
+                    timeScale: {
+                        borderColor: 'rgba(197, 203, 206, 0.4)',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
+                    handleScale: {
+                        axisPressedMouseMove: {
+                            time: true,
+                            price: true,
+                        },
+                    },
+                    handleScroll: {
+                        vertTouchDrag: true,
+                        horzTouchDrag: true,
+                        mouseWheel: true,
+                        pressedMouseMove: true,
+                    },
+                });
+
                 candleSeries = chart.addCandlestickSeries({
-                    upColor: '#22c55e', downColor: '#ef4444',
-                    borderUpColor: '#22c55e', borderDownColor: '#ef4444',
-                    wickUpColor: '#22c55e', wickDownColor: '#ef4444'
+                    upColor: '#22c55e',
+                    downColor: '#ef4444',
+                    borderDownColor: '#ef4444',
+                    borderUpColor: '#22c55e',
+                    wickDownColor: '#ef4444',
+                    wickUpColor: '#22c55e',
                 });
-            } else if (typeof chart.addSeries === 'function') {
-                candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
-                    upColor: '#22c55e', downColor: '#ef4444',
-                    borderUpColor: '#22c55e', borderDownColor: '#ef4444',
-                    wickUpColor: '#22c55e', wickDownColor: '#ef4444'
+
+                emaSeries9 = chart.addLineSeries({
+                    color: '#3b82f6',
+                    lineWidth: 1,
+                    title: 'EMA 9',
+                    crosshairMarkerVisible: false,
                 });
+
+                emaSeries21 = chart.addLineSeries({
+                    color: '#fbbf24',
+                    lineWidth: 1,
+                    title: 'EMA 21',
+                    crosshairMarkerVisible: false,
+                });
+
+                emaSeriesInitialized = true;
+                debugLog('Chart created with createChart API');
             } else {
                 debugLog('Chart API not compatible');
                 return false;
@@ -668,17 +1120,15 @@
             if (currentPrice) {
                 currentPriceLine = candleSeries.createPriceLine({
                     price: parseFloat(currentPrice),
-                    color: '#888888',
+                    color: '#ffd700',
                     lineWidth: 1,
                     lineStyle: 2,
                     axisLabelVisible: true,
-                    title: 'Sekarang'
+                    title: 'Now'
                 });
             }
             
-            if (position && position.entry_price) {
-                var isBuy = (position.direction || 'BUY').toUpperCase() === 'BUY';
-                
+            if (position && position.active) {
                 entryLine = candleSeries.createPriceLine({
                     price: parseFloat(position.entry_price),
                     color: '#3b82f6',
@@ -689,16 +1139,17 @@
                 });
                 debugLog('Entry line created at ' + position.entry_price);
                 
-                if (position.stop_loss) {
+                var slPrice = position.trailing_sl || position.stop_loss;
+                if (slPrice) {
                     slLine = candleSeries.createPriceLine({
-                        price: parseFloat(position.stop_loss),
+                        price: parseFloat(slPrice),
                         color: '#ef4444',
                         lineWidth: 2,
-                        lineStyle: 0,
+                        lineStyle: position.trailing_sl ? 2 : 0,
                         axisLabelVisible: true,
-                        title: 'SL'
+                        title: position.trailing_sl ? 'TSL' : 'SL'
                     });
-                    debugLog('SL line created at ' + position.stop_loss);
+                    debugLog('SL line created at ' + slPrice);
                 }
                 
                 if (position.take_profit) {
@@ -718,187 +1169,93 @@
         }
     }
 
-    function updateCandleChart() {
+    function updateCandleChart(forceRefresh) {
         debugLog('updateCandleChart called');
-        if (!candleSeries || !chart) {
-            debugLog('Chart or candleSeries not ready yet');
-            return Promise.resolve();
+        if (!candleSeries || !emaSeriesInitialized) {
+            debugLog('Chart series not ready');
+            return;
         }
-        
-        return fetchCandlesData().then(function(data) {
+
+        fetchCandlesData(forceRefresh).then(function(data) {
             if (!data || !data.candles || data.candles.length === 0) {
-                debugLog('No candles data received');
+                debugLog('No candle data received');
                 return;
             }
 
-            debugLog('Received ' + data.candles.length + ' candles');
-            
-            var chartData = [];
-            var seenTimes = {};
-            data.candles.forEach(function(candle) {
-                var time = convertToWIB(candle.timestamp);
-                if (!seenTimes[time]) {
-                    seenTimes[time] = true;
-                    try {
-                        chartData.push({
-                            time: time,
-                            open: parseFloat(candle.open),
-                            high: parseFloat(candle.high),
-                            low: parseFloat(candle.low),
-                            close: parseFloat(candle.close)
-                        });
-                    } catch (e) {
-                        debugLog('Error parsing candle: ' + e.message);
-                    }
+            var formattedCandles = data.candles.map(function(c) {
+                return {
+                    time: convertToWIB(c.time || c.timestamp),
+                    open: parseFloat(c.open),
+                    high: parseFloat(c.high),
+                    low: parseFloat(c.low),
+                    close: parseFloat(c.close)
+                };
+            }).filter(function(c) {
+                return !isNaN(c.time) && !isNaN(c.open) && !isNaN(c.high) && !isNaN(c.low) && !isNaN(c.close);
+            }).sort(function(a, b) {
+                return a.time - b.time;
+            });
+
+            if (formattedCandles.length > 0) {
+                candleSeries.setData(formattedCandles);
+                
+                var ema9Data = calculateEMA(formattedCandles, 9);
+                var ema21Data = calculateEMA(formattedCandles, 21);
+                
+                if (ema9Data.length > 0 && emaSeries9) {
+                    emaSeries9.setData(ema9Data);
                 }
-            });
-
-            if (chartData.length === 0) {
-                debugLog('No valid candles to render');
-                return;
-            }
-            
-            chartData.sort(function(a, b) { return a.time - b.time; });
-            
-            try {
-                candleSeries.setData(chartData);
+                if (ema21Data.length > 0 && emaSeries21) {
+                    emaSeries21.setData(ema21Data);
+                }
+                
+                var currentPrice = formattedCandles[formattedCandles.length - 1].close;
+                updatePriceLines(lastActivePosition, currentPrice);
+                
                 chart.timeScale().fitContent();
-                debugLog('Chart updated with ' + chartData.length + ' candles');
-            } catch (e) {
-                debugLog('Error setting chart data: ' + e.message);
+                debugLog('Chart updated with ' + formattedCandles.length + ' candles + EMA overlay');
             }
-            
-            updatePriceLines(data.active_position, data.current_price);
         }).catch(function(error) {
-            debugLog('Error updating chart: ' + (error ? error.message : 'unknown error'));
+            debugLog('Chart update error: ' + error.message);
         });
-    }
-
-    function calculateDataHash(data) {
-        if (!data) return null;
-        try {
-            var hashStr = JSON.stringify({
-                price: data.price ? data.price.mid : null,
-                signal: data.last_signal ? data.last_signal.direction : null,
-                position: data.active_position ? data.active_position.unrealized_pnl : null,
-                regime: data.regime ? data.regime.trend : null
-            });
-            return hashStr;
-        } catch (e) {
-            return null;
-        }
     }
 
     function refreshData() {
         if (fetchInProgress) {
-            debugLog('Refresh skipped - fetch in progress');
+            debugLog('Fetch already in progress, skipping');
             return Promise.resolve();
         }
-
         fetchInProgress = true;
-        debugLog('refreshData() started');
+        debugLog('refreshData called');
 
         return fetchDashboardData().then(function(data) {
-            if (!data) throw new Error('No data returned from API');
-
-            var newHash = calculateDataHash(data);
-            var dataChanged = newHash !== lastDataHash;
-            lastDataHash = newHash;
-
-            debugLog('Data received, updating UI... (changed: ' + dataChanged + ')');
-            hideLoading();
-            setConnectionState('live');
-            
-            updatePriceCard(data);
-            updateSignalCard(data);
-            updatePositionCard(data);
-            updateStatsCard(data);
-            updateRegimeCard(data);
-            updateUpdateTime();
-
-            debugLog('UI updates complete');
-            
-        }).then(function() {
-            debugLog('refreshData() completed successfully');
+            if (data) {
+                setConnectionState('live');
+                updatePriceCard(data);
+                updateSignalCard(data);
+                updatePositionCard(data);
+                updateStatsCard(data);
+                updateRegimeCard(data);
+                updateUpdateTime();
+                
+                if (data.active_position) {
+                    lastActivePosition = data.active_position;
+                } else {
+                    lastActivePosition = null;
+                }
+                
+                hideLoading();
+            }
+            fetchInProgress = false;
+            return data;
         }).catch(function(error) {
-            debugLog('ERROR in refreshData: ' + error.message);
+            debugLog('Dashboard refresh error: ' + error.message);
             setConnectionState('offline');
-        }).finally(function() {
             fetchInProgress = false;
         });
     }
 
-    window.refreshData = refreshData;
-
-    function getWebSocketUrl() {
-        var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        return protocol + '//' + window.location.host + '/ws/dashboard';
-    }
-    
-    function connectWebSocket() {
-        if (!useWebSocket || websocket) return;
-        
-        try {
-            var wsUrl = getWebSocketUrl();
-            debugLog('Connecting to WebSocket: ' + wsUrl);
-            setConnectionState('connecting');
-            
-            websocket = new WebSocket(wsUrl);
-            
-            websocket.onopen = function() {
-                debugLog('WebSocket connected');
-                wsReconnectAttempts = 0;
-                setConnectionState('live');
-                hideLoading();
-            };
-            
-            websocket.onmessage = function(event) {
-                try {
-                    var data = JSON.parse(event.data);
-                    
-                    updatePriceCard(data);
-                    updateSignalCard(data);
-                    updatePositionCard(data);
-                    updateStatsCard(data);
-                    updateRegimeCard(data);
-                    updateUpdateTime();
-                    
-                    setConnectionState('live');
-                } catch (e) {
-                    debugLog('WebSocket message parse error: ' + e.message);
-                }
-            };
-            
-            websocket.onclose = function(event) {
-                debugLog('WebSocket closed: ' + event.code);
-                websocket = null;
-                
-                if (wsReconnectAttempts < MAX_WS_RECONNECT_ATTEMPTS) {
-                    wsReconnectAttempts++;
-                    var delay = Math.min(WS_RECONNECT_TIMEOUT * Math.pow(1.5, wsReconnectAttempts), 30000);
-                    debugLog('WebSocket reconnecting in ' + delay + 'ms (attempt ' + wsReconnectAttempts + ')');
-                    setConnectionState('reconnecting');
-                    wsReconnectTimer = setTimeout(connectWebSocket, delay);
-                } else {
-                    debugLog('WebSocket max reconnect attempts reached, falling back to polling');
-                    useWebSocket = false;
-                    startPolling();
-                }
-            };
-            
-            websocket.onerror = function(error) {
-                debugLog('WebSocket error');
-                setConnectionState('offline');
-            };
-            
-        } catch (e) {
-            debugLog('WebSocket connection error: ' + e.message);
-            useWebSocket = false;
-            startPolling();
-        }
-    }
-    
-    function disconnectWebSocket() {
+    function closeWebSocket() {
         if (wsReconnectTimer) {
             clearTimeout(wsReconnectTimer);
             wsReconnectTimer = null;
@@ -917,58 +1274,32 @@
         if (historyUpdateInterval) clearInterval(historyUpdateInterval);
         
         refreshData();
-        updateCandleChart();
+        updateCandleChart(true);
         fetchTradeHistory();
         
         updateInterval = setInterval(function() {
             refreshData();
         }, ACTIVE_DATA_INTERVAL);
-        debugLog('Active data polling started (interval: ' + ACTIVE_DATA_INTERVAL + 'ms)');
         
         chartUpdateInterval = setInterval(function() {
-            updateCandleChart();
+            updateCandleChart(false);
         }, CHART_UPDATE_INTERVAL);
-        debugLog('Chart update started (interval: ' + CHART_UPDATE_INTERVAL + 'ms)');
         
         historyUpdateInterval = setInterval(function() {
             fetchTradeHistory();
         }, HISTORY_DATA_INTERVAL);
-        debugLog('History update started (interval: ' + HISTORY_DATA_INTERVAL + 'ms)');
+        
+        debugLog('Polling started - data: ' + ACTIVE_DATA_INTERVAL + 'ms, chart: ' + CHART_UPDATE_INTERVAL + 'ms, history: ' + HISTORY_DATA_INTERVAL + 'ms');
     }
 
     function startAutoRefresh() {
         debugLog('startAutoRefresh called');
-        
-        if (useWebSocket && 'WebSocket' in window) {
-            connectWebSocket();
-            
-            refreshData();
-            updateCandleChart();
-            fetchTradeHistory();
-            
-            if (!chartUpdateInterval) {
-                chartUpdateInterval = setInterval(updateCandleChart, CHART_UPDATE_INTERVAL);
-            }
-            if (!historyUpdateInterval) {
-                historyUpdateInterval = setInterval(fetchTradeHistory, HISTORY_DATA_INTERVAL);
-            }
-            
-            if (!updateInterval) {
-                updateInterval = setInterval(function() {
-                    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-                        refreshData();
-                    }
-                }, ACTIVE_DATA_INTERVAL);
-            }
-        } else {
-            startPolling();
-        }
+        startPolling();
     }
 
     function stopAutoRefresh() {
         debugLog('stopAutoRefresh called');
-        disconnectWebSocket();
-        
+        closeWebSocket();
         if (updateInterval) {
             clearInterval(updateInterval);
             updateInterval = null;
@@ -983,10 +1314,32 @@
         }
     }
 
+    function initPerformanceMonitor() {
+        if (!FPS_MODE) return;
+        
+        var perfContainer = document.getElementById('perf-monitor');
+        if (!perfContainer) {
+            perfContainer = document.createElement('div');
+            perfContainer.id = 'perf-monitor';
+            perfContainer.className = 'perf-monitor';
+            perfContainer.innerHTML = 
+                '<span class="perf-badge" id="fps-counter">FPS: --</span>' +
+                '<span class="perf-badge" id="memory-usage">MEM: --</span>' +
+                '<span class="perf-badge" id="api-response-time">API: --</span>';
+            document.body.appendChild(perfContainer);
+        }
+        
+        requestAnimationFrame(updateFPSCounter);
+        setInterval(updateMemoryUsage, 2000);
+        
+        debugLog('Performance monitor initialized');
+    }
+
     function init() {
         debugLog('init() called');
         initTelegram();
         initChart();
+        initPerformanceMonitor();
         startAutoRefresh();
         debugLog('Dashboard initialization complete');
 
@@ -994,9 +1347,13 @@
         if (refreshBtn) {
             refreshBtn.addEventListener('click', function() {
                 debugLog('Manual refresh triggered');
+                showToast('Memuat ulang data...', 'info');
+                cachedCandleData = null;
+                lastCandleDataFetch = 0;
                 refreshData().then(function() {
-                    updateCandleChart();
+                    updateCandleChart(true);
                     fetchTradeHistory();
+                    showToast('Data berhasil diperbarui', 'success');
                 });
             });
         }
@@ -1006,8 +1363,10 @@
                 debugLog('Page hidden - reducing update frequency');
             } else {
                 debugLog('Page visible - resuming full updates');
+                cachedCandleData = null;
+                lastCandleDataFetch = 0;
                 refreshData();
-                updateCandleChart();
+                updateCandleChart(true);
             }
         });
     }
