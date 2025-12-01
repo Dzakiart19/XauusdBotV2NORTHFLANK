@@ -907,15 +907,19 @@ class TradingBotOrchestrator:
                                                 current_pnl_pips = None
                                                 distance_to_tp_pips = None
                                                 distance_to_sl_pips = None
+                                                unrealized_pnl_usd = 0.0
                                                 
                                                 current_price = price_data.get('mid')
                                                 pip_value = getattr(self.config, 'XAUUSD_PIP_VALUE', 10.0)
+                                                lot_size = pos.get('lot_size', getattr(self.config, 'LOT_SIZE', 0.01))
                                                 
                                                 if current_price and entry_price:
                                                     if direction == 'BUY':
                                                         current_pnl_pips = round((current_price - entry_price) * pip_value, 1)
                                                     else:
                                                         current_pnl_pips = round((entry_price - current_price) * pip_value, 1)
+                                                    
+                                                    unrealized_pnl_usd = round(current_pnl_pips * lot_size * pip_value, 2)
                                                 
                                                 if current_price and take_profit:
                                                     if direction == 'BUY':
@@ -935,10 +939,11 @@ class TradingBotOrchestrator:
                                                     'entry_price': entry_price,
                                                     'sl': stop_loss,
                                                     'tp': take_profit,
-                                                    'unrealized_pnl': pos.get('unrealized_pnl', 0),
+                                                    'unrealized_pnl': unrealized_pnl_usd,
                                                     'current_pnl_pips': current_pnl_pips,
                                                     'distance_to_tp_pips': distance_to_tp_pips,
-                                                    'distance_to_sl_pips': distance_to_sl_pips
+                                                    'distance_to_sl_pips': distance_to_sl_pips,
+                                                    'lot_size': lot_size
                                                 }
                                                 break
                                     if active_position['active']:
@@ -1051,11 +1056,16 @@ class TradingBotOrchestrator:
                             df_reset = df.reset_index()
                             for _, row in df_reset.iterrows():
                                 ts = row['timestamp']
-                                if hasattr(ts, 'isoformat'):
-                                    ts_str = ts.isoformat()
-                                elif hasattr(ts, 'strftime'):
-                                    ts_str = ts.strftime('%Y-%m-%dT%H:%M:%S')
-                                else:
+                                ts_str = str(ts)
+                                try:
+                                    if hasattr(ts, 'isoformat') and callable(getattr(ts, 'isoformat', None)):
+                                        ts_str = ts.isoformat()
+                                    elif hasattr(ts, 'strftime') and callable(getattr(ts, 'strftime', None)):
+                                        ts_str = ts.strftime('%Y-%m-%dT%H:%M:%S')
+                                    elif hasattr(ts, 'timestamp') and callable(getattr(ts, 'timestamp', None)):
+                                        from datetime import datetime as dt
+                                        ts_str = dt.fromtimestamp(ts.timestamp()).isoformat()
+                                except (AttributeError, TypeError, ValueError):
                                     ts_str = str(ts)
                                 candle = {
                                     'timestamp': ts_str,
@@ -1109,6 +1119,101 @@ class TradingBotOrchestrator:
                     logger.error(f"Error in API candles: {e}")
                     return web.json_response({'error': str(e)}, status=500)
             
+            async def api_trade_history(request):
+                """API endpoint for trade history with pagination"""
+                try:
+                    try:
+                        page = int(request.query.get('page', 1))
+                        page = max(1, page)
+                    except (ValueError, TypeError):
+                        page = 1
+                    
+                    try:
+                        limit = int(request.query.get('limit', 20))
+                        limit = max(1, min(limit, 50))
+                    except (ValueError, TypeError):
+                        limit = 20
+                    
+                    status_filter = request.query.get('status', 'all').lower()
+                    
+                    trades_list = []
+                    total_trades = 0
+                    
+                    if self.config_valid and self.db_manager:
+                        try:
+                            session = self.db_manager.get_session()
+                            if session:
+                                offset = (page - 1) * limit
+                                
+                                if status_filter == 'closed':
+                                    status_condition = "status = 'CLOSED'"
+                                elif status_filter == 'open':
+                                    status_condition = "status = 'OPEN'"
+                                else:
+                                    status_condition = "1=1"
+                                
+                                count_result = session.execute(text(
+                                    f"SELECT COUNT(*) FROM trades WHERE {status_condition}"
+                                ))
+                                total_trades = count_result.scalar() or 0
+                                
+                                result = session.execute(text(
+                                    f"SELECT id, user_id, ticker, signal_type, entry_price, stop_loss, "
+                                    f"take_profit, exit_price, status, signal_time, close_time, result, actual_pl "
+                                    f"FROM trades WHERE {status_condition} "
+                                    f"ORDER BY COALESCE(close_time, signal_time) DESC "
+                                    f"LIMIT :limit OFFSET :offset"
+                                ), {'limit': limit, 'offset': offset})
+                                
+                                for row in result:
+                                    trade_data = {
+                                        'id': row[0],
+                                        'user_id': row[1],
+                                        'ticker': row[2],
+                                        'signal_type': row[3],
+                                        'entry_price': float(row[4]) if row[4] else None,
+                                        'stop_loss': float(row[5]) if row[5] else None,
+                                        'take_profit': float(row[6]) if row[6] else None,
+                                        'exit_price': float(row[7]) if row[7] else None,
+                                        'status': row[8],
+                                        'signal_time': row[9].isoformat() if row[9] else None,
+                                        'close_time': row[10].isoformat() if row[10] else None,
+                                        'result': row[11],
+                                        'pnl': float(row[12]) if row[12] else 0.0
+                                    }
+                                    trades_list.append(trade_data)
+                                
+                                session.close()
+                        except Exception as e:
+                            logger.error(f"Error fetching trade history: {e}")
+                    
+                    total_pages = (total_trades + limit - 1) // limit if total_trades > 0 else 1
+                    
+                    response_data = {
+                        'trades': trades_list,
+                        'pagination': {
+                            'page': page,
+                            'limit': limit,
+                            'total_trades': total_trades,
+                            'total_pages': total_pages,
+                            'has_next': page < total_pages,
+                            'has_prev': page > 1
+                        }
+                    }
+                    
+                    return web.json_response(response_data, headers={
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0',
+                        'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                        'Access-Control-Allow-Headers': 'Content-Type'
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Error in API trade-history: {e}")
+                    return web.json_response({'error': str(e)}, status=500)
+            
             app = web.Application()
             app.router.add_get('/health', health_check)
             app.router.add_get('/', health_check)
@@ -1116,7 +1221,8 @@ class TradingBotOrchestrator:
             app.router.add_get('/static/{filename}', static_files)
             app.router.add_get('/api/dashboard', api_dashboard)
             app.router.add_get('/api/candles', api_candles)
-            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /api/candles, /static/*")
+            app.router.add_get('/api/trade-history', api_trade_history)
+            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /api/candles, /api/trade-history, /static/*")
             
             webhook_path = None
             if self.config_valid and self.config.TELEGRAM_BOT_TOKEN:
