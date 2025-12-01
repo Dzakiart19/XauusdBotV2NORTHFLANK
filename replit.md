@@ -4,12 +4,15 @@
 This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision.
 
 ## Recent Changes (December 2025)
-- **Real-Time Dashboard v4.0**: Complete dashboard enhancement with 5 major improvements:
-  - Live Price WebSocket: WebSocket connection with auto-reconnect and 2s polling fallback
-  - Auto-Refresh Logic: 2s data update, 5s chart update, 10s history update
-  - Market Regime Live Sync: Color-coded tags (trend-up/down/range) with confidence display
-  - Position Monitoring: Real-time P/L with 95% TP/SL proximity alert animation
-  - UI Enhancement: Connection status indicator (live/connecting/offline), timestamp display
+- **Real-Time Dashboard v5.1**: Major dashboard enhancement with 7 key improvements:
+  - Virtual Scrolling: Trade history with pagination (20 trades per page, max 50), "Load More" button
+  - EMA Overlay Chart: EMA 9/21 overlay on candlestick chart with optimized series management (no memory leaks)
+  - Chart Caching: 2-second candle data cache to reduce API calls
+  - Market Regime Live Tags: 5s timeout for stuck state, fade animations, confidence color-coding (80%+ green, 50-80% yellow, <50% gray)
+  - Position Monitoring: P/L in pips + USD, TP/SL progress bars (0-100%), audio alerts at 95% proximity, trailing SL indicator
+  - Signal Card Enhancements: TTL countdown, win rate display, confidence badge (A/B/C/D grades), entry accuracy
+  - Toast Notifications: Signal received, position closed, error toasts with 3s auto-hide (max 3 concurrent)
+  - Performance Monitoring: FPS counter (?fps=1), memory usage, API response time display (debug mode)
 - **Adaptive Volume Filter**: Dynamic volume threshold based on volatility zone (LOW: 0.3-0.5, NORMAL: 0.5-0.6, HIGH: 0.6-0.7) and session strength, replacing rigid 1.1x check
 - **Dynamic ADX Threshold**: ADX threshold adapts to market conditions (8-20 range vs fixed 22), with session and volatility modifiers
 - **Parallel Timeframe Signal Generation**: M1, M5, H1 signals generated concurrently with asyncio.gather and 15s timeout per check, with voting system for direction alignment
