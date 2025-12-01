@@ -406,6 +406,71 @@ class TradingStrategy:
         self.last_signal_type: Optional[str] = None
         self.last_signal_price: Optional[float] = None
         self.last_signal_time: Optional[datetime] = None
+        
+        self._regime_detector = None
+        self._current_regime = None
+    
+    def _get_regime_detector(self):
+        """Lazy initialization of regime detector to avoid circular imports."""
+        if self._regime_detector is None:
+            from bot.market_regime import MarketRegimeDetector
+            self._regime_detector = MarketRegimeDetector(self.config)
+        return self._regime_detector
+    
+    def check_regime_alignment(self, signal_type: str, indicators: Dict[str, Any], 
+                                m1_df=None, m5_df=None) -> Tuple[bool, str]:
+        """
+        Check if signal direction aligns with market regime bias.
+        
+        IMPORTANT: This only BLOCKS signals with conflicting bias (BUY vs SELL).
+        Allows signals when regime is uncertain or data unavailable (with warning).
+        
+        Args:
+            signal_type: 'BUY' or 'SELL'
+            indicators: Current indicators dict
+            m1_df: M1 DataFrame (optional)
+            m5_df: M5 DataFrame (optional)
+            
+        Returns:
+            Tuple of (is_aligned, reason)
+        """
+        try:
+            regime_detector = self._get_regime_detector()
+            self._current_regime = regime_detector.get_regime(
+                indicators=indicators,
+                m1_df=m1_df,
+                m5_df=m5_df
+            )
+            
+            if self._current_regime is None:
+                logger.warning(f"⚠️ Regime unavailable - allowing {signal_type} with caution")
+                return True, f"⚠️ Regime data unavailable - {signal_type} allowed with caution"
+            
+            bias = self._current_regime.bias
+            regime = self._current_regime.regime_type
+            confidence = self._current_regime.confidence
+            
+            if confidence < 0.6:
+                logger.info(f"⚠️ Low regime confidence ({confidence:.2f}) - allowing {signal_type} with caution")
+                return True, f"⚠️ Low confidence ({confidence:.2f}) - {signal_type} allowed with caution"
+            
+            if signal_type == 'BUY' and bias == 'SELL' and confidence >= 0.75:
+                return False, f"🚫 BLOCKED: BUY conflicts with strong SELL bias (conf: {confidence:.2f})"
+            if signal_type == 'SELL' and bias == 'BUY' and confidence >= 0.75:
+                return False, f"🚫 BLOCKED: SELL conflicts with strong BUY bias (conf: {confidence:.2f})"
+            
+            if signal_type == 'BUY' and bias == 'BUY':
+                return True, f"✅ BUY aligned with BUY bias (regime: {regime})"
+            elif signal_type == 'SELL' and bias == 'SELL':
+                return True, f"✅ SELL aligned with SELL bias (regime: {regime})"
+            elif bias == 'NEUTRAL':
+                return True, f"⚠️ Neutral bias - {signal_type} allowed with caution"
+            
+            return True, f"Signal direction validated (regime: {regime}, bias: {bias})"
+            
+        except Exception as e:
+            logger.warning(f"Regime check error: {str(e)} - allowing signal with caution")
+            return True, f"⚠️ Regime check error - {signal_type} allowed with caution"
     
     def should_generate_signal(self, candle_timestamp: Optional[datetime], 
                                 current_price: float, 
@@ -2361,6 +2426,16 @@ class TradingStrategy:
                         logger.info(f"🚫 AUTO Signal BLOCKED: M5 confirmation failed - {m5_reason}")
                         logger.info(f"📊 Signal {potential_signal} ditolak karena M5 tidak konfirmasi trend M1")
                         return None
+                    
+                    is_aligned, alignment_reason = self.check_regime_alignment(
+                        potential_signal, indicators, m1_df=None, m5_df=None
+                    )
+                    if not is_aligned:
+                        logger.info(f"{alignment_reason}")
+                        logger.info(f"📊 Signal {potential_signal} ditolak - regime bias tidak sesuai")
+                        return None
+                    
+                    confidence_reasons.append(alignment_reason)
                     
                     if m5_score_mult < 1.0:
                         adjusted_score = adjusted_score * m5_score_mult

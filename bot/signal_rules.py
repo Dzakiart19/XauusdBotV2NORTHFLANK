@@ -166,34 +166,37 @@ class AggressiveSignalRules:
     }
     
     REGIME_MULTIPLIERS = {
-        RegimeType.STRONG_TREND.value: 1.2,
-        RegimeType.MODERATE_TREND.value: 1.0,
-        RegimeType.WEAK_TREND.value: 0.7,
-        RegimeType.RANGE_BOUND.value: 0.9,
-        RegimeType.BREAKOUT.value: 1.15,
-        RegimeType.HIGH_VOLATILITY.value: 0.85,
-        RegimeType.UNKNOWN.value: 0.8,
+        RegimeType.STRONG_TREND.value: 1.3,
+        RegimeType.MODERATE_TREND.value: 1.1,
+        RegimeType.WEAK_TREND.value: 0.5,
+        RegimeType.RANGE_BOUND.value: 0.6,
+        RegimeType.BREAKOUT.value: 1.2,
+        RegimeType.HIGH_VOLATILITY.value: 0.7,
+        RegimeType.UNKNOWN.value: 0.6,
     }
     
-    MIN_WEIGHTED_CONFLUENCE_SCORE = 4.0
+    MIN_WEIGHTED_CONFLUENCE_SCORE = 6.0
+    
+    MIN_CONFIDENCE_THRESHOLD = 0.80
+    QUALITY_GRADE_FILTER = ['A', 'B']
     
     LOW_LIQUIDITY_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5]
     HIGH_LIQUIDITY_HOURS = [8, 9, 10, 13, 14, 15, 16]
     
-    M1_SL_MIN = 8.0
-    M1_SL_MAX = 12.0
-    M1_TP_MIN = 15.0
-    M1_TP_MAX = 30.0
-    M1_MIN_CONFLUENCE = 2
-    M1_MIN_SECONDARY = 2
+    M1_SL_MIN = 10.0
+    M1_SL_MAX = 15.0
+    M1_TP_MIN = 20.0
+    M1_TP_MAX = 35.0
+    M1_MIN_CONFLUENCE = 4
+    M1_MIN_SECONDARY = 3
     
     M5_SL_MIN = 15.0
-    M5_SL_MAX = 20.0
-    M5_TP_MIN = 30.0
-    M5_TP_MAX = 50.0
-    M5_MIN_CONFLUENCE = 3
+    M5_SL_MAX = 22.0
+    M5_TP_MIN = 35.0
+    M5_TP_MAX = 55.0
+    M5_MIN_CONFLUENCE = 4
     M5_MIN_SECONDARY = 3
-    M5_ADX_THRESHOLD = 20
+    M5_ADX_THRESHOLD = 22
     
     SR_SL_MIN = 10.0
     SR_SL_MAX = 15.0
@@ -433,19 +436,114 @@ class AggressiveSignalRules:
         
         regime = self._current_regime.regime_type
         
+        if rule_type == RuleType.M1_SCALP:
+            if regime == RegimeType.RANGE_BOUND.value:
+                return False, f"M1_SCALP blocked in range_bound market - choppy conditions"
+            if regime == RegimeType.HIGH_VOLATILITY.value:
+                return False, f"M1_SCALP blocked in high_volatility market - too risky"
+            if regime == RegimeType.UNKNOWN.value:
+                return False, f"M1_SCALP blocked - unknown market conditions"
+        
         if rule_type == RuleType.M5_SWING:
             if regime == RegimeType.RANGE_BOUND.value:
                 return False, f"M5_SWING blocked in range_bound market"
+            if regime == RegimeType.UNKNOWN.value:
+                return False, f"M5_SWING blocked - unknown market conditions"
         
         if rule_type == RuleType.BREAKOUT:
             if regime == RegimeType.RANGE_BOUND.value:
                 return False, f"BREAKOUT blocked in range_bound market"
+            if regime == RegimeType.WEAK_TREND.value:
+                return False, f"BREAKOUT blocked in weak_trend - insufficient momentum"
         
         if rule_type == RuleType.SR_REVERSION:
             if regime in [RegimeType.STRONG_TREND.value, RegimeType.BREAKOUT.value]:
                 return False, f"SR_REVERSION not recommended in {regime} market"
         
         return True, f"Regime {regime} is compatible with {rule_type.value}"
+    
+    def _check_regime_alignment(self, signal_type: str, rule_type: RuleType) -> Tuple[bool, str]:
+        """
+        Check if signal direction aligns with market regime bias.
+        
+        IMPORTANT: Only BLOCKS signals with HIGH CONFIDENCE conflicting bias.
+        Allows signals when regime uncertain or data unavailable (with warning).
+        
+        Args:
+            signal_type: 'BUY' or 'SELL'
+            rule_type: The signal rule type
+            
+        Returns:
+            Tuple of (is_aligned, reason)
+        """
+        if self._current_regime is None:
+            logger.warning(f"Regime unavailable - allowing {signal_type} with caution")
+            return True, f"⚠️ Regime unavailable - {signal_type} allowed"
+        
+        bias = self._current_regime.bias
+        regime = self._current_regime.regime_type
+        confidence = self._current_regime.confidence
+        
+        if confidence < 0.6:
+            return True, f"⚠️ Low confidence ({confidence:.2f}) - {signal_type} allowed with caution"
+        
+        if rule_type in [RuleType.M1_SCALP, RuleType.M5_SWING, RuleType.BREAKOUT]:
+            if signal_type == 'BUY' and bias == 'SELL' and confidence >= 0.80:
+                return False, f"🚫 BLOCKED: BUY conflicts with strong SELL bias (conf: {confidence:.2f})"
+            if signal_type == 'SELL' and bias == 'BUY' and confidence >= 0.80:
+                return False, f"🚫 BLOCKED: SELL conflicts with strong BUY bias (conf: {confidence:.2f})"
+        
+        if rule_type == RuleType.SR_REVERSION:
+            if regime in [RegimeType.STRONG_TREND.value, RegimeType.MODERATE_TREND.value]:
+                if signal_type == 'BUY' and bias == 'SELL' and confidence >= 0.85:
+                    return False, f"🚫 BLOCKED: Reversion BUY in strong SELL trend"
+                if signal_type == 'SELL' and bias == 'BUY' and confidence >= 0.85:
+                    return False, f"🚫 BLOCKED: Reversion SELL in strong BUY trend"
+        
+        if signal_type == 'BUY' and bias == 'BUY':
+            return True, f"✅ BUY aligned with BUY bias (regime: {regime})"
+        elif signal_type == 'SELL' and bias == 'SELL':
+            return True, f"✅ SELL aligned with SELL bias (regime: {regime})"
+        elif bias == 'NEUTRAL':
+            return True, f"⚠️ Neutral bias - {signal_type} allowed with caution"
+        
+        return True, f"Signal validated (regime: {regime}, bias: {bias})"
+    
+    def _validate_signal_quality(self, result: SignalResult) -> Tuple[bool, str]:
+        """
+        Final validation to ensure signal meets quality standards.
+        
+        NOTE: This is a soft filter - logs warnings for low quality but only blocks
+        very poor quality signals. This ensures signals still flow while flagging concerns.
+        
+        Args:
+            result: SignalResult to validate
+            
+        Returns:
+            Tuple of (is_valid, reason)
+        """
+        warnings = []
+        
+        if result.confidence < 0.70:
+            return False, f"Very low confidence {result.confidence:.2f} - blocked"
+        elif result.confidence < self.MIN_CONFIDENCE_THRESHOLD:
+            warnings.append(f"Low confidence {result.confidence:.2f}")
+        
+        if result.quality_grade == 'D':
+            return False, f"Grade D signal blocked - too risky"
+        elif result.quality_grade not in self.QUALITY_GRADE_FILTER:
+            warnings.append(f"Grade {result.quality_grade} (below ideal)")
+        
+        if result.weighted_confluence_score < 4.0:
+            return False, f"Confluence score {result.weighted_confluence_score:.1f} too low"
+        elif result.weighted_confluence_score < self.MIN_WEIGHTED_CONFLUENCE_SCORE:
+            warnings.append(f"Confluence {result.weighted_confluence_score:.1f} below ideal")
+        
+        if warnings:
+            logger.info(f"⚠️ Signal allowed with warnings: {', '.join(warnings)}")
+            return True, f"Signal allowed with caution: {', '.join(warnings)}"
+        
+        return True, "Signal passed all quality checks"
     
     def _get_time_of_day_factor(self) -> float:
         """
@@ -672,6 +770,11 @@ class AggressiveSignalRules:
             result.regime_type = self._current_regime.regime_type if self._current_regime else 'unknown'
             result.regime_multiplier = self._get_regime_multiplier(result.regime_type)
             
+            is_favorable, regime_reason = self._is_regime_favorable_for_rule(RuleType.M1_SCALP)
+            if not is_favorable:
+                result.reason = regime_reason
+                return result
+            
             close = safe_float(indicators.get('close', 0), 0.0)
             ema_5 = safe_float(indicators.get('ema_5', 0), 0.0)
             ema_20 = safe_float(indicators.get('ema_20', 0), 0.0)
@@ -865,13 +968,18 @@ class AggressiveSignalRules:
                 not h1_at_resistance and
                 buy_secondary_valid):
                 
+                is_aligned, alignment_reason = self._check_regime_alignment('BUY', RuleType.M1_SCALP)
+                if not is_aligned:
+                    result.reason = alignment_reason
+                    return result
+                
                 result.signal_type = SignalType.BUY.value
                 result.confluence_count = buy_count
                 result.confluence_details = buy_details
                 result.weighted_confluence_score = buy_score
                 result.secondary_confirmations = buy_secondary
                 
-                base_confidence = min(1.0, 0.4 + (buy_count * 0.1) + (buy_score * 0.02))
+                base_confidence = min(1.0, 0.55 + (buy_count * 0.08) + (buy_score * 0.03))
                 result.raw_confidence = base_confidence
                 
                 confidence_pct = self._calculate_final_confidence(
@@ -883,6 +991,12 @@ class AggressiveSignalRules:
                 result.quality_grade = self._get_quality_grade(confidence_pct)
                 self._track_quality_grade(result.quality_grade)
                 
+                is_quality_valid, quality_reason = self._validate_signal_quality(result)
+                if not is_quality_valid:
+                    result.signal_type = None
+                    result.reason = quality_reason
+                    return result
+                
                 sl, tp = self._calculate_sl_tp(
                     10.0, 22.0,
                     self.M1_SL_MIN, self.M1_SL_MAX,
@@ -892,7 +1006,7 @@ class AggressiveSignalRules:
                 result.sl_pips = sl
                 result.tp_pips = tp
                 result.entry_price = close
-                result.reason = f"M1 Scalp BUY [Grade:{result.quality_grade}]: WScore={buy_score:.1f}, {buy_count} confluences, Regime={result.regime_type}"
+                result.reason = f"M1 Scalp BUY [Grade:{result.quality_grade}]: WScore={buy_score:.1f}, {buy_count} confluences, Regime={result.regime_type}, Bias=BUY"
                 
             elif (sell_score >= self.MIN_WEIGHTED_CONFLUENCE_SCORE and 
                   sell_count >= self.M1_MIN_CONFLUENCE and 
@@ -901,13 +1015,18 @@ class AggressiveSignalRules:
                   not h1_at_support and
                   sell_secondary_valid):
                 
+                is_aligned, alignment_reason = self._check_regime_alignment('SELL', RuleType.M1_SCALP)
+                if not is_aligned:
+                    result.reason = alignment_reason
+                    return result
+                
                 result.signal_type = SignalType.SELL.value
                 result.confluence_count = sell_count
                 result.confluence_details = sell_details
                 result.weighted_confluence_score = sell_score
                 result.secondary_confirmations = sell_secondary
                 
-                base_confidence = min(1.0, 0.4 + (sell_count * 0.1) + (sell_score * 0.02))
+                base_confidence = min(1.0, 0.55 + (sell_count * 0.08) + (sell_score * 0.03))
                 result.raw_confidence = base_confidence
                 
                 confidence_pct = self._calculate_final_confidence(
@@ -919,6 +1038,12 @@ class AggressiveSignalRules:
                 result.quality_grade = self._get_quality_grade(confidence_pct)
                 self._track_quality_grade(result.quality_grade)
                 
+                is_quality_valid, quality_reason = self._validate_signal_quality(result)
+                if not is_quality_valid:
+                    result.signal_type = None
+                    result.reason = quality_reason
+                    return result
+                
                 sl, tp = self._calculate_sl_tp(
                     10.0, 22.0,
                     self.M1_SL_MIN, self.M1_SL_MAX,
@@ -928,9 +1053,9 @@ class AggressiveSignalRules:
                 result.sl_pips = sl
                 result.tp_pips = tp
                 result.entry_price = close
-                result.reason = f"M1 Scalp SELL [Grade:{result.quality_grade}]: WScore={sell_score:.1f}, {sell_count} confluences, Regime={result.regime_type}"
+                result.reason = f"M1 Scalp SELL [Grade:{result.quality_grade}]: WScore={sell_score:.1f}, {sell_count} confluences, Regime={result.regime_type}, Bias=SELL"
             else:
-                result.reason = f"M1 Scalp: Buy(score={buy_score:.1f},cnt={buy_count},sec={buy_sec_count}), Sell(score={sell_score:.1f},cnt={sell_count},sec={sell_sec_count}), min_score={self.MIN_WEIGHTED_CONFLUENCE_SCORE}"
+                result.reason = f"M1 Scalp: Buy(score={buy_score:.1f},cnt={buy_count},sec={buy_sec_count}), Sell(score={sell_score:.1f},cnt={sell_count},sec={sell_sec_count}), min={self.MIN_WEIGHTED_CONFLUENCE_SCORE}"
             
             return result
             
@@ -1228,17 +1353,22 @@ class AggressiveSignalRules:
                 has_momentum and
                 buy_secondary_valid):
                 
+                is_aligned, alignment_reason = self._check_regime_alignment('BUY', RuleType.M5_SWING)
+                if not is_aligned:
+                    result.reason = alignment_reason
+                    return result
+                
                 result.signal_type = SignalType.BUY.value
                 result.confluence_count = buy_count
                 result.confluence_details = buy_details
                 result.weighted_confluence_score = buy_score
                 result.secondary_confirmations = buy_secondary
                 
-                base_confidence = min(1.0, 0.45 + (buy_count * 0.08) + (buy_score * 0.02))
+                base_confidence = min(1.0, 0.55 + (buy_count * 0.07) + (buy_score * 0.03))
                 result.raw_confidence = base_confidence
                 
                 if is_breakout:
-                    base_confidence += 0.1
+                    base_confidence += 0.08
                 
                 confidence_pct = self._calculate_final_confidence(
                     buy_score, base_confidence,
@@ -1249,6 +1379,12 @@ class AggressiveSignalRules:
                 result.quality_grade = self._get_quality_grade(confidence_pct)
                 self._track_quality_grade(result.quality_grade)
                 
+                is_quality_valid, quality_reason = self._validate_signal_quality(result)
+                if not is_quality_valid:
+                    result.signal_type = None
+                    result.reason = quality_reason
+                    return result
+                
                 sl, tp = self._calculate_sl_tp(
                     17.0, 40.0,
                     self.M5_SL_MIN, self.M5_SL_MAX,
@@ -1258,7 +1394,7 @@ class AggressiveSignalRules:
                 result.sl_pips = sl
                 result.tp_pips = tp
                 result.entry_price = close
-                result.reason = f"M5 Swing BUY [Grade:{result.quality_grade}]: WScore={buy_score:.1f}, ADX={adx:.1f}, Regime={result.regime_type}"
+                result.reason = f"M5 Swing BUY [Grade:{result.quality_grade}]: WScore={buy_score:.1f}, ADX={adx:.1f}, Regime={result.regime_type}, Bias=BUY"
                 
             elif (sell_score >= self.MIN_WEIGHTED_CONFLUENCE_SCORE and
                   sell_count >= self.M5_MIN_CONFLUENCE and 
@@ -1267,17 +1403,22 @@ class AggressiveSignalRules:
                   has_momentum and
                   sell_secondary_valid):
                 
+                is_aligned, alignment_reason = self._check_regime_alignment('SELL', RuleType.M5_SWING)
+                if not is_aligned:
+                    result.reason = alignment_reason
+                    return result
+                
                 result.signal_type = SignalType.SELL.value
                 result.confluence_count = sell_count
                 result.confluence_details = sell_details
                 result.weighted_confluence_score = sell_score
                 result.secondary_confirmations = sell_secondary
                 
-                base_confidence = min(1.0, 0.45 + (sell_count * 0.08) + (sell_score * 0.02))
+                base_confidence = min(1.0, 0.55 + (sell_count * 0.07) + (sell_score * 0.03))
                 result.raw_confidence = base_confidence
                 
                 if is_breakout:
-                    base_confidence += 0.1
+                    base_confidence += 0.08
                 
                 confidence_pct = self._calculate_final_confidence(
                     sell_score, base_confidence,
@@ -1288,6 +1429,12 @@ class AggressiveSignalRules:
                 result.quality_grade = self._get_quality_grade(confidence_pct)
                 self._track_quality_grade(result.quality_grade)
                 
+                is_quality_valid, quality_reason = self._validate_signal_quality(result)
+                if not is_quality_valid:
+                    result.signal_type = None
+                    result.reason = quality_reason
+                    return result
+                
                 sl, tp = self._calculate_sl_tp(
                     17.0, 40.0,
                     self.M5_SL_MIN, self.M5_SL_MAX,
@@ -1297,7 +1444,7 @@ class AggressiveSignalRules:
                 result.sl_pips = sl
                 result.tp_pips = tp
                 result.entry_price = close
-                result.reason = f"M5 Swing SELL [Grade:{result.quality_grade}]: WScore={sell_score:.1f}, ADX={adx:.1f}, Regime={result.regime_type}"
+                result.reason = f"M5 Swing SELL [Grade:{result.quality_grade}]: WScore={sell_score:.1f}, ADX={adx:.1f}, Regime={result.regime_type}, Bias=SELL"
             else:
                 momentum_status = f"ADX={adx:.1f}" if has_adx_condition else "No momentum"
                 result.reason = f"M5 Swing: Buy(score={buy_score:.1f},sec={buy_sec_count}), Sell(score={sell_score:.1f},sec={sell_sec_count}), {momentum_status}, Regime={result.regime_type}"

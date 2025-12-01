@@ -64,6 +64,34 @@ The bot features a modular architecture for scalability and maintainability.
 - ✅ Chart cleanup otomatis setelah session end
 - Catatan: Position monitoring interval 5 detik (FREE_TIER_MODE) dengan tick-based real-time monitoring untuk deteksi TP/SL
 
+**Signal Accuracy Improvements (Dec 1, 2025):**
+Perbaikan untuk meningkatkan akurasi sinyal dari ~50% ke target 80-90%:
+
+*Regime Alignment Check:*
+- ✅ Tambah method `_check_regime_alignment()` di signal_rules.py dan strategy.py
+- ✅ Blok sinyal BUY ketika market bias SELL (dengan confidence >= 0.75-0.80)
+- ✅ Blok sinyal SELL ketika market bias BUY (dengan confidence >= 0.75-0.80)
+- ✅ Izinkan sinyal dengan peringatan jika regime unavailable atau low confidence
+
+*Quality Filtering:*
+- ✅ Tambah method `_validate_signal_quality()` dengan soft filtering
+- ✅ Blok sinyal dengan confidence < 0.70 atau Grade D
+- ✅ Warning untuk sinyal dengan confluence < 6.0 atau grade C
+
+*Parameter Updates (signal_rules.py):*
+- MIN_WEIGHTED_CONFLUENCE_SCORE: 4.0 → 6.0
+- M1_MIN_CONFLUENCE: 2 → 4
+- M5_MIN_CONFLUENCE: 3 → 4
+- REGIME_MULTIPLIERS diperketat (weak_trend: 0.7→0.5, range_bound: 0.9→0.6)
+- Blok M1_SCALP di range_bound, high_volatility, dan unknown regime
+
+*Dynamic SL Settings (config.py):*
+- DYNAMIC_SL_LOSS_THRESHOLD: $1.0 → $3.0 (mencegah SL terlalu ketat)
+- BREAKEVEN_PROFIT_THRESHOLD: $0.5 → $2.0
+- TRAILING_STOP_PROFIT_THRESHOLD: $1.0 → $2.5
+- TRAILING_STOP_DISTANCE_PIPS: 3.0 → 5.0
+- SIGNAL_SCORE_THRESHOLD_AUTO: 55 → 75
+
 **Multi-Platform Deployment Support (Dec 1, 2025):**
 - ✅ **Koyeb**: Sudah didukung (lihat DEPLOYMENT_KOYEB.md)
 - ✅ **Northflank**: Baru ditambahkan (lihat DEPLOYMENT_NORTHFLANK.md)
