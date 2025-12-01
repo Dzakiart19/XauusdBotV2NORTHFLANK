@@ -902,13 +902,27 @@ class TradingBotOrchestrator:
                         try:
                             bid = self.market_data.current_bid
                             ask = self.market_data.current_ask
-                            if bid and ask and isinstance(bid, (int, float)) and isinstance(ask, (int, float)):
+                            
+                            m1_df = self.market_data.m1_builder.get_dataframe(limit=1440)
+                            
+                            if bid and ask and isinstance(bid, (int, float)) and isinstance(ask, (int, float)) and bid > 0 and ask > 0:
                                 price_data['bid'] = float(bid)
                                 price_data['ask'] = float(ask)
                                 price_data['mid'] = float((bid + ask) / 2)
                                 price_data['spread'] = float(round((ask - bid) * 10, 1))
+                            elif m1_df is not None and len(m1_df) > 0:
+                                last_candle = m1_df.iloc[-1]
+                                last_close = float(last_candle['close'])
+                                last_open = float(last_candle['open'])
+                                last_high = float(last_candle['high'])
+                                last_low = float(last_candle['low'])
+                                
+                                if last_close > 0:
+                                    price_data['mid'] = last_close
+                                    price_data['bid'] = last_close - 0.05
+                                    price_data['ask'] = last_close + 0.05
+                                    price_data['spread'] = 1.0
                             
-                            m1_df = self.market_data.m1_builder.get_dataframe(limit=1440)
                             if m1_df is not None and len(m1_df) > 0:
                                 high_val = m1_df['high'].max()
                                 low_val = m1_df['low'].min()
