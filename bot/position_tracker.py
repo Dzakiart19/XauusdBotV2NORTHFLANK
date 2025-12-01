@@ -1767,8 +1767,14 @@ class PositionTracker:
         This method is used to restore position tracking after a restart.
         Thread-safe with lock protection.
         """
-        session = self.db.get_session()
+        session = None
         try:
+            session = self.db.get_session()
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            
             active_positions = session.query(Position).filter(Position.status == 'ACTIVE').all()
             
             async with self._position_lock:
@@ -1794,12 +1800,14 @@ class PositionTracker:
             
         except (IntegrityError, OperationalError, SQLAlchemyError, ValueError, TypeError) as e:
             logger.error(f"Error reloading active positions: {e}", exc_info=True)
-            try:
-                session.rollback()
-            except (OperationalError, SQLAlchemyError) as rollback_error:
-                logger.error(f"Error during rollback: {rollback_error}")
+            if session:
+                try:
+                    session.rollback()
+                except (OperationalError, SQLAlchemyError) as rollback_error:
+                    logger.error(f"Error during rollback: {rollback_error}")
         finally:
-            try:
-                session.close()
-            except (OperationalError, SQLAlchemyError) as close_error:
-                logger.error(f"Error closing session: {close_error}")
+            if session:
+                try:
+                    session.close()
+                except (OperationalError, SQLAlchemyError) as close_error:
+                    logger.error(f"Error closing session: {close_error}")

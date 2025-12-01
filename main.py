@@ -530,6 +530,47 @@ class TradingBotOrchestrator:
             self._task_failure_counts[task_name] = self._task_failure_counts.get(task_name, 0) + 1
             return False
     
+    def _convert_timestamp_to_string(self, ts: Any, pd: Any, np: Any) -> str:
+        """Convert various timestamp formats to ISO string format.
+        
+        Handles numpy datetime64, pandas Timestamp, datetime, and other formats.
+        
+        Args:
+            ts: Timestamp value (can be numpy datetime64, pandas Timestamp, datetime, etc)
+            pd: pandas module reference
+            np: numpy module reference
+            
+        Returns:
+            str: ISO formatted timestamp string
+        """
+        ts_str = str(ts)
+        try:
+            if ts is None:
+                return ts_str
+            
+            if isinstance(ts, (np.datetime64, pd.Timestamp)):
+                ts_converted = pd.to_datetime(ts)
+                if pd.isna(ts_converted):
+                    return str(ts)
+                return ts_converted.strftime('%Y-%m-%dT%H:%M:%S')
+            
+            if isinstance(ts, datetime):
+                return ts.isoformat()
+            
+            if hasattr(ts, 'isoformat'):
+                iso_method = getattr(ts, 'isoformat', None)
+                if callable(iso_method):
+                    return str(iso_method())
+            
+            if hasattr(ts, 'strftime'):
+                strftime_method = getattr(ts, 'strftime', None)
+                if callable(strftime_method):
+                    return str(strftime_method('%Y-%m-%dT%H:%M:%S'))
+            
+            return str(ts)
+        except Exception:
+            return str(ts)
+    
     async def _check_market_data_health(self) -> bool:
         """Check if market_data_websocket is healthy and reconnecting properly
         
@@ -1054,19 +1095,11 @@ class TradingBotOrchestrator:
                         
                         if df is not None and len(df) > 0:
                             df_reset = df.reset_index()
+                            import pandas as pd
+                            import numpy as np
                             for _, row in df_reset.iterrows():
                                 ts = row['timestamp']
-                                ts_str = str(ts)
-                                try:
-                                    if hasattr(ts, 'isoformat') and callable(getattr(ts, 'isoformat', None)):
-                                        ts_str = ts.isoformat()
-                                    elif hasattr(ts, 'strftime') and callable(getattr(ts, 'strftime', None)):
-                                        ts_str = ts.strftime('%Y-%m-%dT%H:%M:%S')
-                                    elif hasattr(ts, 'timestamp') and callable(getattr(ts, 'timestamp', None)):
-                                        from datetime import datetime as dt
-                                        ts_str = dt.fromtimestamp(ts.timestamp()).isoformat()
-                                except (AttributeError, TypeError, ValueError):
-                                    ts_str = str(ts)
+                                ts_str = self._convert_timestamp_to_string(ts, pd, np)
                                 candle = {
                                     'timestamp': ts_str,
                                     'open': float(row['open']),
