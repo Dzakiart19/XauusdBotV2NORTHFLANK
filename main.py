@@ -823,37 +823,39 @@ class TradingBotOrchestrator:
                     wib = pytz.timezone('Asia/Jakarta')
                     now = datetime.now(wib)
                     
-                    price_data = {
-                        'mid': None,
-                        'bid': None,
-                        'ask': None,
-                        'spread': None,
-                        'high': None,
-                        'low': None,
-                        'change_percent': None
+                    price_data: Dict[str, Any] = {
+                        'mid': 0.0,
+                        'bid': 0.0,
+                        'ask': 0.0,
+                        'spread': 0.0,
+                        'high': 0.0,
+                        'low': 0.0,
+                        'change_percent': 0.0
                     }
                     
                     if self.config_valid and self.market_data:
                         try:
                             bid = self.market_data.current_bid
                             ask = self.market_data.current_ask
-                            if bid and ask:
+                            if bid and ask and isinstance(bid, (int, float)) and isinstance(ask, (int, float)):
                                 price_data['bid'] = float(bid)
                                 price_data['ask'] = float(ask)
-                                price_data['mid'] = (bid + ask) / 2
-                                price_data['spread'] = round((ask - bid) * 10, 1)
+                                price_data['mid'] = float((bid + ask) / 2)
+                                price_data['spread'] = float(round((ask - bid) * 10, 1))
                             
                             m1_df = self.market_data.m1_builder.get_dataframe(limit=1440)
                             if m1_df is not None and len(m1_df) > 0:
-                                price_data['high'] = float(m1_df['high'].max())
-                                price_data['low'] = float(m1_df['low'].min())
+                                high_val = m1_df['high'].max()
+                                low_val = m1_df['low'].min()
+                                price_data['high'] = float(high_val) if high_val is not None else 0.0
+                                price_data['low'] = float(low_val) if low_val is not None else 0.0
                                 
                                 if len(m1_df) > 1:
                                     first_close = float(m1_df.iloc[0]['close'])
                                     last_close = float(m1_df.iloc[-1]['close'])
                                     if first_close > 0:
                                         change = ((last_close - first_close) / first_close) * 100
-                                        price_data['change_percent'] = round(change, 2)
+                                        price_data['change_percent'] = float(round(change, 2))
                         except Exception as e:
                             logger.debug(f"Error getting price data: {e}")
                     
@@ -1048,8 +1050,15 @@ class TradingBotOrchestrator:
                         if df is not None and len(df) > 0:
                             df_reset = df.reset_index()
                             for _, row in df_reset.iterrows():
+                                ts = row['timestamp']
+                                if hasattr(ts, 'isoformat'):
+                                    ts_str = ts.isoformat()
+                                elif hasattr(ts, 'strftime'):
+                                    ts_str = ts.strftime('%Y-%m-%dT%H:%M:%S')
+                                else:
+                                    ts_str = str(ts)
                                 candle = {
-                                    'timestamp': row['timestamp'].isoformat() if hasattr(row['timestamp'], 'isoformat') else str(row['timestamp']),
+                                    'timestamp': ts_str,
                                     'open': float(row['open']),
                                     'high': float(row['high']),
                                     'low': float(row['low']),
