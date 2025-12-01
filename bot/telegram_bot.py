@@ -4721,7 +4721,7 @@ class TradingBot:
                 "📱 *Cara Berlangganan:*\n"
                 "Hubungi admin untuk melakukan pembayaran dan aktivasi akun.\n\n"
                 "📞 *Kontak Admin:*\n"
-                "Telegram: @TradingBotAdmin\n\n"
+                "Telegram: @dzeckyete\n\n"
                 "⏰ Aktivasi akun dilakukan maksimal 1x24 jam setelah pembayaran dikonfirmasi."
             )
             

@@ -1099,12 +1099,12 @@ class RiskManager:
                 total_trades = len(trades)
                 closed_trades = [t for t in trades if t.actual_pl is not None]
                 
-                wins = sum(1 for t in closed_trades if t.actual_pl > 0)
+                wins = sum(1 for t in closed_trades if t.actual_pl >= 0)
                 losses = sum(1 for t in closed_trades if t.actual_pl < 0)
                 breakeven = sum(1 for t in closed_trades if t.actual_pl == 0)
                 
                 total_pl = sum(t.actual_pl for t in closed_trades if t.actual_pl is not None)
-                total_profit = sum(t.actual_pl for t in closed_trades if t.actual_pl and t.actual_pl > 0)
+                total_profit = sum(t.actual_pl for t in closed_trades if t.actual_pl and t.actual_pl >= 0)
                 total_loss = sum(t.actual_pl for t in closed_trades if t.actual_pl and t.actual_pl < 0)
                 
                 win_rate = (wins / len(closed_trades) * 100) if closed_trades else 0

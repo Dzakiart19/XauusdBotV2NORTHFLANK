@@ -337,7 +337,7 @@ class SignalQualityTracker:
             if len(signals) < self.MINIMUM_SIGNALS_FOR_ANALYSIS:
                 return -1.0
             
-            wins = sum(1 for s in signals if s.result == SignalResult.WIN.value)
+            wins = sum(1 for s in signals if s.actual_pips is not None and s.actual_pips >= 0)
             total = len(signals)
             
             accuracy = wins / total if total > 0 else 0.0
@@ -390,7 +390,7 @@ class SignalQualityTracker:
             if len(signals) < self.MINIMUM_SIGNALS_FOR_ANALYSIS:
                 return -1.0
             
-            wins = sum(1 for s in signals if s.result == SignalResult.WIN.value)
+            wins = sum(1 for s in signals if s.actual_pips is not None and s.actual_pips >= 0)
             total = len(signals)
             
             accuracy = wins / total if total > 0 else 0.0
@@ -436,7 +436,7 @@ class SignalQualityTracker:
             if len(signals) < self.MINIMUM_SIGNALS_FOR_ANALYSIS:
                 return -1.0
             
-            wins = sum(1 for s in signals if s.result == SignalResult.WIN.value)
+            wins = sum(1 for s in signals if s.actual_pips is not None and s.actual_pips >= 0)
             total = len(signals)
             
             accuracy = wins / total if total > 0 else 0.0
@@ -478,7 +478,7 @@ class SignalQualityTracker:
             if len(signals) < self.MINIMUM_SIGNALS_FOR_ANALYSIS:
                 return -1.0
             
-            wins = sum(1 for s in signals if s.result == SignalResult.WIN.value)
+            wins = sum(1 for s in signals if s.actual_pips is not None and s.actual_pips >= 0)
             total = len(signals)
             
             accuracy = wins / total if total > 0 else 0.0
@@ -538,8 +538,8 @@ class SignalQualityTracker:
                 }
             
             total_signals = len(closed_signals)
-            wins = sum(1 for s in closed_signals if s.result == SignalResult.WIN.value)
-            losses = sum(1 for s in closed_signals if s.result == SignalResult.LOSS.value)
+            wins = sum(1 for s in closed_signals if s.actual_pips is not None and s.actual_pips >= 0)
+            losses = sum(1 for s in closed_signals if s.actual_pips is not None and s.actual_pips < 0)
             breakevens = sum(1 for s in closed_signals if s.result == SignalResult.BREAKEVEN.value)
             overall_accuracy = wins / total_signals if total_signals > 0 else 0.0
             
@@ -550,18 +550,18 @@ class SignalQualityTracker:
             for rule in RuleType:
                 rule_signals = [s for s in closed_signals if s.rule_name == rule.value]
                 if rule_signals:
-                    rule_wins = sum(1 for s in rule_signals if s.result == SignalResult.WIN.value)
+                    rule_wins = sum(1 for s in rule_signals if s.actual_pips is not None and s.actual_pips >= 0)
                     accuracy_by_type[rule.value] = {
                         'accuracy': rule_wins / len(rule_signals) if rule_signals else 0.0,
                         'total': len(rule_signals),
                         'wins': rule_wins,
-                        'losses': len([s for s in rule_signals if s.result == SignalResult.LOSS.value])
+                        'losses': len([s for s in rule_signals if s.actual_pips is not None and s.actual_pips < 0])
                     }
                     
                     win_pips = [s.actual_pips for s in rule_signals 
-                               if s.result == SignalResult.WIN.value and s.actual_pips is not None]
+                               if s.actual_pips is not None and s.actual_pips >= 0]
                     loss_pips = [abs(s.actual_pips) for s in rule_signals 
-                                if s.result == SignalResult.LOSS.value and s.actual_pips is not None]
+                                if s.actual_pips is not None and s.actual_pips < 0]
                     
                     avg_win_pips_by_type[rule.value] = sum(win_pips) / len(win_pips) if win_pips else 0.0
                     avg_loss_pips_by_type[rule.value] = sum(loss_pips) / len(loss_pips) if loss_pips else 0.0
@@ -579,7 +579,7 @@ class SignalQualityTracker:
                     regime_signals = [s for s in closed_signals if s.market_regime == regime]
                 
                 if regime_signals:
-                    regime_wins = sum(1 for s in regime_signals if s.result == SignalResult.WIN.value)
+                    regime_wins = sum(1 for s in regime_signals if s.actual_pips is not None and s.actual_pips >= 0)
                     accuracy_by_regime[regime] = {
                         'accuracy': regime_wins / len(regime_signals) if regime_signals else 0.0,
                         'total': len(regime_signals),
@@ -593,7 +593,7 @@ class SignalQualityTracker:
             for hour in range(24):
                 hour_signals = [s for s in closed_signals if s.trading_hour == hour]
                 if hour_signals and len(hour_signals) >= 5:
-                    hour_wins = sum(1 for s in hour_signals if s.result == SignalResult.WIN.value)
+                    hour_wins = sum(1 for s in hour_signals if s.actual_pips is not None and s.actual_pips >= 0)
                     hour_accuracy = hour_wins / len(hour_signals) if hour_signals else 0.0
                     accuracy_by_hour[hour] = {
                         'accuracy': hour_accuracy,
@@ -614,7 +614,7 @@ class SignalQualityTracker:
                     conf_signals = [s for s in closed_signals if s.confluence_level >= conf_level]
                 
                 if conf_signals:
-                    conf_wins = sum(1 for s in conf_signals if s.result == SignalResult.WIN.value)
+                    conf_wins = sum(1 for s in conf_signals if s.actual_pips is not None and s.actual_pips >= 0)
                     label = f"{conf_level}_confluence" if conf_level == 2 else f"{conf_level}+_confluence"
                     accuracy_by_confluence[label] = {
                         'accuracy': conf_wins / len(conf_signals) if conf_signals else 0.0,
@@ -623,9 +623,9 @@ class SignalQualityTracker:
                     }
             
             total_win_pips = sum(s.actual_pips for s in closed_signals 
-                                if s.result == SignalResult.WIN.value and s.actual_pips is not None)
+                                if s.actual_pips is not None and s.actual_pips >= 0)
             total_loss_pips = abs(sum(s.actual_pips for s in closed_signals 
-                                     if s.result == SignalResult.LOSS.value and s.actual_pips is not None))
+                                     if s.actual_pips is not None and s.actual_pips < 0))
             profit_factor = total_win_pips / total_loss_pips if total_loss_pips > 0 else 0.0
             
             avg_duration = sum(s.duration_minutes for s in closed_signals 
@@ -818,8 +818,8 @@ class SignalQualityTracker:
             return {
                 'total': len(signals),
                 'pending': sum(1 for s in signals if s.result == SignalResult.PENDING.value),
-                'wins': sum(1 for s in signals if s.result == SignalResult.WIN.value),
-                'losses': sum(1 for s in signals if s.result == SignalResult.LOSS.value),
+                'wins': sum(1 for s in signals if s.actual_pips is not None and s.actual_pips >= 0),
+                'losses': sum(1 for s in signals if s.actual_pips is not None and s.actual_pips < 0),
                 'breakevens': sum(1 for s in signals if s.result == SignalResult.BREAKEVEN.value)
             }
             
