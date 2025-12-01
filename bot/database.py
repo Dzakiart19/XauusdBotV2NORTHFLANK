@@ -239,6 +239,28 @@ class CandleData(Base):
     is_partial = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+class SignalPerformance(Base):
+    """Signal performance tracking for win rate analysis per signal type, pattern, session, and volatility."""
+    __tablename__ = 'signal_performance'
+    
+    id = Column(Integer, primary_key=True)
+    signal_id = Column(Integer, nullable=True, index=True)
+    signal_type = Column(String(10), nullable=False, index=True)
+    entry_price = Column(Float, nullable=False)
+    exit_price = Column(Float, nullable=True)
+    pnl = Column(Float, nullable=True)
+    result = Column(String(10), nullable=True, index=True)
+    pattern_used = Column(String(50), nullable=True, index=True)
+    session_time = Column(String(30), nullable=True, index=True)
+    volatility_zone = Column(String(20), nullable=True, index=True)
+    mtf_score = Column(Float, nullable=True)
+    duration_minutes = Column(Integer, nullable=True)
+    timeframe = Column(String(5), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
+
+
 class DatabaseManager:
     """Database manager with connection pooling and rollback safety.
     
@@ -592,6 +614,12 @@ class DatabaseManager:
                     logger.error(f"Migration error on candle_data table: {type(e).__name__}: {e}")
                     raise DatabaseError(f"Candle data table migration failed: {e}")
                 
+                try:
+                    self._migrate_signal_performance_table(conn)
+                except (OperationalError, IntegrityError, SQLAlchemyError) as e:
+                    logger.error(f"Migration error on signal_performance table: {type(e).__name__}: {e}")
+                    raise DatabaseError(f"Signal performance table migration failed: {e}")
+                
             logger.info("✅ Database migrations completed successfully")
         
         except DatabaseError:
@@ -781,6 +809,28 @@ class DatabaseManager:
                 
         except (OperationalError, IntegrityError, SQLAlchemyError) as e:
             logger.error(f"Error migrating candle_data table: {e}")
+            raise
+    
+    def _migrate_signal_performance_table(self, conn):
+        """Migrate signal_performance table schema - ensure all columns exist"""
+        try:
+            if self.is_postgres:
+                result = conn.execute(text("""
+                    SELECT column_name FROM information_schema.columns 
+                    WHERE table_name = 'signal_performance'
+                """))
+                columns = [row[0] for row in result]
+            else:
+                result = conn.execute(text("PRAGMA table_info(signal_performance)"))
+                columns = [row[1] for row in result]
+            
+            if not columns:
+                logger.info("signal_performance table will be created by SQLAlchemy")
+            else:
+                logger.debug("signal_performance table already exists with columns: " + ", ".join(columns))
+                
+        except (OperationalError, IntegrityError, SQLAlchemyError) as e:
+            logger.error(f"Error migrating signal_performance table: {e}")
             raise
     
     def _get_session_with_pool_retry(
@@ -1718,6 +1768,511 @@ class DatabaseManager:
             if session:
                 session.close()
     
+    @retry_on_db_error(max_retries=3, initial_delay=0.1)
+    def save_signal_performance(self, signal_data: Dict) -> Optional[int]:
+        """Save new signal performance record.
+        
+        Args:
+            signal_data: Dictionary containing signal performance data:
+                - signal_id: Optional reference to trade ID
+                - signal_type: BUY or SELL
+                - entry_price: Entry price
+                - pattern_used: Pattern name (e.g., "INSIDE_BAR", "PIN_BAR")
+                - session_time: Trading session (e.g., "London-NY Overlap")
+                - volatility_zone: Volatility zone (e.g., "NORMAL", "HIGH")
+                - mtf_score: Multi-timeframe score
+                - timeframe: Timeframe used (e.g., "M1", "M5", "H1")
+                
+        Returns:
+            int: ID of the saved record, or None if failed
+        """
+        if not signal_data or not isinstance(signal_data, dict):
+            logger.error("save_signal_performance: Invalid signal_data provided")
+            return None
+            
+        session = None
+        try:
+            session = self.get_session()
+            
+            signal_perf = SignalPerformance(
+                signal_id=signal_data.get('signal_id'),
+                signal_type=signal_data.get('signal_type', 'UNKNOWN'),
+                entry_price=signal_data.get('entry_price', 0.0),
+                pattern_used=signal_data.get('pattern_used'),
+                session_time=signal_data.get('session_time'),
+                volatility_zone=signal_data.get('volatility_zone'),
+                mtf_score=signal_data.get('mtf_score'),
+                timeframe=signal_data.get('timeframe'),
+                created_at=datetime.utcnow()
+            )
+            
+            session.add(signal_perf)
+            session.commit()
+            
+            record_id = signal_perf.id
+            logger.info(f"✅ Signal performance saved: id={record_id}, type={signal_data.get('signal_type')}, pattern={signal_data.get('pattern_used')}")
+            return record_id
+            
+        except IntegrityError as e:
+            if session:
+                session.rollback()
+            logger.error(f"❌ Integrity error saving signal performance: {e}")
+            return None
+        except (OperationalError, SQLAlchemyError) as e:
+            if session:
+                session.rollback()
+            logger.error(f"❌ Database error saving signal performance: {e}")
+            return None
+        except (ValueError, TypeError, KeyError) as e:
+            if session:
+                session.rollback()
+            logger.error(f"❌ Data error saving signal performance: {type(e).__name__}: {e}")
+            return None
+        finally:
+            if session:
+                session.close()
+    
+    @retry_on_db_error(max_retries=3, initial_delay=0.1)
+    def update_signal_result(self, signal_id: int, exit_price: float, pnl: float, result: str, duration_minutes: int = 0) -> bool:
+        """Update signal performance when trade closes.
+        
+        Args:
+            signal_id: ID of the signal performance record
+            exit_price: Exit price of the trade
+            pnl: Profit/Loss value
+            result: "WIN" or "LOSS"
+            duration_minutes: Duration of the trade in minutes
+            
+        Returns:
+            bool: True if updated successfully, False otherwise
+        """
+        if signal_id is None or signal_id <= 0:
+            logger.error(f"update_signal_result: Invalid signal_id: {signal_id}")
+            return False
+            
+        session = None
+        try:
+            session = self.get_session()
+            
+            signal_perf = session.query(SignalPerformance).filter(
+                SignalPerformance.id == signal_id
+            ).first()
+            
+            if not signal_perf:
+                logger.warning(f"⚠️ Signal performance record not found: id={signal_id}")
+                return False
+            
+            signal_perf.exit_price = exit_price
+            signal_perf.pnl = pnl
+            signal_perf.result = result.upper() if result else None
+            signal_perf.duration_minutes = duration_minutes
+            signal_perf.closed_at = datetime.utcnow()
+            
+            session.commit()
+            logger.info(f"✅ Signal performance updated: id={signal_id}, result={result}, pnl={pnl:.2f}")
+            return True
+            
+        except (OperationalError, SQLAlchemyError) as e:
+            if session:
+                session.rollback()
+            logger.error(f"❌ Database error updating signal result: {e}")
+            return False
+        except (ValueError, TypeError) as e:
+            if session:
+                session.rollback()
+            logger.error(f"❌ Data error updating signal result: {type(e).__name__}: {e}")
+            return False
+        finally:
+            if session:
+                session.close()
+    
+    @retry_on_db_error(max_retries=3, initial_delay=0.1)
+    def get_win_rate_by_pattern(self, pattern: str) -> Dict[str, Any]:
+        """Get win rate statistics for a specific pattern.
+        
+        Args:
+            pattern: Pattern name (e.g., "INSIDE_BAR", "PIN_BAR")
+            
+        Returns:
+            Dict containing:
+                - pattern: Pattern name
+                - total_trades: Total number of trades
+                - wins: Number of winning trades
+                - losses: Number of losing trades
+                - win_rate: Win rate percentage
+                - avg_pnl: Average P&L
+        """
+        result = {
+            'pattern': pattern,
+            'total_trades': 0,
+            'wins': 0,
+            'losses': 0,
+            'win_rate': 0.0,
+            'avg_pnl': 0.0
+        }
+        
+        if not pattern:
+            return result
+            
+        session = None
+        try:
+            session = self.get_session()
+            
+            trades = session.query(SignalPerformance).filter(
+                SignalPerformance.pattern_used == pattern,
+                SignalPerformance.result.isnot(None)
+            ).all()
+            
+            if not trades:
+                return result
+            
+            total = len(trades)
+            wins = sum(1 for t in trades if t.result == 'WIN')
+            losses = sum(1 for t in trades if t.result == 'LOSS')
+            total_pnl = sum(t.pnl or 0 for t in trades)
+            
+            result['total_trades'] = total
+            result['wins'] = wins
+            result['losses'] = losses
+            result['win_rate'] = (wins / total * 100) if total > 0 else 0.0
+            result['avg_pnl'] = total_pnl / total if total > 0 else 0.0
+            
+            logger.debug(f"Pattern {pattern} stats: {wins}W/{losses}L ({result['win_rate']:.1f}%)")
+            return result
+            
+        except (OperationalError, SQLAlchemyError) as e:
+            logger.error(f"❌ Database error getting win rate by pattern: {e}")
+            return result
+        except (ValueError, TypeError, ZeroDivisionError) as e:
+            logger.error(f"❌ Error calculating win rate by pattern: {type(e).__name__}: {e}")
+            return result
+        finally:
+            if session:
+                session.close()
+    
+    @retry_on_db_error(max_retries=3, initial_delay=0.1)
+    def get_win_rate_by_session(self, session_time: str) -> Dict[str, Any]:
+        """Get win rate statistics for a specific trading session.
+        
+        Args:
+            session_time: Trading session name (e.g., "London", "NY", "London-NY Overlap")
+            
+        Returns:
+            Dict containing win rate statistics for the session
+        """
+        result = {
+            'session': session_time,
+            'total_trades': 0,
+            'wins': 0,
+            'losses': 0,
+            'win_rate': 0.0,
+            'avg_pnl': 0.0
+        }
+        
+        if not session_time:
+            return result
+            
+        db_session = None
+        try:
+            db_session = self.get_session()
+            
+            trades = db_session.query(SignalPerformance).filter(
+                SignalPerformance.session_time == session_time,
+                SignalPerformance.result.isnot(None)
+            ).all()
+            
+            if not trades:
+                return result
+            
+            total = len(trades)
+            wins = sum(1 for t in trades if t.result == 'WIN')
+            losses = sum(1 for t in trades if t.result == 'LOSS')
+            total_pnl = sum(t.pnl or 0 for t in trades)
+            
+            result['total_trades'] = total
+            result['wins'] = wins
+            result['losses'] = losses
+            result['win_rate'] = (wins / total * 100) if total > 0 else 0.0
+            result['avg_pnl'] = total_pnl / total if total > 0 else 0.0
+            
+            logger.debug(f"Session {session_time} stats: {wins}W/{losses}L ({result['win_rate']:.1f}%)")
+            return result
+            
+        except (OperationalError, SQLAlchemyError) as e:
+            logger.error(f"❌ Database error getting win rate by session: {e}")
+            return result
+        except (ValueError, TypeError, ZeroDivisionError) as e:
+            logger.error(f"❌ Error calculating win rate by session: {type(e).__name__}: {e}")
+            return result
+        finally:
+            if db_session:
+                db_session.close()
+    
+    @retry_on_db_error(max_retries=3, initial_delay=0.1)
+    def get_win_rate_by_volatility(self, zone: str) -> Dict[str, Any]:
+        """Get win rate statistics for a specific volatility zone.
+        
+        Args:
+            zone: Volatility zone name (e.g., "LOW", "NORMAL", "HIGH")
+            
+        Returns:
+            Dict containing win rate statistics for the volatility zone
+        """
+        result = {
+            'volatility_zone': zone,
+            'total_trades': 0,
+            'wins': 0,
+            'losses': 0,
+            'win_rate': 0.0,
+            'avg_pnl': 0.0
+        }
+        
+        if not zone:
+            return result
+            
+        session = None
+        try:
+            session = self.get_session()
+            
+            trades = session.query(SignalPerformance).filter(
+                SignalPerformance.volatility_zone == zone,
+                SignalPerformance.result.isnot(None)
+            ).all()
+            
+            if not trades:
+                return result
+            
+            total = len(trades)
+            wins = sum(1 for t in trades if t.result == 'WIN')
+            losses = sum(1 for t in trades if t.result == 'LOSS')
+            total_pnl = sum(t.pnl or 0 for t in trades)
+            
+            result['total_trades'] = total
+            result['wins'] = wins
+            result['losses'] = losses
+            result['win_rate'] = (wins / total * 100) if total > 0 else 0.0
+            result['avg_pnl'] = total_pnl / total if total > 0 else 0.0
+            
+            logger.debug(f"Volatility {zone} stats: {wins}W/{losses}L ({result['win_rate']:.1f}%)")
+            return result
+            
+        except (OperationalError, SQLAlchemyError) as e:
+            logger.error(f"❌ Database error getting win rate by volatility: {e}")
+            return result
+        except (ValueError, TypeError, ZeroDivisionError) as e:
+            logger.error(f"❌ Error calculating win rate by volatility: {type(e).__name__}: {e}")
+            return result
+        finally:
+            if session:
+                session.close()
+    
+    @retry_on_db_error(max_retries=3, initial_delay=0.1)
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """Get comprehensive performance statistics.
+        
+        Returns:
+            Dict containing:
+                - overall: Overall win rate and statistics
+                - by_pattern: Win rate breakdown by pattern
+                - by_session: Win rate breakdown by trading session
+                - by_volatility: Win rate breakdown by volatility zone
+                - by_signal_type: Win rate breakdown by BUY/SELL
+                - by_timeframe: Win rate breakdown by timeframe
+                - recent_trades: List of recent trade summaries
+        """
+        result = {
+            'overall': {
+                'total_trades': 0,
+                'wins': 0,
+                'losses': 0,
+                'win_rate': 0.0,
+                'total_pnl': 0.0,
+                'avg_pnl': 0.0
+            },
+            'by_pattern': {},
+            'by_session': {},
+            'by_volatility': {},
+            'by_signal_type': {},
+            'by_timeframe': {},
+            'recent_trades': []
+        }
+        
+        session = None
+        try:
+            session = self.get_session()
+            
+            all_trades = session.query(SignalPerformance).filter(
+                SignalPerformance.result.isnot(None)
+            ).all()
+            
+            if not all_trades:
+                logger.info("No completed signal performance records found")
+                return result
+            
+            total = len(all_trades)
+            wins = sum(1 for t in all_trades if t.result == 'WIN')
+            losses = sum(1 for t in all_trades if t.result == 'LOSS')
+            total_pnl = sum(t.pnl or 0 for t in all_trades)
+            
+            result['overall']['total_trades'] = total
+            result['overall']['wins'] = wins
+            result['overall']['losses'] = losses
+            result['overall']['win_rate'] = (wins / total * 100) if total > 0 else 0.0
+            result['overall']['total_pnl'] = total_pnl
+            result['overall']['avg_pnl'] = total_pnl / total if total > 0 else 0.0
+            
+            patterns = set(t.pattern_used for t in all_trades if t.pattern_used)
+            for pattern in patterns:
+                pattern_trades = [t for t in all_trades if t.pattern_used == pattern]
+                p_total = len(pattern_trades)
+                p_wins = sum(1 for t in pattern_trades if t.result == 'WIN')
+                p_losses = sum(1 for t in pattern_trades if t.result == 'LOSS')
+                p_pnl = sum(t.pnl or 0 for t in pattern_trades)
+                result['by_pattern'][pattern] = {
+                    'total_trades': p_total,
+                    'wins': p_wins,
+                    'losses': p_losses,
+                    'win_rate': (p_wins / p_total * 100) if p_total > 0 else 0.0,
+                    'avg_pnl': p_pnl / p_total if p_total > 0 else 0.0
+                }
+            
+            sessions = set(t.session_time for t in all_trades if t.session_time)
+            for sess in sessions:
+                sess_trades = [t for t in all_trades if t.session_time == sess]
+                s_total = len(sess_trades)
+                s_wins = sum(1 for t in sess_trades if t.result == 'WIN')
+                s_losses = sum(1 for t in sess_trades if t.result == 'LOSS')
+                s_pnl = sum(t.pnl or 0 for t in sess_trades)
+                result['by_session'][sess] = {
+                    'total_trades': s_total,
+                    'wins': s_wins,
+                    'losses': s_losses,
+                    'win_rate': (s_wins / s_total * 100) if s_total > 0 else 0.0,
+                    'avg_pnl': s_pnl / s_total if s_total > 0 else 0.0
+                }
+            
+            zones = set(t.volatility_zone for t in all_trades if t.volatility_zone)
+            for zone in zones:
+                zone_trades = [t for t in all_trades if t.volatility_zone == zone]
+                z_total = len(zone_trades)
+                z_wins = sum(1 for t in zone_trades if t.result == 'WIN')
+                z_losses = sum(1 for t in zone_trades if t.result == 'LOSS')
+                z_pnl = sum(t.pnl or 0 for t in zone_trades)
+                result['by_volatility'][zone] = {
+                    'total_trades': z_total,
+                    'wins': z_wins,
+                    'losses': z_losses,
+                    'win_rate': (z_wins / z_total * 100) if z_total > 0 else 0.0,
+                    'avg_pnl': z_pnl / z_total if z_total > 0 else 0.0
+                }
+            
+            for signal_type in ['BUY', 'SELL']:
+                type_trades = [t for t in all_trades if t.signal_type == signal_type]
+                t_total = len(type_trades)
+                if t_total > 0:
+                    t_wins = sum(1 for t in type_trades if t.result == 'WIN')
+                    t_losses = sum(1 for t in type_trades if t.result == 'LOSS')
+                    t_pnl = sum(t.pnl or 0 for t in type_trades)
+                    result['by_signal_type'][signal_type] = {
+                        'total_trades': t_total,
+                        'wins': t_wins,
+                        'losses': t_losses,
+                        'win_rate': (t_wins / t_total * 100) if t_total > 0 else 0.0,
+                        'avg_pnl': t_pnl / t_total if t_total > 0 else 0.0
+                    }
+            
+            timeframes = set(t.timeframe for t in all_trades if t.timeframe)
+            for tf in timeframes:
+                tf_trades = [t for t in all_trades if t.timeframe == tf]
+                tf_total = len(tf_trades)
+                tf_wins = sum(1 for t in tf_trades if t.result == 'WIN')
+                tf_losses = sum(1 for t in tf_trades if t.result == 'LOSS')
+                tf_pnl = sum(t.pnl or 0 for t in tf_trades)
+                result['by_timeframe'][tf] = {
+                    'total_trades': tf_total,
+                    'wins': tf_wins,
+                    'losses': tf_losses,
+                    'win_rate': (tf_wins / tf_total * 100) if tf_total > 0 else 0.0,
+                    'avg_pnl': tf_pnl / tf_total if tf_total > 0 else 0.0
+                }
+            
+            recent = session.query(SignalPerformance).filter(
+                SignalPerformance.result.isnot(None)
+            ).order_by(SignalPerformance.closed_at.desc()).limit(10).all()
+            
+            for trade in recent:
+                result['recent_trades'].append({
+                    'id': trade.id,
+                    'signal_type': trade.signal_type,
+                    'pattern': trade.pattern_used,
+                    'session': trade.session_time,
+                    'result': trade.result,
+                    'pnl': trade.pnl,
+                    'closed_at': trade.closed_at.isoformat() if trade.closed_at else None
+                })
+            
+            logger.info(f"📊 Performance stats: {wins}W/{losses}L ({result['overall']['win_rate']:.1f}%), Total P&L: {total_pnl:.2f}")
+            return result
+            
+        except (OperationalError, SQLAlchemyError) as e:
+            logger.error(f"❌ Database error getting performance stats: {e}")
+            return result
+        except (ValueError, TypeError, ZeroDivisionError, AttributeError) as e:
+            logger.error(f"❌ Error calculating performance stats: {type(e).__name__}: {e}")
+            return result
+        finally:
+            if session:
+                session.close()
+    
+    @retry_on_db_error(max_retries=3, initial_delay=0.1)
+    def get_signal_performance_by_id(self, signal_id: int) -> Optional[Dict[str, Any]]:
+        """Get signal performance record by ID.
+        
+        Args:
+            signal_id: ID of the signal performance record
+            
+        Returns:
+            Dict containing signal performance data, or None if not found
+        """
+        if signal_id is None or signal_id <= 0:
+            return None
+            
+        session = None
+        try:
+            session = self.get_session()
+            
+            signal_perf = session.query(SignalPerformance).filter(
+                SignalPerformance.id == signal_id
+            ).first()
+            
+            if not signal_perf:
+                return None
+            
+            return {
+                'id': signal_perf.id,
+                'signal_id': signal_perf.signal_id,
+                'signal_type': signal_perf.signal_type,
+                'entry_price': signal_perf.entry_price,
+                'exit_price': signal_perf.exit_price,
+                'pnl': signal_perf.pnl,
+                'result': signal_perf.result,
+                'pattern_used': signal_perf.pattern_used,
+                'session_time': signal_perf.session_time,
+                'volatility_zone': signal_perf.volatility_zone,
+                'mtf_score': signal_perf.mtf_score,
+                'duration_minutes': signal_perf.duration_minutes,
+                'timeframe': signal_perf.timeframe,
+                'created_at': signal_perf.created_at,
+                'closed_at': signal_perf.closed_at
+            }
+            
+        except (OperationalError, SQLAlchemyError) as e:
+            logger.error(f"❌ Database error getting signal performance: {e}")
+            return None
+        finally:
+            if session:
+                session.close()
+
     def close(self):
         """Menutup koneksi database dengan error handling dan pool cleanup."""
         try:

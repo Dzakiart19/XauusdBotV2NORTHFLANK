@@ -1797,3 +1797,432 @@ class IndicatorEngine:
         except Exception as e:
             self._logger.warning(f"Gagal menghitung adaptive smoothed RSI: {str(e)}")
             return default_result
+    
+    def detect_inside_bar(self, df: pd.DataFrame) -> Dict:
+        """
+        Detect Inside Bar pattern - Current candle HIGH < prev HIGH & Current LOW > prev LOW.
+        
+        Inside Bar indicates consolidation and potential breakout. It's a neutral pattern
+        that can precede either direction depending on breakout.
+        
+        Args:
+            df: DataFrame with OHLC data
+        
+        Returns:
+            Dict with:
+            - detected: True if inside bar detected
+            - strength: 'strong' if tight range, 'moderate' otherwise
+            - potential_breakout: 'pending' (needs breakout confirmation)
+        """
+        default_result = {
+            'detected': False,
+            'strength': 'none',
+            'potential_breakout': 'none',
+            'range_compression': 0.0
+        }
+        
+        if not self._validate_dataframe(df, ['high', 'low', 'close']):
+            return default_result
+        
+        if len(df) < 2:
+            return default_result
+        
+        try:
+            high = self._get_column_series(df, 'high')
+            low = self._get_column_series(df, 'low')
+            
+            current_high = safe_series_operation(high, 'value', -1, 0.0)
+            current_low = safe_series_operation(low, 'value', -1, 0.0)
+            prev_high = safe_series_operation(high, 'value', -2, 0.0)
+            prev_low = safe_series_operation(low, 'value', -2, 0.0)
+            
+            if prev_high <= 0 or prev_low <= 0 or current_high <= 0 or current_low <= 0:
+                return default_result
+            
+            is_inside_bar = (current_high < prev_high) and (current_low > prev_low)
+            
+            if not is_inside_bar:
+                return default_result
+            
+            prev_range = prev_high - prev_low
+            current_range = current_high - current_low
+            
+            if prev_range > 0:
+                range_compression = 1.0 - (current_range / prev_range)
+            else:
+                range_compression = 0.0
+            
+            if range_compression > 0.5:
+                strength = 'strong'
+            elif range_compression > 0.3:
+                strength = 'moderate'
+            else:
+                strength = 'weak'
+            
+            return {
+                'detected': True,
+                'strength': strength,
+                'potential_breakout': 'pending',
+                'range_compression': float(range_compression)
+            }
+            
+        except Exception as e:
+            self._logger.warning(f"Gagal mendeteksi inside bar: {str(e)}")
+            return default_result
+    
+    def detect_pin_bar(self, df: pd.DataFrame, signal_type: str = 'BUY') -> Dict:
+        """
+        Detect Pin Bar (rejection candle) pattern.
+        
+        BUY Pin Bar: Lower shadow >= 2x body size, bearish OR small body close
+        SELL Pin Bar: Upper shadow >= 2x body size, bullish OR small body close
+        
+        Args:
+            df: DataFrame with OHLC data
+            signal_type: 'BUY' or 'SELL' to look for corresponding pin bar
+        
+        Returns:
+            Dict with:
+            - detected: True if pin bar detected
+            - strength: 'strong', 'moderate', 'weak'
+            - shadow_ratio: Shadow to body ratio
+            - rejection_level: Price level of rejection
+        """
+        default_result = {
+            'detected': False,
+            'strength': 'none',
+            'shadow_ratio': 0.0,
+            'rejection_level': 0.0,
+            'pattern_type': 'none'
+        }
+        
+        if not self._validate_dataframe(df, ['open', 'high', 'low', 'close']):
+            return default_result
+        
+        if len(df) < 1:
+            return default_result
+        
+        try:
+            open_price = safe_series_operation(self._get_column_series(df, 'open'), 'value', -1, 0.0)
+            high = safe_series_operation(self._get_column_series(df, 'high'), 'value', -1, 0.0)
+            low = safe_series_operation(self._get_column_series(df, 'low'), 'value', -1, 0.0)
+            close = safe_series_operation(self._get_column_series(df, 'close'), 'value', -1, 0.0)
+            
+            if open_price <= 0 or high <= 0 or low <= 0 or close <= 0:
+                return default_result
+            
+            body_size = abs(close - open_price)
+            upper_shadow = high - max(open_price, close)
+            lower_shadow = min(open_price, close) - low
+            total_range = high - low
+            
+            min_body = total_range * 0.01
+            if body_size < min_body:
+                body_size = min_body
+            
+            if signal_type == 'BUY':
+                shadow_ratio = lower_shadow / body_size if body_size > 0 else 0
+                
+                is_bearish_or_small = close <= open_price or body_size < (total_range * 0.33)
+                upper_not_too_long = upper_shadow < lower_shadow * 0.5
+                
+                if shadow_ratio >= 2.0 and is_bearish_or_small and upper_not_too_long:
+                    if shadow_ratio >= 3.0:
+                        strength = 'strong'
+                    elif shadow_ratio >= 2.5:
+                        strength = 'moderate'
+                    else:
+                        strength = 'weak'
+                    
+                    return {
+                        'detected': True,
+                        'strength': strength,
+                        'shadow_ratio': float(shadow_ratio),
+                        'rejection_level': float(low),
+                        'pattern_type': 'bullish_pin_bar'
+                    }
+                    
+            elif signal_type == 'SELL':
+                shadow_ratio = upper_shadow / body_size if body_size > 0 else 0
+                
+                is_bullish_or_small = close >= open_price or body_size < (total_range * 0.33)
+                lower_not_too_long = lower_shadow < upper_shadow * 0.5
+                
+                if shadow_ratio >= 2.0 and is_bullish_or_small and lower_not_too_long:
+                    if shadow_ratio >= 3.0:
+                        strength = 'strong'
+                    elif shadow_ratio >= 2.5:
+                        strength = 'moderate'
+                    else:
+                        strength = 'weak'
+                    
+                    return {
+                        'detected': True,
+                        'strength': strength,
+                        'shadow_ratio': float(shadow_ratio),
+                        'rejection_level': float(high),
+                        'pattern_type': 'bearish_pin_bar'
+                    }
+            
+            return default_result
+            
+        except Exception as e:
+            self._logger.warning(f"Gagal mendeteksi pin bar: {str(e)}")
+            return default_result
+    
+    def detect_reversal_patterns(self, df: pd.DataFrame, lookback: int = 20) -> Dict:
+        """
+        Detect Double Bottom/Top reversal patterns.
+        
+        Double Bottom (Bullish): Two similar lows with a peak in between
+        Double Top (Bearish): Two similar highs with a trough in between
+        
+        Args:
+            df: DataFrame with OHLC data
+            lookback: Number of candles to look back for pattern detection
+        
+        Returns:
+            Dict with:
+            - pattern_type: 'double_bottom', 'double_top', or 'none'
+            - detected: True if pattern detected
+            - strength: 'strong', 'moderate', 'weak'
+            - neckline: Price level of neckline (resistance/support)
+            - target: Potential price target based on pattern height
+        """
+        default_result = {
+            'pattern_type': 'none',
+            'detected': False,
+            'strength': 'none',
+            'neckline': 0.0,
+            'target': 0.0,
+            'first_pivot': 0.0,
+            'second_pivot': 0.0
+        }
+        
+        if not self._validate_dataframe(df, ['high', 'low', 'close']):
+            return default_result
+        
+        if len(df) < lookback:
+            return default_result
+        
+        try:
+            high = self._get_column_series(df, 'high')
+            low = self._get_column_series(df, 'low')
+            close = self._get_column_series(df, 'close')
+            
+            df_lookback = df.tail(lookback)
+            high_lb = high.tail(lookback)
+            low_lb = low.tail(lookback)
+            close_lb = close.tail(lookback)
+            
+            current_price = safe_series_operation(close, 'value', -1, 0.0)
+            
+            swing_lows = []
+            swing_highs = []
+            min_pivot_distance = 4
+            
+            for i in range(2, len(df_lookback) - 2):
+                try:
+                    low_val = float(low_lb.iloc[i])
+                    high_val = float(high_lb.iloc[i])
+                    
+                    if (low_val < low_lb.iloc[i-1] and low_val < low_lb.iloc[i-2] and
+                        low_val < low_lb.iloc[i+1] and low_val < low_lb.iloc[i+2]):
+                        if not swing_lows or (i - swing_lows[-1][0]) >= min_pivot_distance:
+                            swing_lows.append((i, low_val))
+                    
+                    if (high_val > high_lb.iloc[i-1] and high_val > high_lb.iloc[i-2] and
+                        high_val > high_lb.iloc[i+1] and high_val > high_lb.iloc[i+2]):
+                        if not swing_highs or (i - swing_highs[-1][0]) >= min_pivot_distance:
+                            swing_highs.append((i, high_val))
+                except (IndexError, KeyError):
+                    continue
+            
+            if len(swing_lows) >= 2:
+                first_low = swing_lows[-2]
+                second_low = swing_lows[-1]
+                
+                similarity_threshold = 0.003
+                price_diff_pct = abs(first_low[1] - second_low[1]) / first_low[1] if first_low[1] > 0 else 1.0
+                
+                if price_diff_pct <= similarity_threshold:
+                    highs_between = [h[1] for h in swing_highs if first_low[0] < h[0] < second_low[0]]
+                    if highs_between:
+                        neckline = max(highs_between)
+                        pattern_height = neckline - min(first_low[1], second_low[1])
+                        target = neckline + pattern_height
+                        
+                        if pattern_height / neckline > 0.02:
+                            strength = 'strong'
+                        elif pattern_height / neckline > 0.01:
+                            strength = 'moderate'
+                        else:
+                            strength = 'weak'
+                        
+                        return {
+                            'pattern_type': 'double_bottom',
+                            'detected': True,
+                            'strength': strength,
+                            'neckline': float(neckline),
+                            'target': float(target),
+                            'first_pivot': float(first_low[1]),
+                            'second_pivot': float(second_low[1])
+                        }
+            
+            if len(swing_highs) >= 2:
+                first_high = swing_highs[-2]
+                second_high = swing_highs[-1]
+                
+                similarity_threshold = 0.003
+                price_diff_pct = abs(first_high[1] - second_high[1]) / first_high[1] if first_high[1] > 0 else 1.0
+                
+                if price_diff_pct <= similarity_threshold:
+                    lows_between = [l[1] for l in swing_lows if first_high[0] < l[0] < second_high[0]]
+                    if lows_between:
+                        neckline = min(lows_between)
+                        pattern_height = max(first_high[1], second_high[1]) - neckline
+                        target = neckline - pattern_height
+                        
+                        if pattern_height / neckline > 0.02:
+                            strength = 'strong'
+                        elif pattern_height / neckline > 0.01:
+                            strength = 'moderate'
+                        else:
+                            strength = 'weak'
+                        
+                        return {
+                            'pattern_type': 'double_top',
+                            'detected': True,
+                            'strength': strength,
+                            'neckline': float(neckline),
+                            'target': float(target),
+                            'first_pivot': float(first_high[1]),
+                            'second_pivot': float(second_high[1])
+                        }
+            
+            return default_result
+            
+        except Exception as e:
+            self._logger.warning(f"Gagal mendeteksi reversal patterns: {str(e)}")
+            return default_result
+    
+    def calculate_ema_ribbon(self, df: pd.DataFrame) -> Dict:
+        """
+        Calculate EMA Ribbon for advanced momentum confirmation.
+        
+        EMA Ribbon uses multiple EMAs: 5, 10, 15, 20, 25, 30
+        - BULLISH: All EMAs stacked ascending (EMA5 > EMA10 > EMA15 > ... > EMA30)
+        - BEARISH: All EMAs stacked descending (EMA5 < EMA10 < EMA15 < ... < EMA30)
+        - MIXED: No clear order (weak momentum)
+        
+        Args:
+            df: DataFrame with OHLC data
+        
+        Returns:
+            Dict with:
+            - ema_values: Dict with all EMA values (ema_5, ema_10, etc.)
+            - alignment_status: 'STRONG_BULLISH', 'BULLISH', 'NEUTRAL', 'BEARISH', 'STRONG_BEARISH', 'MIXED'
+            - bullish_count: Number of bullish alignments (EMA[n] > EMA[n+5])
+            - bearish_count: Number of bearish alignments (EMA[n] < EMA[n+5])
+            - ribbon_spread: Spread between EMA5 and EMA30 as percentage
+            - trend_strength: 0.0 to 1.0 score
+        """
+        default_result = {
+            'ema_values': {
+                'ema_5': 0.0,
+                'ema_10': 0.0,
+                'ema_15': 0.0,
+                'ema_20': 0.0,
+                'ema_25': 0.0,
+                'ema_30': 0.0
+            },
+            'alignment_status': 'NEUTRAL',
+            'bullish_count': 0,
+            'bearish_count': 0,
+            'ribbon_spread': 0.0,
+            'trend_strength': 0.0
+        }
+        
+        if not self._validate_dataframe(df, ['close']):
+            return default_result
+        
+        ema_periods = [5, 10, 15, 20, 25, 30]
+        min_required_length = max(ema_periods) + 10
+        
+        if len(df) < min_required_length:
+            return default_result
+        
+        try:
+            ema_values = {}
+            for period in ema_periods:
+                ema_series = self.calculate_ema(df, period)
+                ema_val = safe_series_operation(ema_series, 'value', -1, 0.0)
+                ema_values[f'ema_{period}'] = float(ema_val)
+            
+            if any(v == 0.0 for v in ema_values.values()):
+                return default_result
+            
+            bullish_alignments = 0
+            bearish_alignments = 0
+            total_comparisons = len(ema_periods) - 1
+            
+            sorted_periods = sorted(ema_periods)
+            for i in range(len(sorted_periods) - 1):
+                shorter_ema = ema_values[f'ema_{sorted_periods[i]}']
+                longer_ema = ema_values[f'ema_{sorted_periods[i+1]}']
+                
+                if shorter_ema > longer_ema:
+                    bullish_alignments += 1
+                elif shorter_ema < longer_ema:
+                    bearish_alignments += 1
+            
+            ema_5_val = ema_values['ema_5']
+            ema_30_val = ema_values['ema_30']
+            
+            if ema_30_val > 0:
+                ribbon_spread = ((ema_5_val - ema_30_val) / ema_30_val) * 100
+            else:
+                ribbon_spread = 0.0
+            
+            if bullish_alignments == total_comparisons:
+                if abs(ribbon_spread) > 0.5:
+                    alignment_status = 'STRONG_BULLISH'
+                    trend_strength = 1.0
+                else:
+                    alignment_status = 'BULLISH'
+                    trend_strength = 0.8
+            elif bearish_alignments == total_comparisons:
+                if abs(ribbon_spread) > 0.5:
+                    alignment_status = 'STRONG_BEARISH'
+                    trend_strength = 1.0
+                else:
+                    alignment_status = 'BEARISH'
+                    trend_strength = 0.8
+            elif bullish_alignments >= 4:
+                alignment_status = 'BULLISH'
+                trend_strength = 0.6 + (bullish_alignments - 4) * 0.1
+            elif bearish_alignments >= 4:
+                alignment_status = 'BEARISH'
+                trend_strength = 0.6 + (bearish_alignments - 4) * 0.1
+            elif bullish_alignments >= 3 and bullish_alignments > bearish_alignments:
+                alignment_status = 'NEUTRAL'
+                trend_strength = 0.4
+            elif bearish_alignments >= 3 and bearish_alignments > bullish_alignments:
+                alignment_status = 'NEUTRAL'
+                trend_strength = 0.4
+            else:
+                alignment_status = 'MIXED'
+                trend_strength = 0.2
+            
+            return {
+                'ema_values': ema_values,
+                'alignment_status': alignment_status,
+                'bullish_count': bullish_alignments,
+                'bearish_count': bearish_alignments,
+                'ribbon_spread': float(ribbon_spread),
+                'trend_strength': float(trend_strength)
+            }
+            
+        except Exception as e:
+            self._logger.warning(f"Gagal menghitung EMA ribbon: {str(e)}")
+            return default_result

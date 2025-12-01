@@ -1476,6 +1476,417 @@ class TradingStrategy:
             logger.error(f"Error in check_multi_timeframe_confirmation: {e}")
             return True, f"✅ MTF: Error - {str(e)}", 1.0, mtf_data
     
+    def analyze_session_strength(self, current_time: Optional[datetime] = None) -> Dict[str, Any]:
+        """Analyze current trading session strength for XAUUSD based on market hours.
+        
+        IMPROVEMENT 3: Intraday Session Optimization
+        
+        Session definitions (UTC):
+        - Asia: 00:00-08:00 UTC (Tokyo/Hong Kong)
+        - London: 07:00-16:00 UTC (Major European markets)
+        - New York: 13:00-22:00 UTC (US markets)
+        - Sydney: 21:00-06:00 UTC (next day wrap, Australian markets)
+        
+        Session Overlap Strength:
+        - London & NY overlap (13:00-16:00 UTC) = STRONGEST (highest liquidity)
+        - London session alone = STRONG
+        - NY session alone = STRONG  
+        - Asia session = MEDIUM
+        - Off-market/Sydney only = WEAK
+        
+        Args:
+            current_time: Optional datetime in UTC. If None, uses current UTC time.
+            
+        Returns:
+            Dict with:
+            - current_session: str (e.g., "London-NY Overlap", "London", "Asia")
+            - session_strength: str ("STRONGEST", "STRONG", "MEDIUM", "WEAK")
+            - confidence_multiplier: float (Overlap=1.2x, London/NY=1.1x, Asia=0.95x, Off-market=0.8x)
+            - session_description: str for logging
+            - active_sessions: List[str] of currently active sessions
+            - is_overlap: bool indicating if multiple sessions overlap
+        """
+        result = {
+            'current_session': 'Unknown',
+            'session_strength': 'WEAK',
+            'confidence_multiplier': 0.8,
+            'session_description': 'Session analysis unavailable',
+            'active_sessions': [],
+            'is_overlap': False
+        }
+        
+        try:
+            if current_time is None:
+                current_time = datetime.now(pytz.UTC)
+            elif current_time.tzinfo is None:
+                current_time = pytz.UTC.localize(current_time)
+            else:
+                current_time = current_time.astimezone(pytz.UTC)
+            
+            hour = current_time.hour
+            weekday = current_time.weekday()
+            
+            is_weekend = weekday >= 5
+            if is_weekend:
+                result['current_session'] = 'Weekend (Closed)'
+                result['session_strength'] = 'WEAK'
+                result['confidence_multiplier'] = 0.5
+                result['session_description'] = f"⚠️ Weekend - Market Closed (Day {weekday})"
+                logger.debug(f"Session Analysis: {result['session_description']}")
+                return result
+            
+            active_sessions = []
+            
+            if 0 <= hour < 8:
+                active_sessions.append('Asia')
+            
+            if 7 <= hour < 16:
+                active_sessions.append('London')
+            
+            if 13 <= hour < 22:
+                active_sessions.append('New York')
+            
+            if hour >= 21 or hour < 6:
+                active_sessions.append('Sydney')
+            
+            result['active_sessions'] = active_sessions
+            result['is_overlap'] = len(active_sessions) > 1
+            
+            if 'London' in active_sessions and 'New York' in active_sessions:
+                result['current_session'] = 'London-NY Overlap'
+                result['session_strength'] = 'STRONGEST'
+                result['confidence_multiplier'] = 1.2
+                result['session_description'] = (
+                    f"🔥 STRONGEST Session: London-NY Overlap (13:00-16:00 UTC) | "
+                    f"Hour: {hour:02d}:00 UTC | Highest Liquidity"
+                )
+            
+            elif 'Asia' in active_sessions and 'London' in active_sessions:
+                result['current_session'] = 'Asia-London Overlap'
+                result['session_strength'] = 'STRONG'
+                result['confidence_multiplier'] = 1.15
+                result['session_description'] = (
+                    f"✅ STRONG Session: Asia-London Overlap (07:00-08:00 UTC) | "
+                    f"Hour: {hour:02d}:00 UTC | Good Liquidity"
+                )
+            
+            elif 'London' in active_sessions:
+                result['current_session'] = 'London'
+                result['session_strength'] = 'STRONG'
+                result['confidence_multiplier'] = 1.1
+                result['session_description'] = (
+                    f"✅ STRONG Session: London (07:00-16:00 UTC) | "
+                    f"Hour: {hour:02d}:00 UTC | Major Market Activity"
+                )
+            
+            elif 'New York' in active_sessions:
+                result['current_session'] = 'New York'
+                result['session_strength'] = 'STRONG'
+                result['confidence_multiplier'] = 1.1
+                result['session_description'] = (
+                    f"✅ STRONG Session: New York (13:00-22:00 UTC) | "
+                    f"Hour: {hour:02d}:00 UTC | Major Market Activity"
+                )
+            
+            elif 'Asia' in active_sessions:
+                result['current_session'] = 'Asia'
+                result['session_strength'] = 'MEDIUM'
+                result['confidence_multiplier'] = 0.95
+                result['session_description'] = (
+                    f"⚡ MEDIUM Session: Asia (00:00-08:00 UTC) | "
+                    f"Hour: {hour:02d}:00 UTC | Moderate Liquidity"
+                )
+            
+            elif 'Sydney' in active_sessions:
+                result['current_session'] = 'Sydney'
+                result['session_strength'] = 'WEAK'
+                result['confidence_multiplier'] = 0.8
+                result['session_description'] = (
+                    f"⚠️ WEAK Session: Sydney/Off-Market (21:00-06:00 UTC) | "
+                    f"Hour: {hour:02d}:00 UTC | Low Liquidity"
+                )
+            
+            else:
+                result['current_session'] = 'Off-Market'
+                result['session_strength'] = 'WEAK'
+                result['confidence_multiplier'] = 0.8
+                result['session_description'] = (
+                    f"⚠️ WEAK Session: Off-Market Hours | "
+                    f"Hour: {hour:02d}:00 UTC | Very Low Liquidity"
+                )
+            
+            logger.debug(f"Session Analysis: {result['session_description']}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in analyze_session_strength: {e}")
+            result['session_description'] = f"⚠️ Session analysis error: {str(e)}"
+            return result
+    
+    def check_extended_mtf_correlation(self, m1_indicators: Optional[Dict], 
+                                        m5_indicators: Optional[Dict],
+                                        h1_indicators: Optional[Dict],
+                                        h4_indicators: Optional[Dict],
+                                        daily_indicators: Optional[Dict],
+                                        signal_type: str) -> Dict[str, Any]:
+        """Check extended multi-timeframe correlation with 4H and Daily timeframes.
+        
+        IMPROVEMENT 8: Extended MTF Correlation Analysis
+        
+        Analyzes alignment across all available timeframes to determine trend consistency.
+        This method is NON-BLOCKING - it only provides context and confidence adjustment.
+        
+        Timeframe Alignment Scoring:
+        - M1 aligned = base score (always checked first)
+        - M5 aligned = +10% bonus
+        - H1 aligned = +10% bonus
+        - H4 aligned = +10% bonus (if available)
+        - Daily aligned = +10% bonus (if available)
+        
+        Confidence Levels:
+        - All TF aligned (5/5) = VERY HIGH confidence, +40% score bonus
+        - 4/5 aligned = HIGH confidence, +30% score bonus
+        - 3/5 aligned = MEDIUM confidence, +20% score bonus
+        - <3 aligned = LOW confidence, no bonus
+        
+        Args:
+            m1_indicators: M1 timeframe indicators (required)
+            m5_indicators: M5 timeframe indicators (optional)
+            h1_indicators: H1 timeframe indicators (optional)
+            h4_indicators: H4 timeframe indicators (optional, new)
+            daily_indicators: Daily timeframe indicators (optional, new)
+            signal_type: 'BUY' or 'SELL'
+            
+        Returns:
+            Dict with:
+            - mtf_correlation_score: float (0.0-0.4 bonus)
+            - aligned_timeframes_count: int (number of aligned TFs)
+            - available_timeframes_count: int (number of available TFs)
+            - alignment_details: List[str] (details per timeframe)
+            - confidence_level: str ('VERY HIGH', 'HIGH', 'MEDIUM', 'LOW')
+            - confidence_multiplier: float (1.0-1.4x)
+            - is_strongly_aligned: bool
+        """
+        result = {
+            'mtf_correlation_score': 0.0,
+            'aligned_timeframes_count': 0,
+            'available_timeframes_count': 0,
+            'alignment_details': [],
+            'confidence_level': 'LOW',
+            'confidence_multiplier': 1.0,
+            'is_strongly_aligned': False,
+            'timeframe_status': {}
+        }
+        
+        try:
+            if signal_type not in ['BUY', 'SELL']:
+                result['alignment_details'].append(f"❌ Invalid signal type: {signal_type}")
+                logger.warning(f"check_extended_mtf_correlation: Invalid signal_type: {signal_type}")
+                return result
+            
+            timeframe_checks = [
+                ('M1', m1_indicators),
+                ('M5', m5_indicators),
+                ('H1', h1_indicators),
+                ('H4', h4_indicators),
+                ('Daily', daily_indicators)
+            ]
+            
+            aligned_count = 0
+            available_count = 0
+            
+            for tf_name, tf_indicators in timeframe_checks:
+                tf_status = self._check_single_tf_alignment(tf_indicators, signal_type, tf_name)
+                result['timeframe_status'][tf_name] = tf_status
+                
+                if tf_status['available']:
+                    available_count += 1
+                    if tf_status['aligned']:
+                        aligned_count += 1
+                        result['alignment_details'].append(f"✅ {tf_name}: Aligned ({tf_status['reason']})")
+                    else:
+                        result['alignment_details'].append(f"⚠️ {tf_name}: Not aligned ({tf_status['reason']})")
+                else:
+                    result['alignment_details'].append(f"- {tf_name}: Data tidak tersedia")
+            
+            result['aligned_timeframes_count'] = aligned_count
+            result['available_timeframes_count'] = available_count
+            
+            if available_count == 0:
+                result['confidence_level'] = 'LOW'
+                result['mtf_correlation_score'] = 0.0
+                result['confidence_multiplier'] = 1.0
+                result['alignment_details'].append("⚠️ No timeframe data available")
+                logger.debug("Extended MTF Correlation: No timeframe data available")
+                return result
+            
+            alignment_ratio = aligned_count / available_count if available_count > 0 else 0
+            
+            if aligned_count >= 5 or (available_count >= 4 and aligned_count == available_count):
+                result['confidence_level'] = 'VERY HIGH'
+                result['mtf_correlation_score'] = 0.40
+                result['confidence_multiplier'] = 1.4
+                result['is_strongly_aligned'] = True
+            elif aligned_count >= 4 or (available_count == 4 and aligned_count == 4):
+                result['confidence_level'] = 'HIGH'
+                result['mtf_correlation_score'] = 0.30
+                result['confidence_multiplier'] = 1.3
+                result['is_strongly_aligned'] = True
+            elif aligned_count >= 3:
+                result['confidence_level'] = 'MEDIUM'
+                result['mtf_correlation_score'] = 0.20
+                result['confidence_multiplier'] = 1.2
+                result['is_strongly_aligned'] = alignment_ratio >= 0.6
+            else:
+                result['confidence_level'] = 'LOW'
+                result['mtf_correlation_score'] = 0.0
+                result['confidence_multiplier'] = 1.0
+                result['is_strongly_aligned'] = False
+            
+            alignment_emoji = "🔥" if result['is_strongly_aligned'] else "⚠️"
+            summary = (
+                f"{alignment_emoji} Extended MTF Correlation: {aligned_count}/{available_count} aligned | "
+                f"Confidence: {result['confidence_level']} | "
+                f"Score Bonus: +{result['mtf_correlation_score']*100:.0f}%"
+            )
+            result['alignment_details'].append(summary)
+            
+            logger.info(summary)
+            logger.debug(f"MTF Details: {', '.join(result['alignment_details'][:-1])}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in check_extended_mtf_correlation: {e}")
+            result['alignment_details'].append(f"⚠️ Error: {str(e)}")
+            return result
+    
+    def _check_single_tf_alignment(self, indicators: Optional[Dict], 
+                                    signal_type: str, 
+                                    tf_name: str) -> Dict[str, Any]:
+        """Check if a single timeframe is aligned with the signal direction.
+        
+        Internal helper for check_extended_mtf_correlation.
+        
+        Alignment criteria:
+        - EMA alignment (EMA5 > EMA20 for BUY, EMA5 < EMA20 for SELL)
+        - RSI direction (>50 for BUY, <50 for SELL)
+        - MACD direction (>0 or above signal for BUY)
+        
+        Args:
+            indicators: Timeframe indicators dict
+            signal_type: 'BUY' or 'SELL'
+            tf_name: Timeframe name for logging
+            
+        Returns:
+            Dict with:
+            - available: bool
+            - aligned: bool
+            - reason: str
+            - score: float (0-1)
+        """
+        result = {
+            'available': False,
+            'aligned': False,
+            'reason': 'Data tidak tersedia',
+            'score': 0.0
+        }
+        
+        try:
+            if not indicators or not isinstance(indicators, dict):
+                return result
+            
+            ema_keys = [f'ema_{p}' for p in self.config.EMA_PERIODS[:2]]
+            ema_short_key = ema_keys[0] if len(ema_keys) > 0 else 'ema_5'
+            ema_mid_key = ema_keys[1] if len(ema_keys) > 1 else 'ema_20'
+            
+            ema_short = indicators.get(ema_short_key)
+            ema_mid = indicators.get(ema_mid_key)
+            rsi = indicators.get('rsi')
+            macd = indicators.get('macd')
+            macd_signal = indicators.get('macd_signal')
+            close = indicators.get('close')
+            
+            has_ema = is_valid_number(ema_short) and is_valid_number(ema_mid)
+            has_rsi = is_valid_number(rsi)
+            has_macd = is_valid_number(macd)
+            has_close = is_valid_number(close)
+            
+            if not has_ema and not has_rsi and not has_macd and not has_close:
+                return result
+            
+            result['available'] = True
+            alignment_checks = []
+            aligned_count = 0
+            total_checks = 0
+            
+            if has_ema:
+                ema_s = safe_float(ema_short, 0.0)
+                ema_m = safe_float(ema_mid, 0.0)
+                total_checks += 1
+                
+                if signal_type == 'BUY':
+                    if ema_s > ema_m:
+                        aligned_count += 1
+                        alignment_checks.append("EMA✅")
+                    else:
+                        alignment_checks.append("EMA❌")
+                else:
+                    if ema_s < ema_m:
+                        aligned_count += 1
+                        alignment_checks.append("EMA✅")
+                    else:
+                        alignment_checks.append("EMA❌")
+            
+            if has_rsi:
+                rsi_val = safe_float(rsi, 50.0)
+                total_checks += 1
+                
+                if signal_type == 'BUY':
+                    if rsi_val > 45:
+                        aligned_count += 1
+                        alignment_checks.append(f"RSI({rsi_val:.0f})✅")
+                    else:
+                        alignment_checks.append(f"RSI({rsi_val:.0f})❌")
+                else:
+                    if rsi_val < 55:
+                        aligned_count += 1
+                        alignment_checks.append(f"RSI({rsi_val:.0f})✅")
+                    else:
+                        alignment_checks.append(f"RSI({rsi_val:.0f})❌")
+            
+            if has_macd:
+                macd_val = safe_float(macd, 0.0)
+                macd_sig = safe_float(macd_signal, 0.0) if is_valid_number(macd_signal) else macd_val
+                total_checks += 1
+                
+                if signal_type == 'BUY':
+                    if macd_val > macd_sig or macd_val > 0:
+                        aligned_count += 1
+                        alignment_checks.append("MACD✅")
+                    else:
+                        alignment_checks.append("MACD❌")
+                else:
+                    if macd_val < macd_sig or macd_val < 0:
+                        aligned_count += 1
+                        alignment_checks.append("MACD✅")
+                    else:
+                        alignment_checks.append("MACD❌")
+            
+            if total_checks > 0:
+                result['score'] = aligned_count / total_checks
+                result['aligned'] = result['score'] >= 0.5
+                result['reason'] = ' '.join(alignment_checks)
+            else:
+                result['reason'] = 'No indicators to check'
+            
+            return result
+            
+        except Exception as e:
+            logger.debug(f"Error in _check_single_tf_alignment for {tf_name}: {e}")
+            result['reason'] = f"Error: {str(e)}"
+            return result
+    
     def check_macd_divergence(self, indicators: Dict, signal_type: str, 
                               price_history: Optional[List] = None, 
                               macd_history: Optional[List] = None) -> Tuple[bool, str, float]:
@@ -1639,6 +2050,87 @@ class TradingStrategy:
         except (StrategyError, Exception) as e:
             logger.error(f"Error in check_atr_volatility_filter: {e}")
             return True, f"✅ ATR Filter: Error - {str(e)}", 1.0, "unknown"
+    
+    def calculate_dynamic_lot_size(self, base_lot_size: float, atr: float, 
+                                    volatility_zone: str) -> Tuple[float, str]:
+        """Calculate dynamic lot size based on volatility zone.
+        
+        IMPROVEMENT 1: Smart Position Sizing dengan Volatilitas Adapter
+        
+        Menyesuaikan ukuran posisi berdasarkan volatilitas pasar tanpa memblokir sinyal.
+        Saat volatilitas terlalu rendah atau tinggi, posisi dikurangi untuk mengurangi risiko.
+        
+        Volatility Zone Multipliers:
+        - EXTREME_LOW: 0.5x (reduce saat market terlalu quiet - breakout risk)
+        - LOW: 0.7x (reduce saat volatilitas rendah)
+        - NORMAL: 1.0x (standard position size)
+        - HIGH: 0.8x (slight reduction saat volatile)
+        - EXTREME_HIGH: 0.7x (reduce saat terlalu volatile - SL risk tinggi)
+        
+        Args:
+            base_lot_size: Base lot size dari config (e.g., 0.01)
+            atr: Current ATR value
+            volatility_zone: Zone string dari check_atr_volatility_filter 
+                           (EXTREME_LOW, LOW, NORMAL, HIGH, EXTREME_HIGH, unknown)
+        
+        Returns:
+            Tuple of (adjusted_lot_size, reason_string)
+            - adjusted_lot_size: Lot size yang sudah disesuaikan dengan volatilitas
+            - reason_string: Penjelasan adjustment untuk logging
+        
+        Example:
+            >>> lot, reason = strategy.calculate_dynamic_lot_size(0.02, 1.5, "HIGH")
+            >>> print(lot)  # 0.016
+            >>> print(reason)  # "📊 Position size adjusted: 0.02 -> 0.016 (HIGH volatility: 0.8x)"
+        """
+        try:
+            base_lot = safe_float(base_lot_size, 0.01, "base_lot_size")
+            if base_lot <= 0:
+                logger.warning(f"Invalid base_lot_size: {base_lot_size}, using default 0.01")
+                base_lot = 0.01
+            
+            volatility_multipliers = {
+                'EXTREME_LOW': 0.5,
+                'LOW': 0.7,
+                'NORMAL': 1.0,
+                'HIGH': 0.8,
+                'EXTREME_HIGH': 0.7,
+                'unknown': 1.0
+            }
+            
+            zone_upper = volatility_zone.upper() if volatility_zone else 'UNKNOWN'
+            multiplier = volatility_multipliers.get(zone_upper, 1.0)
+            
+            adjusted_lot = base_lot * multiplier
+            
+            min_lot = safe_float(getattr(self.config, 'MIN_LOT_SIZE', 0.01), 0.01)
+            max_lot = safe_float(getattr(self.config, 'MAX_LOT_SIZE', 0.1), 0.1)
+            adjusted_lot = max(min_lot, min(adjusted_lot, max_lot))
+            
+            adjusted_lot = round(adjusted_lot, 2)
+            
+            if multiplier != 1.0:
+                reason = (f"📊 Position size adjusted: {base_lot:.2f} -> {adjusted_lot:.2f} "
+                         f"({zone_upper} volatility: {multiplier:.1f}x)")
+                logger.info(reason)
+            else:
+                reason = f"📊 Position size: {adjusted_lot:.2f} (NORMAL volatility, no adjustment)"
+                logger.debug(reason)
+            
+            atr_val = safe_float(atr, 0.0, "atr")
+            logger.debug(f"Dynamic lot sizing: base={base_lot:.2f}, ATR={atr_val:.4f}, "
+                        f"zone={zone_upper}, multiplier={multiplier:.1f}, final={adjusted_lot:.2f}")
+            
+            return adjusted_lot, reason
+            
+        except (ValueError, TypeError, ZeroDivisionError) as e:
+            logger.error(f"Error in calculate_dynamic_lot_size: {e}")
+            fallback_lot = safe_float(base_lot_size, 0.01)
+            fallback_lot = round(max(0.01, min(fallback_lot, 0.1)), 2)
+            return fallback_lot, f"📊 Position size: {fallback_lot:.2f} (fallback - calculation error)"
+        except Exception as e:
+            logger.error(f"Unexpected error in calculate_dynamic_lot_size: {e}")
+            return 0.01, "📊 Position size: 0.01 (fallback - unexpected error)"
     
     def check_enhanced_volume_confirmation(self, indicators: Dict, signal_type: str,
                                             volume_history: Optional[List] = None) -> Tuple[bool, str, float]:
@@ -2596,6 +3088,265 @@ class TradingStrategy:
             logger.debug(f"Error in _check_price_momentum_consistency: {e}")
             return True, f"Momentum check skipped: {str(e)}"
     
+    def check_pattern_recognition(self, indicators: Dict, signal_type: str, 
+                                   m1_df=None, m5_df=None) -> Tuple[bool, str, float, Dict[str, Any]]:
+        """Check pattern recognition for signal confidence enhancement.
+        
+        IMPROVEMENT 2: Trade Setup Validation dengan Pattern Recognition
+        
+        This is an ENHANCEMENT filter, NOT a BLOCKING filter.
+        Detects patterns and applies confidence boost to matching signals.
+        
+        Patterns detected:
+        - Inside Bar: Consolidation pattern (pending breakout)
+        - Pin Bar: Rejection candle (bullish/bearish)
+        - Double Bottom/Top: Reversal patterns
+        
+        Confidence boost:
+        - Strong pattern match: +15-20%
+        - Moderate pattern match: +10%
+        - Weak pattern match: +5%
+        - No pattern: 0% (signal still valid)
+        
+        Args:
+            indicators: Dictionary of calculated indicators
+            signal_type: 'BUY' or 'SELL'
+            m1_df: M1 DataFrame for pattern detection
+            m5_df: M5 DataFrame for pattern detection (optional)
+            
+        Returns:
+            Tuple[bool, str, float, Dict]: (always_true, reason, confidence_boost, pattern_data)
+        """
+        pattern_data = {
+            'patterns_detected': [],
+            'pattern_name': 'none',
+            'pattern_confidence': 0.0,
+            'inside_bar': {'detected': False, 'strength': 'none'},
+            'pin_bar': {'detected': False, 'strength': 'none'},
+            'reversal_pattern': {'detected': False, 'type': 'none', 'strength': 'none'},
+            'combined_boost': 0.0
+        }
+        
+        try:
+            from bot.indicators import IndicatorEngine
+            
+            indicator_engine = None
+            if hasattr(self, 'indicator_engine'):
+                indicator_engine = self.indicator_engine
+            else:
+                indicator_engine = IndicatorEngine(self.config)
+            
+            df = m1_df if m1_df is not None else m5_df
+            
+            if df is None or len(df) < 5:
+                reason = "✅ Pattern Recognition: Data tidak tersedia - signal diizinkan tanpa boost"
+                logger.debug(reason)
+                return True, reason, 0.0, pattern_data
+            
+            confidence_boost = 0.0
+            detected_patterns = []
+            
+            inside_bar_result = indicator_engine.detect_inside_bar(df)
+            pattern_data['inside_bar'] = inside_bar_result
+            
+            if inside_bar_result.get('detected', False):
+                strength = inside_bar_result.get('strength', 'weak')
+                detected_patterns.append(f"Inside Bar ({strength})")
+                
+                if strength == 'strong':
+                    confidence_boost += 0.05
+                elif strength == 'moderate':
+                    confidence_boost += 0.03
+                else:
+                    confidence_boost += 0.02
+            
+            pin_bar_result = indicator_engine.detect_pin_bar(df, signal_type)
+            pattern_data['pin_bar'] = pin_bar_result
+            
+            if pin_bar_result.get('detected', False):
+                strength = pin_bar_result.get('strength', 'weak')
+                pattern_type = pin_bar_result.get('pattern_type', 'pin_bar')
+                detected_patterns.append(f"Pin Bar ({strength})")
+                
+                if strength == 'strong':
+                    confidence_boost += 0.15
+                elif strength == 'moderate':
+                    confidence_boost += 0.10
+                else:
+                    confidence_boost += 0.05
+            
+            reversal_result = indicator_engine.detect_reversal_patterns(df)
+            pattern_data['reversal_pattern'] = reversal_result
+            
+            if reversal_result.get('detected', False):
+                pattern_type = reversal_result.get('pattern_type', 'none')
+                strength = reversal_result.get('strength', 'weak')
+                
+                is_aligned = (
+                    (signal_type == 'BUY' and pattern_type == 'double_bottom') or
+                    (signal_type == 'SELL' and pattern_type == 'double_top')
+                )
+                
+                if is_aligned:
+                    detected_patterns.append(f"{pattern_type.replace('_', ' ').title()} ({strength})")
+                    
+                    if strength == 'strong':
+                        confidence_boost += 0.20
+                    elif strength == 'moderate':
+                        confidence_boost += 0.12
+                    else:
+                        confidence_boost += 0.07
+            
+            pattern_data['patterns_detected'] = detected_patterns
+            pattern_data['combined_boost'] = confidence_boost
+            
+            if detected_patterns:
+                primary_pattern = detected_patterns[0]
+                pattern_data['pattern_name'] = primary_pattern
+                pattern_data['pattern_confidence'] = confidence_boost
+                
+                reason = f"✅ Pattern Recognition: {', '.join(detected_patterns)} detected | Boost: +{confidence_boost:.0%}"
+                logger.info(reason)
+                return True, reason, confidence_boost, pattern_data
+            else:
+                reason = "✅ Pattern Recognition: Tidak ada pattern terdeteksi - signal tetap valid"
+                logger.debug(reason)
+                return True, reason, 0.0, pattern_data
+            
+        except Exception as e:
+            logger.warning(f"Error in check_pattern_recognition: {e}")
+            return True, f"✅ Pattern Recognition: Error ({str(e)}) - signal diizinkan", 0.0, pattern_data
+    
+    def check_ema_ribbon_alignment(self, indicators: Dict, signal_type: str, 
+                                    m1_df=None) -> Tuple[bool, str, float, Dict[str, Any]]:
+        """Check EMA Ribbon alignment for momentum confirmation.
+        
+        IMPROVEMENT 5: Advanced Momentum Confirmation dengan EMA Ribbon
+        
+        This is a CONFIDENCE MODIFIER, NOT a BLOCKING filter.
+        Uses 6 EMAs (5, 10, 15, 20, 25, 30) to determine trend strength.
+        
+        Alignment status:
+        - STRONG_BULLISH: All EMAs stacked ascending (EMA5 > EMA10 > ... > EMA30)
+        - BULLISH: Most EMAs aligned bullish (4+ of 5 comparisons)
+        - NEUTRAL: Mixed alignments (3 bullish/bearish)
+        - BEARISH: Most EMAs aligned bearish
+        - STRONG_BEARISH: All EMAs stacked descending
+        - MIXED: No clear order (weak momentum)
+        
+        Confidence modifiers:
+        - STRONG alignment with signal: +15%
+        - Aligned with signal: +10%
+        - NEUTRAL: 0%
+        - MIXED: -10%
+        - Against signal: -15%
+        
+        Args:
+            indicators: Dictionary of calculated indicators
+            signal_type: 'BUY' or 'SELL'
+            m1_df: M1 DataFrame for EMA ribbon calculation
+            
+        Returns:
+            Tuple[bool, str, float, Dict]: (always_true, reason, confidence_modifier, ribbon_data)
+        """
+        ribbon_data = {
+            'alignment_status': 'NEUTRAL',
+            'trend_strength': 0.0,
+            'bullish_count': 0,
+            'bearish_count': 0,
+            'ribbon_spread': 0.0,
+            'ema_values': {},
+            'confidence_modifier': 0.0,
+            'is_aligned': False
+        }
+        
+        try:
+            from bot.indicators import IndicatorEngine
+            
+            indicator_engine = None
+            if hasattr(self, 'indicator_engine'):
+                indicator_engine = self.indicator_engine
+            else:
+                indicator_engine = IndicatorEngine(self.config)
+            
+            if m1_df is None or len(m1_df) < 40:
+                ema_ribbon = indicators.get('ema_ribbon', None)
+                if ema_ribbon is None:
+                    reason = "✅ EMA Ribbon: Data tidak tersedia - no confidence adjustment"
+                    logger.debug(reason)
+                    return True, reason, 0.0, ribbon_data
+            else:
+                ema_ribbon = indicator_engine.calculate_ema_ribbon(m1_df)
+            
+            if ema_ribbon is None:
+                reason = "✅ EMA Ribbon: Calculation failed - no confidence adjustment"
+                logger.debug(reason)
+                return True, reason, 0.0, ribbon_data
+            
+            ribbon_data.update(ema_ribbon)
+            
+            alignment_status = ema_ribbon.get('alignment_status', 'NEUTRAL')
+            trend_strength = ema_ribbon.get('trend_strength', 0.0)
+            ribbon_spread = ema_ribbon.get('ribbon_spread', 0.0)
+            
+            confidence_modifier = 0.0
+            is_aligned = False
+            
+            if signal_type == 'BUY':
+                if alignment_status == 'STRONG_BULLISH':
+                    confidence_modifier = 0.15
+                    is_aligned = True
+                elif alignment_status == 'BULLISH':
+                    confidence_modifier = 0.10
+                    is_aligned = True
+                elif alignment_status == 'NEUTRAL':
+                    confidence_modifier = 0.0
+                    is_aligned = False
+                elif alignment_status == 'MIXED':
+                    confidence_modifier = -0.10
+                    is_aligned = False
+                elif alignment_status == 'BEARISH':
+                    confidence_modifier = -0.10
+                    is_aligned = False
+                elif alignment_status == 'STRONG_BEARISH':
+                    confidence_modifier = -0.15
+                    is_aligned = False
+                    
+            elif signal_type == 'SELL':
+                if alignment_status == 'STRONG_BEARISH':
+                    confidence_modifier = 0.15
+                    is_aligned = True
+                elif alignment_status == 'BEARISH':
+                    confidence_modifier = 0.10
+                    is_aligned = True
+                elif alignment_status == 'NEUTRAL':
+                    confidence_modifier = 0.0
+                    is_aligned = False
+                elif alignment_status == 'MIXED':
+                    confidence_modifier = -0.10
+                    is_aligned = False
+                elif alignment_status == 'BULLISH':
+                    confidence_modifier = -0.10
+                    is_aligned = False
+                elif alignment_status == 'STRONG_BULLISH':
+                    confidence_modifier = -0.15
+                    is_aligned = False
+            
+            ribbon_data['confidence_modifier'] = confidence_modifier
+            ribbon_data['is_aligned'] = is_aligned
+            
+            modifier_str = f"+{confidence_modifier:.0%}" if confidence_modifier >= 0 else f"{confidence_modifier:.0%}"
+            alignment_emoji = "✅" if is_aligned else ("⚠️" if confidence_modifier == 0 else "⛔")
+            
+            reason = f"{alignment_emoji} EMA Ribbon: {alignment_status} (strength: {trend_strength:.2f}, spread: {ribbon_spread:.2f}%) | Modifier: {modifier_str}"
+            logger.info(reason)
+            
+            return True, reason, confidence_modifier, ribbon_data
+            
+        except Exception as e:
+            logger.warning(f"Error in check_ema_ribbon_alignment: {e}")
+            return True, f"✅ EMA Ribbon: Error ({str(e)}) - no confidence adjustment", 0.0, ribbon_data
+    
     def get_volatility_adjustment(self, indicators: Dict) -> float:
         """Calculate dynamic threshold adjustment based on ATR/volatility
         
@@ -2881,16 +3632,28 @@ class TradingStrategy:
                 'confidence_reasons': [f'Error: {str(e)}']
             }
     
-    def calculate_sl_tp(self, signal_type: str, indicators: Dict, current_spread: float = 0.0) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
-        """Calculate Stop Loss and Take Profit using new parameters
+    def calculate_sl_tp(self, signal_type: str, indicators: Dict, current_spread: float = 0.0,
+                        sl_multiplier: float = 1.0, drawdown_info: Optional[Dict] = None) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+        """Calculate Stop Loss and Take Profit with dynamic SL adjustment support.
+        
+        IMPROVEMENT 7: Drawdown Protection dengan Dynamic SL Expansion
         
         SL = max(config.SL_ATR_MULTIPLIER * ATR, config.MIN_SL_PIPS/pip_value, config.MIN_SL_SPREAD_MULTIPLIER * spread)
-        TP = SL * config.TP_RR_RATIO
+        SL_adjusted = SL * sl_multiplier (for drawdown protection)
+        TP = SL_adjusted * config.TP_RR_RATIO
         
         Args:
             signal_type: 'BUY' or 'SELL'
             indicators: Dictionary of calculated indicators
             current_spread: Current spread in price units
+            sl_multiplier: Multiplier for SL distance from drawdown protection (default 1.0)
+                          - 1.0 = normal SL (drawdown < 20%)
+                          - 1.15 = expanded SL +15% (drawdown 20-40%)
+                          - 1.30 = expanded SL +30% (drawdown > 40%)
+            drawdown_info: Optional dict with drawdown details for logging:
+                          - drawdown_percent: Current drawdown %
+                          - drawdown_level: 'NORMAL', 'WARNING', 'CRITICAL'
+                          - reason: Explanation string
             
         Returns:
             Tuple of (sl_price, tp_price, sl_pips, tp_pips) or (None, None, None, None) on error
@@ -2910,6 +3673,11 @@ class TradingStrategy:
                 logger.error(f"calculate_sl_tp: Invalid close({close}) or ATR({atr})")
                 return None, None, None, None
             
+            sl_multiplier = safe_float(sl_multiplier, 1.0, "sl_multiplier")
+            if sl_multiplier <= 0 or sl_multiplier > 2.0:
+                logger.warning(f"Invalid sl_multiplier: {sl_multiplier}, using 1.0")
+                sl_multiplier = 1.0
+            
             sl_atr_mult = safe_float(self.config.SL_ATR_MULTIPLIER, 1.2)
             min_sl_pips = safe_float(self.config.MIN_SL_PIPS, 15.0)
             min_sl_spread_mult = safe_float(self.config.MIN_SL_SPREAD_MULTIPLIER, 2.0)
@@ -2923,7 +3691,20 @@ class TradingStrategy:
             sl_from_min_pips = min_sl_pips / pip_value
             sl_from_spread = current_spread * min_sl_spread_mult
             
-            sl_distance = max(sl_from_atr, sl_from_min_pips, sl_from_spread)
+            sl_distance_base = max(sl_from_atr, sl_from_min_pips, sl_from_spread)
+            
+            sl_distance = sl_distance_base * sl_multiplier
+            
+            if sl_multiplier != 1.0:
+                if drawdown_info:
+                    dd_pct = drawdown_info.get('drawdown_percent', 0)
+                    dd_level = drawdown_info.get('drawdown_level', 'UNKNOWN')
+                    logger.warning(f"🛡️ Dynamic SL Expansion Applied: {sl_multiplier:.2f}x "
+                                   f"(Base: {sl_distance_base:.4f} -> Adjusted: {sl_distance:.4f}) | "
+                                   f"Drawdown: {dd_pct:.1f}% [{dd_level}]")
+                else:
+                    logger.info(f"🛡️ SL Multiplier Applied: {sl_multiplier:.2f}x "
+                               f"(Base: {sl_distance_base:.4f} -> Adjusted: {sl_distance:.4f})")
             
             if not is_valid_number(sl_distance) or sl_distance <= 0:
                 logger.error(f"calculate_sl_tp: Invalid SL distance: {sl_distance}")
@@ -2952,8 +3733,11 @@ class TradingStrategy:
             sl_pips = abs(close - sl_price) * pip_value
             tp_pips = abs(close - tp_price) * pip_value
             
-            logger.info(f"SL/TP Calculated: SL={sl_price:.2f} ({sl_pips:.1f} pips), TP={tp_price:.2f} ({tp_pips:.1f} pips)")
-            logger.debug(f"SL Components: ATR*{sl_atr_mult}={sl_from_atr:.4f}, MIN_PIPS={sl_from_min_pips:.4f}, SPREAD*{min_sl_spread_mult}={sl_from_spread:.4f}")
+            sl_mult_info = f" [DD Protection: {sl_multiplier:.2f}x]" if sl_multiplier != 1.0 else ""
+            logger.info(f"SL/TP Calculated: SL={sl_price:.2f} ({sl_pips:.1f} pips), TP={tp_price:.2f} ({tp_pips:.1f} pips){sl_mult_info}")
+            logger.debug(f"SL Components: ATR*{sl_atr_mult}={sl_from_atr:.4f}, MIN_PIPS={sl_from_min_pips:.4f}, "
+                        f"SPREAD*{min_sl_spread_mult}={sl_from_spread:.4f}, Base={sl_distance_base:.4f}, "
+                        f"Multiplier={sl_multiplier:.2f}, Final={sl_distance:.4f}")
             
             return sl_price, tp_price, sl_pips, tp_pips
             
@@ -3010,6 +3794,9 @@ class TradingStrategy:
             logger.info(f"🔍 MULTI-CONFIRMATION SIGNAL ANALYSIS - {timeframe}")
             logger.info("=" * 60)
             
+            session_info = self.analyze_session_strength()
+            logger.info(f"🕐 {session_info['session_description']}")
+            
             ema_short = indicators.get(f'ema_{self.config.EMA_PERIODS[0]}')
             ema_mid = indicators.get(f'ema_{self.config.EMA_PERIODS[1]}')
             ema_long = indicators.get(f'ema_{self.config.EMA_PERIODS[2]}')
@@ -3044,6 +3831,8 @@ class TradingStrategy:
             mc_result = self.get_multi_confirmation_score(indicators, current_spread, signal_source)
             
             signal = None
+            dynamic_lot = safe_float(self.config.LOT_SIZE, 0.01, "LOT_SIZE")
+            volatility_zone = "NORMAL"
             confidence_reasons = mc_result.get('confidence_reasons', [])
             
             weighted_score = mc_result.get('weighted_score', 0.0)
@@ -3073,6 +3862,11 @@ class TradingStrategy:
                         logger.info(f"📊 Signal {potential_signal} ditolak karena volatilitas {volatility_zone}")
                         return None
                     
+                    base_lot = safe_float(self.config.LOT_SIZE, 0.01, "LOT_SIZE")
+                    atr_val = safe_float(indicators.get('atr'), 0.0, "atr")
+                    dynamic_lot, lot_reason = self.calculate_dynamic_lot_size(base_lot, atr_val, volatility_zone)
+                    confidence_reasons.append(lot_reason)
+                    
                     vol_passed, vol_reason, vol_mult = self.check_enhanced_volume_confirmation(indicators, potential_signal)
                     confidence_reasons.append(vol_reason)
                     
@@ -3099,8 +3893,37 @@ class TradingStrategy:
                     
                     confidence_reasons.append(alignment_reason)
                     
+                    extended_mtf = self.check_extended_mtf_correlation(
+                        m1_indicators=indicators,
+                        m5_indicators=m5_indicators,
+                        h1_indicators=h1_indicators,
+                        h4_indicators=None,
+                        daily_indicators=None,
+                        signal_type=potential_signal
+                    )
+                    
+                    mtf_correlation_score = extended_mtf.get('mtf_correlation_score', 0.0)
+                    mtf_confidence_level = extended_mtf.get('confidence_level', 'LOW')
+                    mtf_aligned_count = extended_mtf.get('aligned_timeframes_count', 0)
+                    mtf_available_count = extended_mtf.get('available_timeframes_count', 0)
+                    
+                    extended_mtf_reason = (
+                        f"📈 Extended MTF: {mtf_confidence_level} ({mtf_aligned_count}/{mtf_available_count} aligned) | "
+                        f"Score Bonus: +{mtf_correlation_score*100:.0f}%"
+                    )
+                    confidence_reasons.append(extended_mtf_reason)
+                    logger.info(extended_mtf_reason)
+                    
+                    session_multiplier = session_info.get('confidence_multiplier', 1.0)
+                    session_reason = (
+                        f"🕐 Session: {session_info.get('current_session', 'Unknown')} "
+                        f"({session_info.get('session_strength', 'WEAK')}) | "
+                        f"Multiplier: {session_multiplier:.2f}x"
+                    )
+                    confidence_reasons.append(session_reason)
+                    
                     total_multiplier = mtf_score * atr_mult * vol_mult
-                    total_boost = macd_div_boost + sr_boost
+                    total_boost = macd_div_boost + sr_boost + mtf_correlation_score
                     adjusted_score = (adjusted_score * total_multiplier) + (total_boost * 10)
                     
                     if total_multiplier < 1.0:
@@ -3204,6 +4027,11 @@ class TradingStrategy:
                     signal = mc_result['signal_type']
                     close_price = safe_float(close, 0.0)
                     
+                    _, _, _, volatility_zone = self.check_atr_volatility_filter(indicators, signal)
+                    base_lot = safe_float(self.config.LOT_SIZE, 0.01, "LOT_SIZE")
+                    atr_val = safe_float(indicators.get('atr'), 0.0, "atr")
+                    dynamic_lot, lot_reason = self.calculate_dynamic_lot_size(base_lot, atr_val, volatility_zone)
+                    
                     candle_close_only = getattr(self.config, 'CANDLE_CLOSE_ONLY_SIGNALS', True)
                     if candle_close_only and signal:
                         can_generate, skip_reason = self.should_generate_signal(
@@ -3222,6 +4050,33 @@ class TradingStrategy:
                     logger.info(f"✅ MANUAL SIGNAL APPROVED - Weighted Score: {adjusted_score:.0f}% (threshold: {manual_threshold}%)")
                     confidence_reasons = mc_result.get('confidence_reasons', [])
                     confidence_reasons.append(f"Manual Mode Weighted Score: {adjusted_score:.0f}%")
+                    confidence_reasons.append(lot_reason)
+                    
+                    extended_mtf_manual = self.check_extended_mtf_correlation(
+                        m1_indicators=indicators,
+                        m5_indicators=m5_indicators,
+                        h1_indicators=h1_indicators,
+                        h4_indicators=None,
+                        daily_indicators=None,
+                        signal_type=signal
+                    )
+                    
+                    mtf_confidence_manual = extended_mtf_manual.get('confidence_level', 'LOW')
+                    mtf_aligned_manual = extended_mtf_manual.get('aligned_timeframes_count', 0)
+                    mtf_available_manual = extended_mtf_manual.get('available_timeframes_count', 0)
+                    
+                    manual_mtf_reason = (
+                        f"ℹ️ Extended MTF (info): {mtf_confidence_manual} "
+                        f"({mtf_aligned_manual}/{mtf_available_manual} aligned)"
+                    )
+                    confidence_reasons.append(manual_mtf_reason)
+                    logger.info(manual_mtf_reason)
+                    
+                    manual_session_reason = (
+                        f"ℹ️ Session: {session_info.get('current_session', 'Unknown')} "
+                        f"({session_info.get('session_strength', 'WEAK')})"
+                    )
+                    confidence_reasons.append(manual_session_reason)
                     
                     m5_passed, m5_reason, m5_score_mult = self.check_m5_confirmation(m5_indicators, signal)
                     confidence_reasons.append(f"ℹ️ M5 Info (non-blocking): {m5_reason}")
@@ -3423,6 +4278,8 @@ class TradingStrategy:
                     'expected_loss': float(expected_loss),
                     'rr_ratio': float(dynamic_tp_ratio),
                     'lot_size': float(lot_size),
+                    'position_size': float(dynamic_lot),
+                    'volatility_zone': str(volatility_zone),
                     'sl_pips': float(sl_pips),
                     'tp_pips': float(tp_pips),
                     'indicators': json.dumps({

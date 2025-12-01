@@ -666,6 +666,114 @@ class DynamicRiskCalculator:
         except Exception as e:
             logger.error(f"Error getting summary: {e}")
             return {'error': str(e)}
+    
+    def get_dynamic_sl_adjustment(self, user_id: int) -> Dict[str, Any]:
+        """Calculate dynamic SL and lot adjustments based on daily drawdown.
+        
+        IMPROVEMENT 7: Drawdown Protection dengan Dynamic SL Expansion
+        
+        Memonitor drawdown harian dan menyesuaikan Stop Loss serta ukuran posisi
+        untuk melindungi akun dari kerugian berlebih. TIDAK memblokir sinyal,
+        hanya menyesuaikan parameter risiko.
+        
+        Drawdown Levels:
+        - drawdown < 20%: Normal SL (multiplier 1.0), lot normal
+        - drawdown 20-40%: Expand SL +15% (multiplier 1.15), lot normal  
+        - drawdown > 40%: Expand SL +30% (multiplier 1.30) ATAU reduce lot 50%
+        
+        Args:
+            user_id: ID user untuk mendapatkan exposure data
+            
+        Returns:
+            Dict dengan:
+            - sl_multiplier: Multiplier untuk SL (1.0, 1.15, atau 1.30)
+            - lot_adjustment: Multiplier untuk lot size (1.0 atau 0.5)
+            - drawdown_percent: Current drawdown percentage
+            - drawdown_level: 'NORMAL', 'WARNING', atau 'CRITICAL'
+            - reason: Penjelasan adjustment
+            - should_adjust: Boolean apakah adjustment diperlukan
+        
+        Example:
+            >>> adj = risk_calc.get_dynamic_sl_adjustment(user_id=123)
+            >>> print(adj['sl_multiplier'])  # 1.15
+            >>> print(adj['reason'])  # "⚠️ WARNING: Drawdown 25% - SL expanded +15%"
+        """
+        try:
+            exposure = self.get_exposure_status(user_id)
+            
+            daily_realized_loss = abs(exposure.get('daily_realized_loss', 0.0))
+            total_exposure = exposure.get('combined_exposure', 0.0)
+            daily_threshold = exposure.get('daily_threshold', self.effective_daily_threshold)
+            
+            if daily_threshold <= 0:
+                daily_threshold = self.effective_daily_threshold
+            
+            drawdown_percent = (daily_realized_loss / daily_threshold * 100) if daily_threshold > 0 else 0.0
+            
+            if drawdown_percent < 20:
+                sl_multiplier = 1.0
+                lot_adjustment = 1.0
+                drawdown_level = 'NORMAL'
+                reason = f"✅ NORMAL: Drawdown {drawdown_percent:.1f}% < 20% - SL dan lot normal"
+                should_adjust = False
+                
+            elif drawdown_percent < 40:
+                sl_multiplier = 1.15
+                lot_adjustment = 1.0
+                drawdown_level = 'WARNING'
+                reason = f"⚠️ WARNING: Drawdown {drawdown_percent:.1f}% (20-40%) - SL expanded +15%"
+                should_adjust = True
+                logger.warning(f"🔔 Drawdown protection activated for user {user_id}: {reason}")
+                
+            else:
+                sl_multiplier = 1.30
+                lot_adjustment = 0.5
+                drawdown_level = 'CRITICAL'
+                reason = f"🚨 CRITICAL: Drawdown {drawdown_percent:.1f}% > 40% - SL expanded +30%, lot reduced 50%"
+                should_adjust = True
+                logger.warning(f"🚨 Critical drawdown for user {user_id}: {reason}")
+            
+            result = {
+                'sl_multiplier': sl_multiplier,
+                'lot_adjustment': lot_adjustment,
+                'drawdown_percent': round(drawdown_percent, 2),
+                'drawdown_level': drawdown_level,
+                'reason': reason,
+                'should_adjust': should_adjust,
+                'daily_realized_loss': round(daily_realized_loss, 2),
+                'daily_threshold': round(daily_threshold, 2),
+                'user_id': user_id
+            }
+            
+            logger.debug(f"Dynamic SL adjustment for user {user_id}: "
+                        f"DD={drawdown_percent:.1f}%, SL_mult={sl_multiplier:.2f}, "
+                        f"Lot_adj={lot_adjustment:.2f}, Level={drawdown_level}")
+            
+            return result
+            
+        except (SQLAlchemyError, ValueError, TypeError) as e:
+            logger.error(f"Error in get_dynamic_sl_adjustment: {e}")
+            return {
+                'sl_multiplier': 1.0,
+                'lot_adjustment': 1.0,
+                'drawdown_percent': 0.0,
+                'drawdown_level': 'UNKNOWN',
+                'reason': f"✅ Fallback: Error getting drawdown data - using normal SL/lot",
+                'should_adjust': False,
+                'error': str(e)
+            }
+        except Exception as e:
+            logger.error(f"Unexpected error in get_dynamic_sl_adjustment: {e}")
+            return {
+                'sl_multiplier': 1.0,
+                'lot_adjustment': 1.0,
+                'drawdown_percent': 0.0,
+                'drawdown_level': 'UNKNOWN',
+                'reason': f"✅ Fallback: Unexpected error - using normal SL/lot",
+                'should_adjust': False,
+                'error': str(e)
+            }
+
 
 class RiskManager:
     def __init__(self, config, db_manager, alert_system=None, enable_dynamic_risk=True):
