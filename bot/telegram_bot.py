@@ -2780,6 +2780,7 @@ class TradingBot:
                         signal_quality_id = self.signal_quality_tracker.record_signal(signal_data)
                         if signal_quality_id:
                             logger.debug(f"📝 Signal recorded to quality tracker - ID:{signal_quality_id} Trade:{trade_id} Rule:{rule_name}")
+                            trade.signal_quality_id = signal_quality_id
                     except (ValueError, TypeError, KeyError, AttributeError) as sqt_error:
                         logger.warning(f"Failed to record signal to quality tracker: {sqt_error}")
                 

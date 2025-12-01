@@ -173,6 +173,7 @@ class Trade(Base):
     close_time = Column(DateTime)
     timeframe = Column(String(10))
     result = Column(String(10))
+    signal_quality_id = Column(Integer, nullable=True)
     
 class SignalLog(Base):
     """Signal log with support for large Telegram user IDs (BigInteger)"""
@@ -210,6 +211,7 @@ class Position(Base):
     sl_adjustment_count = Column(Integer, default=0)
     max_profit_reached = Column(Float, default=0.0)
     last_price_update = Column(DateTime)
+    signal_quality_id = Column(Integer, nullable=True)
 
 class Performance(Base):
     __tablename__ = 'performance'

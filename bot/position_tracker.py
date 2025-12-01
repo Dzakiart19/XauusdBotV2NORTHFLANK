@@ -860,7 +860,8 @@ class PositionTracker:
                 original_sl=stop_loss,
                 sl_adjustment_count=0,
                 max_profit_reached=0.0,
-                last_price_update=datetime.now(pytz.UTC)
+                last_price_update=datetime.now(pytz.UTC),
+                signal_quality_id=signal_quality_id
             )
             session.add(position)
             session.flush()
@@ -1366,9 +1367,28 @@ class PositionTracker:
                     
                     # Get signal_quality_id from position if available
                     signal_quality_id = pos.get('signal_quality_id')
+                    if not signal_quality_id:
+                        # Try to get from database (Trade or Position record)
+                        try:
+                            db_session = self.db.get_session()
+                            try:
+                                trade_record = db_session.query(Trade).filter(Trade.id == trade_id).first()
+                                if trade_record and hasattr(trade_record, 'signal_quality_id'):
+                                    signal_quality_id = trade_record.signal_quality_id
+                                if not signal_quality_id:
+                                    position_record = db_session.query(Position).filter(Position.id == position_id).first()
+                                    if position_record and hasattr(position_record, 'signal_quality_id'):
+                                        signal_quality_id = position_record.signal_quality_id
+                            finally:
+                                db_session.close()
+                        except Exception as e:
+                            logger.warning(f"Could not retrieve signal_quality_id from database: {e}")
+                    
                     if signal_quality_id:
                         self.signal_quality_tracker.update_result(signal_quality_id, result_data)
                         logger.info(f"📊 Signal quality updated: ID={signal_quality_id}, Result={trade_result}")
+                    else:
+                        logger.warning(f"⚠️ No signal_quality_id found for position {position_id}, cannot update signal quality")
                 except Exception as e:
                     logger.error(f"❌ Error updating signal quality for position {position_id}: {e}")
             
@@ -1866,7 +1886,8 @@ class PositionTracker:
                         'take_profit': pos.take_profit,
                         'original_sl': pos.original_sl or pos.stop_loss,
                         'sl_adjustment_count': pos.sl_adjustment_count or 0,
-                        'max_profit_reached': pos.max_profit_reached or 0.0
+                        'max_profit_reached': pos.max_profit_reached or 0.0,
+                        'signal_quality_id': getattr(pos, 'signal_quality_id', None)
                     }
             
             total_positions = sum(len(positions) for positions in self.active_positions.values())
