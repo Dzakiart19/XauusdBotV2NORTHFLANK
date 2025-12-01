@@ -155,7 +155,13 @@
         try {
             var date = new Date(timestamp);
             if (isNaN(date.getTime())) return '--';
-            return date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            var day = String(date.getDate()).padStart(2, '0');
+            var month = String(date.getMonth() + 1).padStart(2, '0');
+            var year = date.getFullYear();
+            var hours = String(date.getHours()).padStart(2, '0');
+            var minutes = String(date.getMinutes()).padStart(2, '0');
+            var seconds = String(date.getSeconds()).padStart(2, '0');
+            return day + '.' + month + '.' + year + ' ' + hours + ':' + minutes + ':' + seconds;
         } catch (e) {
             return '--';
         }
@@ -299,28 +305,37 @@
         var container = document.getElementById('regime-tags');
         if (!container) return;
 
-        if (data && data.regime) {
+        if (data && data.regime && (data.regime.trend || data.regime.bias)) {
             var tags = [];
             if (data.regime.trend) {
-                var trendClass = data.regime.trend.toLowerCase().indexOf('bullish') > -1 ? 'trend-up' :
-                                data.regime.trend.toLowerCase().indexOf('bearish') > -1 ? 'trend-down' : '';
+                var trendText = String(data.regime.trend).toLowerCase();
+                var trendClass = trendText.indexOf('bullish') > -1 ? 'trend-up' :
+                                trendText.indexOf('bearish') > -1 ? 'trend-down' :
+                                trendText.indexOf('uptrend') > -1 ? 'trend-up' :
+                                trendText.indexOf('downtrend') > -1 ? 'trend-down' : '';
                 tags.push('<span class="regime-tag ' + trendClass + '">' + data.regime.trend + '</span>');
+                debugLog('Regime trend: ' + data.regime.trend);
             }
             if (data.regime.volatility) {
-                var volClass = data.regime.volatility.toLowerCase().indexOf('high') > -1 ? 'volatile' : '';
+                var volClass = String(data.regime.volatility).toLowerCase().indexOf('high') > -1 ? 'volatile' : '';
                 tags.push('<span class="regime-tag ' + volClass + '">' + data.regime.volatility + '</span>');
+                debugLog('Regime volatility: ' + data.regime.volatility);
             }
             if (data.regime.bias) {
                 var biasClass = data.regime.bias === 'BUY' ? 'trend-up' : data.regime.bias === 'SELL' ? 'trend-down' : '';
                 tags.push('<span class="regime-tag ' + biasClass + '">Bias: ' + data.regime.bias + '</span>');
+                debugLog('Regime bias: ' + data.regime.bias);
             }
             if (data.regime.confidence !== undefined) {
-                var confPercent = (data.regime.confidence * 100).toFixed(0);
+                var confPercent = (parseFloat(data.regime.confidence) * 100).toFixed(0);
                 tags.push('<span class="regime-tag">Confidence: ' + confPercent + '%</span>');
+                debugLog('Regime confidence: ' + confPercent + '%');
             }
-            container.innerHTML = tags.length > 0 ? tags.join('') : '<span class="regime-tag">Data tidak tersedia</span>';
+            container.innerHTML = tags.length > 0 ? tags.join('') : '<span class="regime-tag">⏳ Analyzing...</span>';
+            debugLog('Regime tags rendered: ' + tags.length);
         } else {
-            container.innerHTML = '<span class="regime-tag">Data tidak tersedia</span>';
+            debugLog('No regime data available');
+            container.innerHTML = '<span class="regime-tag">⏳ Analyzing...</span>';
         }
     }
 
@@ -485,35 +500,57 @@
 
     function updateCandleChart() {
         debugLog('updateCandleChart called');
+        if (!candleSeries || !chart) {
+            debugLog('Chart or candleSeries not ready yet');
+            return Promise.resolve();
+        }
+        
         return fetchCandlesData().then(function(data) {
-            if (!data || !candleSeries || !data.candles || data.candles.length === 0) {
-                debugLog('No candles data or candleSeries not ready');
+            if (!data || !data.candles || data.candles.length === 0) {
+                debugLog('No candles data received');
                 return;
             }
 
+            debugLog('Received ' + data.candles.length + ' candles');
+            
             var chartData = [];
             var seenTimes = {};
             data.candles.forEach(function(candle) {
                 var time = convertToWIB(candle.timestamp);
                 if (!seenTimes[time]) {
                     seenTimes[time] = true;
-                    chartData.push({
-                        time: time,
-                        open: parseFloat(candle.open),
-                        high: parseFloat(candle.high),
-                        low: parseFloat(candle.low),
-                        close: parseFloat(candle.close)
-                    });
+                    try {
+                        chartData.push({
+                            time: time,
+                            open: parseFloat(candle.open),
+                            high: parseFloat(candle.high),
+                            low: parseFloat(candle.low),
+                            close: parseFloat(candle.close)
+                        });
+                    } catch (e) {
+                        debugLog('Error parsing candle: ' + e.message);
+                    }
                 }
             });
 
+            if (chartData.length === 0) {
+                debugLog('No valid candles to render');
+                return;
+            }
+            
             chartData.sort(function(a, b) { return a.time - b.time; });
-            candleSeries.setData(chartData);
-            debugLog('Chart updated with ' + chartData.length + ' candles');
+            
+            try {
+                candleSeries.setData(chartData);
+                chart.timeScale().fitContent();
+                debugLog('Chart updated with ' + chartData.length + ' candles');
+            } catch (e) {
+                debugLog('Error setting chart data: ' + e.message);
+            }
             
             updatePriceLines(data.active_position, data.current_price);
         }).catch(function(error) {
-            debugLog('Error updating chart: ' + error.message);
+            debugLog('Error updating chart: ' + (error ? error.message : 'unknown error'));
         });
     }
 
