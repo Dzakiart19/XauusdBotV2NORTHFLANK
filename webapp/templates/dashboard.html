@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>XAUUSD Trading Dashboard</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>XAUUSD</h1>
+            <div class="subtitle">Scalping M1 Dashboard</div>
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                <span class="status-text">LIVE</span>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Harga Real-Time</span>
+                <span class="card-icon">💰</span>
+            </div>
+            <div class="price-display">
+                <div class="price-main" id="price-main">--</div>
+                <div class="price-change positive" id="price-change">--</div>
+                <div class="price-details">
+                    <div class="price-detail">
+                        <div class="price-detail-label">Bid</div>
+                        <div class="price-detail-value" id="price-bid">--</div>
+                    </div>
+                    <div class="price-detail">
+                        <div class="price-detail-label">Ask</div>
+                        <div class="price-detail-value" id="price-ask">--</div>
+                    </div>
+                    <div class="price-detail">
+                        <div class="price-detail-label">Spread</div>
+                        <div class="price-detail-value" id="price-spread">--</div>
+                    </div>
+                    <div class="price-detail">
+                        <div class="price-detail-label">24h Range</div>
+                        <div class="price-detail-value" id="price-range">--</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Sinyal Terakhir</span>
+                <span class="card-icon">📡</span>
+            </div>
+            <div class="signal-display">
+                <div class="signal-badge neutral" id="signal-badge">
+                    ⏳ Menunggu Sinyal
+                </div>
+                <div class="signal-info">
+                    <div class="signal-info-item">
+                        <div class="signal-info-label">Entry</div>
+                        <div class="signal-info-value" id="signal-entry">--</div>
+                    </div>
+                    <div class="signal-info-item">
+                        <div class="signal-info-label">SL</div>
+                        <div class="signal-info-value" id="signal-sl">--</div>
+                    </div>
+                    <div class="signal-info-item">
+                        <div class="signal-info-label">TP</div>
+                        <div class="signal-info-value" id="signal-tp">--</div>
+                    </div>
+                </div>
+                <div class="signal-info" style="margin-top: 8px;">
+                    <div class="signal-info-item" style="grid-column: span 3;">
+                        <div class="signal-info-label">Waktu Sinyal</div>
+                        <div class="signal-info-value" id="signal-time">--</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card position-card">
+            <div class="card-header">
+                <span class="card-title">Posisi Aktif</span>
+                <span class="card-icon">📈</span>
+            </div>
+            <div id="position-container">
+                <div class="no-position">
+                    <p>Tidak ada posisi aktif</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Market Regime</span>
+                <span class="card-icon">📊</span>
+            </div>
+            <div class="regime-display" id="regime-tags">
+                <span class="regime-tag">Loading...</span>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Statistik</span>
+                <span class="card-icon">📉</span>
+            </div>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-label">Win Rate</div>
+                    <div class="stat-value" id="stat-winrate">--</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Total P/L</div>
+                    <div class="stat-value" id="stat-pnl">--</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Sinyal Hari Ini</div>
+                    <div class="stat-value" id="stat-signals">--</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Total Trade</div>
+                    <div class="stat-value" id="stat-trades">--</div>
+                </div>
+            </div>
+        </div>
+        
+        <button class="refresh-btn" id="refresh-btn">
+            🔄 Refresh Data
+        </button>
+        
+        <div class="update-time" id="update-time">
+            Update terakhir: --
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>

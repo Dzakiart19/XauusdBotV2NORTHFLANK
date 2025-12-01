@@ -106,12 +106,23 @@ Perbaikan untuk meningkatkan akurasi sinyal dari ~50% ke target 80-90%:
 - Data harga diambil langsung dari WebSocket tick (bukan candle)
 - Timezone: WIB (Asia/Jakarta)
 
-**Multi-Platform Deployment Support (Dec 1, 2025):**
-- ✅ **Koyeb**: Sudah didukung (lihat DEPLOYMENT_KOYEB.md)
-- ✅ **Northflank**: Baru ditambahkan (lihat DEPLOYMENT_NORTHFLANK.md)
-- Kedua platform support auto-redeploy dari GitHub
-- Northflank: Gratis tanpa kartu kredit, 2 services, always-on 24/7
-- File konfigurasi: Dockerfile, Procfile, northflank.json
+**Deployment Support (Dec 1, 2025):**
+- ✅ **Koyeb**: Didukung penuh (lihat DEPLOYMENT_KOYEB.md)
+- ✅ **Replit**: Deployment utama dengan autoscale
+- File konfigurasi: Dockerfile, Procfile
+
+**Telegram Web App Dashboard (Dec 1, 2025):**
+- ✅ Dashboard web real-time untuk Telegram Web App
+- ✅ Endpoint: `/dashboard` untuk HTML, `/api/dashboard` untuk data
+- ✅ Static files di `/static/*`
+- Panel yang ditampilkan:
+  - 💰 Harga XAUUSD real-time (Bid/Ask/Spread)
+  - 📊 Market Regime (Trend/Volatility/Bias)
+  - 📡 Sinyal Terakhir
+  - 📈 Posisi Aktif dengan P/L
+  - 📉 Statistik Trading
+- Auto-update setiap 5 detik
+- Integrasi dengan Telegram Web App SDK
 
 **UI/UX Decisions:**
 - Telegram serves as the primary user interface.

@@ -771,9 +771,211 @@ class TradingBotOrchestrator:
                         self.error_handler.log_exception(e, "webhook_endpoint")
                     return web.json_response({'error': str(e)}, status=500)
             
+            async def dashboard_page(request):
+                """Serve dashboard web app HTML"""
+                try:
+                    import os
+                    html_path = os.path.join('webapp', 'templates', 'dashboard.html')
+                    if os.path.exists(html_path):
+                        with open(html_path, 'r', encoding='utf-8') as f:
+                            html_content = f.read()
+                        return web.Response(text=html_content, content_type='text/html')
+                    else:
+                        return web.Response(text='Dashboard not found', status=404)
+                except Exception as e:
+                    logger.error(f"Error serving dashboard: {e}")
+                    return web.Response(text='Error loading dashboard', status=500)
+            
+            async def static_files(request):
+                """Serve static files (CSS, JS)"""
+                try:
+                    import os
+                    filename = request.match_info.get('filename', '')
+                    safe_filename = os.path.basename(filename)
+                    
+                    file_path = os.path.join('webapp', 'static', safe_filename)
+                    if os.path.exists(file_path) and os.path.isfile(file_path):
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        content_type = 'text/plain'
+                        if safe_filename.endswith('.css'):
+                            content_type = 'text/css'
+                        elif safe_filename.endswith('.js'):
+                            content_type = 'application/javascript'
+                        
+                        return web.Response(
+                            text=content, 
+                            content_type=content_type,
+                            headers={'Cache-Control': 'no-cache'}
+                        )
+                    else:
+                        return web.Response(text='File not found', status=404)
+                except Exception as e:
+                    logger.error(f"Error serving static file: {e}")
+                    return web.Response(text='Error loading file', status=500)
+            
+            async def api_dashboard(request):
+                """API endpoint for real-time dashboard data"""
+                try:
+                    import pytz
+                    
+                    wib = pytz.timezone('Asia/Jakarta')
+                    now = datetime.now(wib)
+                    
+                    price_data = {
+                        'mid': None,
+                        'bid': None,
+                        'ask': None,
+                        'spread': None,
+                        'high': None,
+                        'low': None,
+                        'change_percent': None
+                    }
+                    
+                    if self.config_valid and self.market_data:
+                        try:
+                            bid = self.market_data.current_bid
+                            ask = self.market_data.current_ask
+                            if bid and ask:
+                                price_data['bid'] = float(bid)
+                                price_data['ask'] = float(ask)
+                                price_data['mid'] = (bid + ask) / 2
+                                price_data['spread'] = round((ask - bid) * 10, 1)
+                            
+                            m1_df = self.market_data.m1_builder.get_dataframe(limit=1440)
+                            if m1_df is not None and len(m1_df) > 0:
+                                price_data['high'] = float(m1_df['high'].max())
+                                price_data['low'] = float(m1_df['low'].min())
+                                
+                                if len(m1_df) > 1:
+                                    first_close = float(m1_df.iloc[0]['close'])
+                                    last_close = float(m1_df.iloc[-1]['close'])
+                                    if first_close > 0:
+                                        change = ((last_close - first_close) / first_close) * 100
+                                        price_data['change_percent'] = round(change, 2)
+                        except Exception as e:
+                            logger.debug(f"Error getting price data: {e}")
+                    
+                    last_signal = None
+                    if self.config_valid and self.telegram_bot:
+                        try:
+                            for type_key, signal_data in self.telegram_bot.last_signal_per_type.items():
+                                if signal_data and signal_data.get('timestamp'):
+                                    ts = signal_data['timestamp']
+                                    if last_signal is None or ts > last_signal.get('_ts', datetime.min):
+                                        last_signal = {
+                                            'direction': signal_data.get('signal_type', 'UNKNOWN'),
+                                            'entry_price': signal_data.get('entry_price'),
+                                            'sl': None,
+                                            'tp': None,
+                                            'timestamp': ts.isoformat(),
+                                            '_ts': ts
+                                        }
+                            if last_signal:
+                                last_signal.pop('_ts', None)
+                        except Exception as e:
+                            logger.debug(f"Error getting last signal: {e}")
+                    
+                    active_position = {'active': False}
+                    if self.config_valid and self.position_tracker:
+                        try:
+                            positions = self.position_tracker.get_active_positions()
+                            if positions:
+                                for user_id, user_positions in positions.items():
+                                    if isinstance(user_positions, dict):
+                                        for pos_id, pos in user_positions.items():
+                                            if isinstance(pos, dict):
+                                                active_position = {
+                                                    'active': True,
+                                                    'direction': pos.get('signal_type', 'BUY'),
+                                                    'entry_price': pos.get('entry_price'),
+                                                    'sl': pos.get('stop_loss'),
+                                                    'tp': pos.get('take_profit'),
+                                                    'unrealized_pnl': pos.get('unrealized_pnl', 0)
+                                                }
+                                                break
+                                    if active_position['active']:
+                                        break
+                        except Exception as e:
+                            logger.debug(f"Error getting positions: {e}")
+                    
+                    regime_data = None
+                    if self.config_valid and self.market_regime_detector and self.market_data:
+                        try:
+                            m1_df = self.market_data.m1_builder.get_dataframe(limit=100)
+                            if m1_df is not None and len(m1_df) >= 50:
+                                regime = self.market_regime_detector.get_regime({}, m1_df)
+                                if regime:
+                                    regime_data = {
+                                        'trend': regime.regime_type if hasattr(regime, 'regime_type') else 'Unknown',
+                                        'volatility': regime.volatility_analysis.zone if hasattr(regime, 'volatility_analysis') and hasattr(regime.volatility_analysis, 'zone') else 'Normal',
+                                        'bias': regime.bias if hasattr(regime, 'bias') else 'NEUTRAL',
+                                        'confidence': regime.confidence if hasattr(regime, 'confidence') else 0
+                                    }
+                        except Exception as e:
+                            logger.debug(f"Error getting regime: {e}")
+                    
+                    stats: Dict[str, Any] = {
+                        'win_rate': 0.0,
+                        'total_pnl': 0.0,
+                        'signals_today': 0,
+                        'total_trades': 0
+                    }
+                    
+                    if self.config_valid and self.db_manager:
+                        try:
+                            session = self.db_manager.get_session()
+                            if session:
+                                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                                
+                                result = session.execute(text(
+                                    "SELECT COUNT(*) as total, "
+                                    "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
+                                    "SUM(pnl) as total_pnl "
+                                    "FROM trades WHERE status = 'closed'"
+                                ))
+                                row = result.fetchone()
+                                if row:
+                                    total = int(row[0] or 0)
+                                    wins = int(row[1] or 0)
+                                    stats['total_trades'] = total
+                                    stats['total_pnl'] = float(row[2] or 0)
+                                    stats['win_rate'] = float(wins / total * 100) if total > 0 else 0.0
+                                
+                                today_result = session.execute(text(
+                                    "SELECT COUNT(*) FROM trades WHERE created_at >= :today"
+                                ), {'today': today_start})
+                                signals_today = today_result.scalar()
+                                stats['signals_today'] = int(signals_today or 0)
+                                
+                                session.close()
+                        except Exception as e:
+                            logger.debug(f"Error getting stats: {e}")
+                    
+                    response_data = {
+                        'price': price_data,
+                        'last_signal': last_signal,
+                        'active_position': active_position,
+                        'regime': regime_data,
+                        'stats': stats,
+                        'timestamp': now.isoformat(),
+                        'connected': self.config_valid and self.market_data is not None and self.market_data.is_connected()
+                    }
+                    
+                    return web.json_response(response_data, headers={'Cache-Control': 'no-cache'})
+                    
+                except Exception as e:
+                    logger.error(f"Error in API dashboard: {e}")
+                    return web.json_response({'error': str(e)}, status=500)
+            
             app = web.Application()
             app.router.add_get('/health', health_check)
             app.router.add_get('/', health_check)
+            app.router.add_get('/dashboard', dashboard_page)
+            app.router.add_get('/static/{filename}', static_files)
+            app.router.add_get('/api/dashboard', api_dashboard)
+            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /static/*")
             
             webhook_path = None
             if self.config_valid and self.config.TELEGRAM_BOT_TOKEN:

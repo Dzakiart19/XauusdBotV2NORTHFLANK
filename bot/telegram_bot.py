@@ -1658,6 +1658,10 @@ class TradingBot:
                         try:
                             await self.rate_limiter.acquire_async(wait=True)
                             
+                            if self.app is None:
+                                logger.error("Application not initialized")
+                                break
+                            
                             await self.app.bot.edit_message_text(
                                 chat_id=chat_id,
                                 message_id=message_id,
@@ -1675,6 +1679,9 @@ class TradingBot:
                             elif 'message to edit not found' in error_msg or 'message can\'t be edited' in error_msg:
                                 logger.info(f"Dashboard message deleted for chat {mask_user_id(chat_id)}, sending new one")
                                 try:
+                                    if self.app is None:
+                                        logger.error("Application not initialized")
+                                        break
                                     new_msg = await self.app.bot.send_message(
                                         chat_id=chat_id,
                                         text=new_content,
@@ -1748,6 +1755,11 @@ class TradingBot:
             await message.reply_text("🔄 Memulai dashboard real-time...")
             
             dashboard_content = await self._render_dashboard_message(chat.id)
+            
+            if self.app is None:
+                logger.error("Application not initialized")
+                await message.reply_text("❌ Aplikasi belum siap. Coba lagi nanti.")
+                return
             
             dashboard_msg = await self.app.bot.send_message(
                 chat_id=chat.id,
@@ -1858,6 +1870,11 @@ class TradingBot:
             if is_active and message_id:
                 try:
                     new_content = await self._render_dashboard_message(chat.id)
+                    
+                    if self.app is None:
+                        logger.error("Application not initialized")
+                        await message.reply_text("❌ Aplikasi belum siap. Coba lagi nanti.")
+                        return
                     
                     await self.app.bot.edit_message_text(
                         chat_id=chat.id,
