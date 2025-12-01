@@ -9,6 +9,10 @@ This project is an automated Telegram-based trading bot for XAUUSD, providing re
 - **Trade History Sync**: Verified - trades properly save with `exit_price`, `actual_pl`, `close_time`, and `result` when positions are closed
 - **Web Dashboard**: Real-time sync confirmed working with live price data, active positions, and market regime display
 - **Position Tracking**: Full lifecycle working - open, monitor with dynamic SL/trailing stop, and close with P/L calculation
+- **Trial System Auto-Start**: Fixed - new users now automatically get 3-day trial when using `/start` command
+- **User Status Display**: Updated `/start` and `/help` to show correct user status (Admin, User Terdaftar, Trial User)
+- **Telegram Commands**: Updated `/help` to display all 24 commands organized by category
+- **Regime Command Fix**: Fixed Markdown parsing error by sanitizing underscore characters in dynamic content
 
 ## User Preferences
 - Bahasa komunikasi: **Bahasa Indonesia** (100% tidak ada bahasa Inggris)

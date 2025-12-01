@@ -1934,49 +1934,95 @@ class TradingBot:
                 )
                 self.user_manager.update_user_activity(user.id)
             
+            is_admin_user = self.is_admin(user.id)
+            is_authorized_user = user.id in self.config.AUTHORIZED_USER_IDS
+            is_public_user = hasattr(self.config, 'ID_USER_PUBLIC') and user.id in self.config.ID_USER_PUBLIC
+            
+            trial_info = None
+            trial_msg = ""
+            
+            if not is_authorized_user and not is_public_user and self.user_manager:
+                trial_status = self.user_manager.check_trial_status(user.id)
+                
+                if trial_status is None:
+                    trial_info = self.user_manager.start_trial(user.id)
+                    if trial_info and not trial_info.get('already_exists', False):
+                        trial_end = trial_info.get('trial_end')
+                        if trial_end:
+                            import pytz
+                            jakarta_tz = pytz.timezone('Asia/Jakarta')
+                            trial_end_local = trial_end.replace(tzinfo=pytz.UTC).astimezone(jakarta_tz)
+                            end_date = trial_end_local.strftime('%d %B %Y, %H:%M WIB')
+                        else:
+                            end_date = "3 hari dari sekarang"
+                        trial_msg = (
+                            f"\n🎁 *Selamat! Anda mendapat Trial 3 Hari GRATIS!*\n"
+                            f"📅 Berakhir: {end_date}\n"
+                            f"💡 Nikmati semua fitur bot selama masa trial!\n"
+                        )
+                        logger.info(f"New trial started for user {mask_user_id(user.id)}")
+                elif trial_status.get('is_expired', False):
+                    expired_msg = (
+                        "⚠️ *Masa Trial Berakhir*\n\n"
+                        "Masa trial 3 hari Anda telah berakhir.\n\n"
+                        "Untuk melanjutkan menggunakan bot ini, silakan berlangganan.\n\n"
+                        "📞 Hubungi admin untuk informasi berlangganan.\n\n"
+                        "Gunakan /buyaccess untuk info berlangganan."
+                    )
+                    await message.reply_text(expired_msg, parse_mode='Markdown')
+                    return
+                else:
+                    remaining_days = trial_status.get('remaining_days', 0)
+                    remaining_hours = trial_status.get('remaining_hours', 0)
+                    if remaining_days > 0:
+                        time_left = f"{remaining_days} hari"
+                    elif remaining_hours > 0:
+                        time_left = f"{remaining_hours} jam"
+                    else:
+                        time_left = "kurang dari 1 jam"
+                    trial_msg = f"\n🎁 *Trial Aktif* - Sisa: {time_left}\n"
+            
             if not self.is_authorized(user.id):
                 access_denied_msg = (
                     "⛔ *Akses Ditolak*\n\n"
-                    "Maaf, Anda tidak terdaftar sebagai user yang diizinkan menggunakan bot ini.\n\n"
+                    "Maaf, terjadi kesalahan saat memulai trial Anda.\n\n"
                     "🔒 *Bot ini bersifat privat*\n"
-                    "Hanya user yang terdaftar yang dapat mengakses fitur bot.\n\n"
-                    "Jika Anda merasa ini adalah kesalahan, silakan hubungi pemilik bot."
+                    "Silakan hubungi pemilik bot untuk bantuan."
                 )
                 await message.reply_text(access_denied_msg, parse_mode='Markdown')
                 return
             
-            user_status = "Admin" if self.is_admin(user.id) else "User Terdaftar"
+            if is_admin_user:
+                user_status = "👑 Admin"
+            elif is_authorized_user or is_public_user:
+                user_status = "✅ User Terdaftar"
+            else:
+                user_status = "🎁 Trial User"
+            
             mode = "LIVE" if not self.config.DRY_RUN else "DRY RUN"
             
             welcome_msg = (
                 "🤖 *XAUUSD Trading Bot Pro*\n\n"
                 "Bot trading otomatis untuk XAUUSD dengan analisis teknikal canggih.\n\n"
-                f"👑 Status: {user_status}\n\n"
+                f"*Status:* {user_status}\n"
+                f"{trial_msg}\n"
                 "*Commands:*\n"
-                "/start - Tampilkan pesan ini\n"
-                "/help - Bantuan lengkap\n"
+                "/help - Bantuan lengkap (24 commands)\n"
                 "/monitor - Mulai monitoring sinyal\n"
-                "/stopmonitor - Stop monitoring\n"
                 "/getsignal - Dapatkan sinyal manual\n"
                 "/status - Cek posisi aktif\n"
-                "/riwayat - Lihat riwayat trading\n"
-                "/performa - Statistik performa\n"
-                "/stats - Statistik harian\n"
-                "/analytics - Comprehensive analytics\n"
-                "/systemhealth - System health status\n"
-                "/tasks - Lihat scheduled tasks\n"
-                "/settings - Lihat konfigurasi\n"
+                "/dashboard - Dashboard real-time\n"
                 "/trialstatus - Cek status trial\n"
                 "/buyaccess - Info berlangganan\n"
             )
             
-            if self.is_admin(user.id):
+            if is_admin_user:
                 welcome_msg += (
                     "\n*Admin Commands:*\n"
                     "/riset - Reset database trading\n"
                 )
             
-            welcome_msg += f"\n*Mode:* {mode}\n"
+            welcome_msg += f"\n*Mode:* {mode} | Unlimited 24/7\n"
             
             await message.reply_text(welcome_msg, parse_mode='Markdown')
             logger.info(f"Start command executed successfully for user {mask_user_id(user.id)}")
@@ -2035,40 +2081,65 @@ class TradingBot:
         
         try:
             if not self.is_authorized(user.id):
+                await message.reply_text("⛔ Anda tidak memiliki akses. Gunakan /start untuk mendaftar trial.")
                 return
+            
+            is_admin_user = self.is_admin(user.id)
+            is_authorized_user = user.id in self.config.AUTHORIZED_USER_IDS
+            is_public_user = hasattr(self.config, 'ID_USER_PUBLIC') and user.id in self.config.ID_USER_PUBLIC
+            
+            if is_admin_user:
+                user_status = "👑 Admin"
+            elif is_authorized_user or is_public_user:
+                user_status = "✅ User Terdaftar"
+            else:
+                user_status = "🎁 Trial User"
             
             help_msg = (
                 "🤖 *XAUUSD Trading Bot Pro*\n\n"
                 "Bot trading otomatis untuk XAUUSD dengan analisis teknikal canggih.\n\n"
-                "*👑 Status: Admin*\n\n"
-                "*📋 Commands:*\n"
+                f"*Status:* {user_status}\n\n"
+                "*📋 Commands Dasar (7):*\n"
                 "/start - Tampilkan pesan ini\n"
                 "/help - Bantuan lengkap\n"
                 "/monitor - Mulai monitoring sinyal\n"
                 "/stopmonitor - Stop monitoring\n"
                 "/getsignal - Dapatkan sinyal manual\n"
                 "/status - Cek posisi aktif\n"
+                "/settings - Lihat konfigurasi\n\n"
+                "*📈 Commands Statistik (5):*\n"
                 "/riwayat - Lihat riwayat trading\n"
                 "/performa - Statistik performa\n"
                 "/stats - Statistik harian\n"
                 "/analytics - Comprehensive analytics\n"
-                "/systemhealth - System health status\n"
+                "/systemhealth - System health status\n\n"
+                "*🔬 Advanced Analysis (5):*\n"
+                "/regime - 📊 Market regime analysis\n"
+                "/optimize - 🔧 Auto-optimizer status\n"
+                "/rules - 📋 Signal rules status\n"
+                "/analyze - 📉 Analisis chart detail\n"
+                "/backtest - 🧪 Backtest strategy\n\n"
+                "*📊 Dashboard Commands (3):*\n"
+                "/dashboard - 📊 Dashboard real-time\n"
+                "/stopdashboard - Hentikan dashboard\n"
+                "/refresh - Refresh dashboard\n\n"
+            )
+            
+            if is_admin_user:
+                help_msg += (
+                    "*👨‍💼 Admin Commands (1):*\n"
+                    "/riset - 🔴 Reset database trading\n\n"
+                )
+            
+            help_msg += (
+                "*🔑 Access Commands (3):*\n"
                 "/tasks - Lihat scheduled tasks\n"
-                "/settings - Lihat konfigurasi\n\n"
-                "*🔬 Advanced Analysis Commands:*\n"
-                "/regime - 📊 Market regime analysis (trending/ranging/breakout)\n"
-                "/optimize - 🔧 Auto-optimizer status & parameter adjustments\n"
-                "/rules - 📋 Signal rules status (M1/M5/SR/Breakout)\n\n"
-                "*📊 Dashboard Commands:*\n"
-                "/dashboard - 📊 Tampilkan dashboard real-time\n"
-                "/stopdashboard - Hentikan update dashboard\n"
-                "/refresh - Refresh dashboard manual\n\n"
-                "*👨‍💼 Admin Commands:*\n"
-                "/riset - 🔴 Reset database trading\n\n"
+                "/trialstatus - Status trial Anda\n"
+                "/buyaccess - Info beli akses\n\n"
                 "*⚙️ System Info:*\n"
-                f"Mode: LIVE\n"
-                f"Indikator: EMA, RSI, Stochastic, ATR, MACD, TRF, CEREBR\n"
-                f"Risk: ${self.config.FIXED_RISK_AMOUNT:.2f}/trade | Unlimited signals 24/7\n"
+                f"Total: 24 Commands | Mode: LIVE\n"
+                f"Indikator: EMA, RSI, Stoch, ATR, MACD, TRF, CEREBR\n"
+                f"Risk: ${self.config.FIXED_RISK_AMOUNT:.2f}/trade | Unlimited 24/7\n"
             )
             
             await message.reply_text(help_msg, parse_mode='Markdown')
