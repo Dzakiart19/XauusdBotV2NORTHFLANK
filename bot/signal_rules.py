@@ -993,7 +993,7 @@ class AggressiveSignalRules:
                 
                 is_quality_valid, quality_reason = self._validate_signal_quality(result)
                 if not is_quality_valid:
-                    result.signal_type = None
+                    result.signal_type = SignalType.NONE.value
                     result.reason = quality_reason
                     return result
                 
@@ -1040,7 +1040,7 @@ class AggressiveSignalRules:
                 
                 is_quality_valid, quality_reason = self._validate_signal_quality(result)
                 if not is_quality_valid:
-                    result.signal_type = None
+                    result.signal_type = SignalType.NONE.value
                     result.reason = quality_reason
                     return result
                 
@@ -1381,7 +1381,7 @@ class AggressiveSignalRules:
                 
                 is_quality_valid, quality_reason = self._validate_signal_quality(result)
                 if not is_quality_valid:
-                    result.signal_type = None
+                    result.signal_type = SignalType.NONE.value
                     result.reason = quality_reason
                     return result
                 
@@ -1431,7 +1431,7 @@ class AggressiveSignalRules:
                 
                 is_quality_valid, quality_reason = self._validate_signal_quality(result)
                 if not is_quality_valid:
-                    result.signal_type = None
+                    result.signal_type = SignalType.NONE.value
                     result.reason = quality_reason
                     return result
                 

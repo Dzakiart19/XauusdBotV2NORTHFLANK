@@ -315,6 +315,14 @@ class TradingBot:
         self.active_dashboards: Dict[int, Dict] = {}
         self._is_shutting_down: bool = False
         
+        self.dashboard_messages: Dict[int, int] = {}
+        self.dashboard_tasks: Dict[int, asyncio.Task] = {}
+        self.dashboard_enabled: Dict[int, bool] = {}
+        self._dashboard_last_hash: Dict[int, str] = {}
+        self._realtime_dashboard_lock = asyncio.Lock()
+        self.DASHBOARD_UPDATE_INTERVAL = 15
+        logger.info("✅ Real-time dashboard system initialized")
+        
         self.rate_limiter = RateLimiter(
             max_calls=30,
             time_window=60.0,
@@ -1387,6 +1395,486 @@ class TradingBot:
             self.signal_session_manager.register_event_handler('on_session_end', on_session_end_chart_cleanup)
             logger.info("✅ Chart cleanup integrated with SignalSessionManager")
     
+    def _escape_markdown(self, text: str) -> str:
+        """Escape karakter khusus Markdown untuk Telegram."""
+        if not text:
+            return ""
+        escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        result = str(text)
+        for char in escape_chars:
+            result = result.replace(char, f'\\{char}')
+        return result
+    
+    async def _render_dashboard_message(self, chat_id: int) -> str:
+        """Render pesan dashboard real-time dengan format Markdown.
+        
+        Returns:
+            str: Pesan dashboard dalam format Markdown
+        """
+        import hashlib
+        wib = pytz.timezone('Asia/Jakarta')
+        now_wib = datetime.now(wib)
+        
+        lines = []
+        lines.append("📊 *DASHBOARD REAL-TIME XAUUSD*")
+        lines.append(f"⏰ Update: {now_wib.strftime('%H:%M:%S WIB')}")
+        lines.append("")
+        
+        lines.append("💰 *HARGA XAUUSD*")
+        try:
+            if self.market_data:
+                bid = 0.0
+                ask = 0.0
+                spread = 0.0
+                high_24h = 0.0
+                low_24h = 0.0
+                change_pct = 0.0
+                
+                if hasattr(self.market_data, 'get_current_price'):
+                    price_data = await self.market_data.get_current_price()
+                    if price_data:
+                        bid = price_data.get('bid', 0) or 0
+                        ask = price_data.get('ask', 0) or 0
+                
+                if hasattr(self.market_data, 'get_spread'):
+                    spread_val = await self.market_data.get_spread()
+                    spread = spread_val if spread_val else 0.0
+                
+                if hasattr(self.market_data, 'm5_builder') and self.market_data.m5_builder:
+                    df = self.market_data.m5_builder.get_dataframe(288)
+                    if df is not None and len(df) > 0:
+                        high_24h = df['high'].max() if 'high' in df.columns else 0
+                        low_24h = df['low'].min() if 'low' in df.columns else 0
+                        first_close = df['close'].iloc[0] if 'close' in df.columns else 0
+                        last_close = df['close'].iloc[-1] if 'close' in df.columns else 0
+                        if first_close > 0:
+                            change_pct = ((last_close - first_close) / first_close) * 100
+                
+                change_emoji = "📈" if change_pct >= 0 else "📉"
+                
+                lines.append(f"• Bid: ${bid:.2f}")
+                lines.append(f"• Ask: ${ask:.2f}")
+                lines.append(f"• Spread: {spread:.1f} pips")
+                if high_24h > 0 and low_24h > 0:
+                    lines.append(f"• 24h High: ${high_24h:.2f}")
+                    lines.append(f"• 24h Low: ${low_24h:.2f}")
+                    lines.append(f"• Change: {change_emoji} {change_pct:+.2f}%")
+            else:
+                lines.append("• Data tidak tersedia")
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            lines.append(f"• Error: Data tidak tersedia")
+            logger.debug(f"Dashboard price error: {e}")
+        
+        lines.append("")
+        
+        lines.append("📊 *MARKET REGIME*")
+        try:
+            if self.market_regime_detector and self.market_data:
+                df_m5 = None
+                if hasattr(self.market_data, 'm5_builder') and self.market_data.m5_builder:
+                    df_m5 = self.market_data.m5_builder.get_dataframe(100)
+                
+                if df_m5 is not None and len(df_m5) >= 50:
+                    from bot.indicators import IndicatorEngine
+                    indicator_engine = IndicatorEngine(self.config)
+                    indicators = indicator_engine.get_indicators(df_m5)
+                    
+                    regime_result = self.market_regime_detector.get_regime(indicators or {}, None, df_m5)
+                    
+                    if regime_result:
+                        regime_type = regime_result.regime_type if hasattr(regime_result, 'regime_type') else 'unknown'
+                        volatility_info = regime_result.volatility_analysis if hasattr(regime_result, 'volatility_analysis') else None
+                        volatility = volatility_info.volatility_level if volatility_info else 'normal'
+                        bias = regime_result.bias if hasattr(regime_result, 'bias') else 'NEUTRAL'
+                        confidence = regime_result.confidence * 100 if hasattr(regime_result, 'confidence') else 0
+                        
+                        regime_emoji = {'strong_trend': '📈', 'moderate_trend': '📈', 'weak_trend': '📉', 
+                                       'range_bound': '↔️', 'high_volatility': '⚡', 'breakout': '🚀'}.get(regime_type, '❓')
+                        vol_emoji = {'high': '🔴', 'normal': '🟡', 'low': '🟢'}.get(volatility, '⚪')
+                        bias_emoji = {'BUY': '🟢', 'SELL': '🔴', 'NEUTRAL': '⚪'}.get(bias, '⚪')
+                        
+                        lines.append(f"• Tren: {regime_emoji} {regime_type.upper().replace('_', ' ')}")
+                        lines.append(f"• Volatilitas: {vol_emoji} {volatility.upper()}")
+                        lines.append(f"• Bias: {bias_emoji} {bias}")
+                        lines.append(f"• Confidence: {confidence:.0f}%")
+                    else:
+                        lines.append("• Analisis tidak tersedia")
+                else:
+                    lines.append("• Data tidak cukup")
+            else:
+                lines.append("• Detector tidak tersedia")
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            lines.append("• Error analisis regime")
+            logger.debug(f"Dashboard regime error: {e}")
+        
+        lines.append("")
+        
+        lines.append("📡 *SINYAL TERAKHIR*")
+        try:
+            has_signal = False
+            for type_key, signal_info in list(self.last_signal_per_type.items()):
+                if signal_info:
+                    signal_type = signal_info.get('signal_type', 'N/A')
+                    entry_price = signal_info.get('entry_price', 0)
+                    timestamp = signal_info.get('timestamp')
+                    
+                    if timestamp:
+                        time_ago = (datetime.now() - timestamp).total_seconds()
+                        if time_ago < 3600:
+                            time_str = f"{int(time_ago/60)}m lalu"
+                        else:
+                            time_str = f"{int(time_ago/3600)}h lalu"
+                        
+                        signal_emoji = "🟢" if signal_type == 'BUY' else "🔴"
+                        lines.append(f"• {signal_emoji} {signal_type} @${entry_price:.2f} ({time_str})")
+                        has_signal = True
+            
+            if not has_signal:
+                lines.append("• Belum ada sinyal hari ini")
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            lines.append("• Error data sinyal")
+            logger.debug(f"Dashboard signal error: {e}")
+        
+        lines.append("")
+        
+        lines.append("📈 *POSISI AKTIF*")
+        try:
+            if self.position_tracker:
+                positions = await self.position_tracker.get_active_positions_async()
+                if positions:
+                    for pos in list(positions.values())[:3]:
+                        signal_type = pos.get('signal_type', 'N/A')
+                        entry = pos.get('entry_price', 0)
+                        sl = pos.get('stop_loss', 0)
+                        tp = pos.get('take_profit', 0)
+                        current_price = pos.get('current_price', entry)
+                        
+                        if signal_type == 'BUY':
+                            pnl = (current_price - entry) if current_price > 0 else 0
+                        else:
+                            pnl = (entry - current_price) if current_price > 0 else 0
+                        
+                        pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+                        type_emoji = "📗" if signal_type == 'BUY' else "📕"
+                        
+                        lines.append(f"• {type_emoji} {signal_type}")
+                        lines.append(f"  Entry: ${entry:.2f}")
+                        lines.append(f"  SL: ${sl:.2f} | TP: ${tp:.2f}")
+                        lines.append(f"  P/L: {pnl_emoji} ${pnl:+.2f}")
+                else:
+                    lines.append("• Tidak ada posisi aktif")
+            else:
+                lines.append("• Tracker tidak tersedia")
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            lines.append("• Error data posisi")
+            logger.debug(f"Dashboard position error: {e}")
+        
+        lines.append("")
+        
+        lines.append("📉 *STATISTIK*")
+        try:
+            if self.signal_quality_tracker:
+                stats = self.signal_quality_tracker.get_overall_stats(days=1)
+                if stats:
+                    total_signals = stats.get('total_signals', 0)
+                    accuracy = stats.get('overall_accuracy', 0) * 100
+                    wins = stats.get('total_wins', 0)
+                    losses = stats.get('total_losses', 0)
+                    
+                    lines.append(f"• Sinyal hari ini: {total_signals}")
+                    lines.append(f"• Win Rate: {accuracy:.1f}%")
+                    lines.append(f"• W/L: {wins}/{losses}")
+                else:
+                    lines.append("• Belum ada data hari ini")
+            else:
+                session = self.db.get_session()
+                try:
+                    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                    from bot.database import Trade
+                    today_trades = session.query(Trade).filter(Trade.created_at >= today).all()
+                    
+                    total = len(today_trades)
+                    wins = sum(1 for t in today_trades if t.status == 'WIN')
+                    losses = sum(1 for t in today_trades if t.status == 'LOSS')
+                    win_rate = (wins / total * 100) if total > 0 else 0
+                    
+                    lines.append(f"• Sinyal hari ini: {total}")
+                    lines.append(f"• Win Rate: {win_rate:.1f}%")
+                    lines.append(f"• W/L: {wins}/{losses}")
+                finally:
+                    session.close()
+        except (ValueError, TypeError, KeyError, AttributeError, SQLAlchemyError) as e:
+            lines.append("• Error data statistik")
+            logger.debug(f"Dashboard stats error: {e}")
+        
+        lines.append("")
+        lines.append("_Update otomatis setiap 15 detik_")
+        lines.append("_Gunakan /stopdashboard untuk menghentikan_")
+        
+        return "\n".join(lines)
+    
+    async def _realtime_dashboard_update_loop(self, chat_id: int):
+        """Loop untuk update dashboard real-time setiap 15 detik.
+        
+        Args:
+            chat_id: ID chat Telegram untuk update
+        """
+        import hashlib
+        
+        logger.info(f"🖥️ Starting realtime dashboard update loop for chat {mask_user_id(chat_id)}")
+        
+        try:
+            while self.dashboard_enabled.get(chat_id, False) and not self._is_shutting_down:
+                try:
+                    message_id = self.dashboard_messages.get(chat_id)
+                    if not message_id:
+                        logger.warning(f"Dashboard message_id not found for chat {mask_user_id(chat_id)}, stopping loop")
+                        break
+                    
+                    new_content = await self._render_dashboard_message(chat_id)
+                    
+                    content_hash = hashlib.md5(new_content.encode()).hexdigest()
+                    last_hash = self._dashboard_last_hash.get(chat_id)
+                    
+                    if content_hash != last_hash:
+                        try:
+                            await self.rate_limiter.acquire_async(wait=True)
+                            
+                            await self.app.bot.edit_message_text(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                text=new_content,
+                                parse_mode='Markdown'
+                            )
+                            
+                            self._dashboard_last_hash[chat_id] = content_hash
+                            logger.debug(f"Dashboard updated for chat {mask_user_id(chat_id)}")
+                            
+                        except BadRequest as e:
+                            error_msg = str(e).lower()
+                            if 'message is not modified' in error_msg:
+                                pass
+                            elif 'message to edit not found' in error_msg or 'message can\'t be edited' in error_msg:
+                                logger.info(f"Dashboard message deleted for chat {mask_user_id(chat_id)}, sending new one")
+                                try:
+                                    new_msg = await self.app.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=new_content,
+                                        parse_mode='Markdown'
+                                    )
+                                    async with self._realtime_dashboard_lock:
+                                        self.dashboard_messages[chat_id] = new_msg.message_id
+                                        self._dashboard_last_hash[chat_id] = content_hash
+                                except (TelegramError, asyncio.TimeoutError) as send_err:
+                                    logger.error(f"Failed to send new dashboard: {send_err}")
+                                    break
+                            else:
+                                logger.warning(f"Dashboard edit error: {e}")
+                        except Forbidden as e:
+                            logger.warning(f"User blocked bot, stopping dashboard for {mask_user_id(chat_id)}")
+                            break
+                        except RetryAfter as e:
+                            retry_after = e.retry_after if hasattr(e, 'retry_after') else 30
+                            logger.warning(f"Rate limited, waiting {retry_after}s")
+                            await asyncio.sleep(retry_after)
+                        except (TimedOut, NetworkError) as e:
+                            logger.warning(f"Network error updating dashboard: {e}")
+                            await asyncio.sleep(5)
+                        except TelegramError as e:
+                            logger.error(f"Telegram error updating dashboard: {e}")
+                            await asyncio.sleep(5)
+                    
+                    await asyncio.sleep(self.DASHBOARD_UPDATE_INTERVAL)
+                    
+                except asyncio.CancelledError:
+                    logger.info(f"Dashboard loop cancelled for chat {mask_user_id(chat_id)}")
+                    break
+                except (ValueError, TypeError, KeyError, AttributeError, RuntimeError) as e:
+                    logger.error(f"Error in dashboard loop: {type(e).__name__}: {e}")
+                    await asyncio.sleep(5)
+                    
+        finally:
+            async with self._realtime_dashboard_lock:
+                self.dashboard_enabled.pop(chat_id, None)
+                self.dashboard_messages.pop(chat_id, None)
+                self.dashboard_tasks.pop(chat_id, None)
+                self._dashboard_last_hash.pop(chat_id, None)
+            logger.info(f"🖥️ Dashboard loop stopped for chat {mask_user_id(chat_id)}")
+    
+    async def dashboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handler untuk command /dashboard - Memulai dashboard real-time."""
+        if update.effective_user is None or update.message is None or update.effective_chat is None:
+            return
+        
+        user = update.effective_user
+        chat = update.effective_chat
+        message = update.message
+        
+        if not await self._check_user_rate_limit(user.id):
+            try:
+                await message.reply_text("⚠️ Anda mengirim terlalu banyak request. Silakan tunggu sebentar.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+            return
+        
+        try:
+            if not self.is_authorized(user.id):
+                await message.reply_text("⛔ Akses ditolak. Anda tidak terdaftar.")
+                return
+            
+            async with self._realtime_dashboard_lock:
+                if chat.id in self.dashboard_enabled and self.dashboard_enabled[chat.id]:
+                    await message.reply_text("📊 Dashboard sudah aktif! Gunakan /stopdashboard untuk menghentikan.")
+                    return
+            
+            await message.reply_text("🔄 Memulai dashboard real-time...")
+            
+            dashboard_content = await self._render_dashboard_message(chat.id)
+            
+            dashboard_msg = await self.app.bot.send_message(
+                chat_id=chat.id,
+                text=dashboard_content,
+                parse_mode='Markdown'
+            )
+            
+            async with self._realtime_dashboard_lock:
+                self.dashboard_messages[chat.id] = dashboard_msg.message_id
+                self.dashboard_enabled[chat.id] = True
+                
+                if chat.id in self.dashboard_tasks:
+                    old_task = self.dashboard_tasks[chat.id]
+                    if not old_task.done():
+                        old_task.cancel()
+                
+                task = asyncio.create_task(self._realtime_dashboard_update_loop(chat.id))
+                self.dashboard_tasks[chat.id] = task
+            
+            logger.info(f"📊 Dashboard started for user {mask_user_id(user.id)}")
+            
+        except asyncio.CancelledError:
+            logger.info(f"Dashboard command cancelled for user {mask_user_id(user.id)}")
+            raise
+        except BadRequest as e:
+            await self._handle_bad_request(chat.id, e, context="dashboard_command")
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network error starting dashboard: {e}")
+            try:
+                await message.reply_text("⏳ Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (TelegramError, ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Error starting dashboard: {type(e).__name__}: {e}")
+            try:
+                await message.reply_text("❌ Error memulai dashboard. Coba lagi nanti.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+    
+    async def stopdashboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handler untuk command /stopdashboard - Menghentikan dashboard real-time."""
+        if update.effective_user is None or update.message is None or update.effective_chat is None:
+            return
+        
+        user = update.effective_user
+        chat = update.effective_chat
+        message = update.message
+        
+        if not await self._check_user_rate_limit(user.id):
+            return
+        
+        try:
+            if not self.is_authorized(user.id):
+                return
+            
+            stopped = False
+            async with self._realtime_dashboard_lock:
+                if chat.id in self.dashboard_enabled:
+                    self.dashboard_enabled[chat.id] = False
+                    stopped = True
+                    
+                    if chat.id in self.dashboard_tasks:
+                        task = self.dashboard_tasks[chat.id]
+                        if not task.done():
+                            task.cancel()
+            
+            if stopped:
+                await message.reply_text("✅ Dashboard real-time dihentikan.")
+                logger.info(f"📊 Dashboard stopped for user {mask_user_id(user.id)}")
+            else:
+                await message.reply_text("ℹ️ Dashboard tidak sedang aktif.")
+            
+        except asyncio.CancelledError:
+            raise
+        except (TelegramError, ValueError, TypeError, KeyError) as e:
+            logger.error(f"Error stopping dashboard: {e}")
+            try:
+                await message.reply_text("❌ Error menghentikan dashboard.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+    
+    async def refresh_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handler untuk command /refresh - Refresh dashboard manual."""
+        if update.effective_user is None or update.message is None or update.effective_chat is None:
+            return
+        
+        user = update.effective_user
+        chat = update.effective_chat
+        message = update.message
+        
+        if not await self._check_user_rate_limit(user.id):
+            try:
+                await message.reply_text("⚠️ Anda mengirim terlalu banyak request.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+            return
+        
+        try:
+            if not self.is_authorized(user.id):
+                return
+            
+            async with self._realtime_dashboard_lock:
+                is_active = self.dashboard_enabled.get(chat.id, False)
+                message_id = self.dashboard_messages.get(chat.id)
+            
+            if is_active and message_id:
+                try:
+                    new_content = await self._render_dashboard_message(chat.id)
+                    
+                    await self.app.bot.edit_message_text(
+                        chat_id=chat.id,
+                        message_id=message_id,
+                        text=new_content,
+                        parse_mode='Markdown'
+                    )
+                    
+                    import hashlib
+                    content_hash = hashlib.md5(new_content.encode()).hexdigest()
+                    self._dashboard_last_hash[chat.id] = content_hash
+                    
+                    await message.reply_text("✅ Dashboard di-refresh!")
+                    logger.info(f"Dashboard manually refreshed for user {mask_user_id(user.id)}")
+                    
+                except BadRequest as e:
+                    if 'message is not modified' in str(e).lower():
+                        await message.reply_text("ℹ️ Dashboard sudah up-to-date.")
+                    else:
+                        await message.reply_text("❌ Error refresh dashboard.")
+                        logger.error(f"Dashboard refresh error: {e}")
+            else:
+                dashboard_content = await self._render_dashboard_message(chat.id)
+                await message.reply_text(dashboard_content, parse_mode='Markdown')
+                await message.reply_text("💡 Gunakan /dashboard untuk dashboard auto-update.")
+            
+        except asyncio.CancelledError:
+            raise
+        except (TelegramError, ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Error refreshing dashboard: {e}")
+            try:
+                await message.reply_text("❌ Error refresh dashboard.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+    
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         message = update.effective_message
@@ -1534,6 +2022,10 @@ class TradingBot:
                 "/regime - 📊 Market regime analysis (trending/ranging/breakout)\n"
                 "/optimize - 🔧 Auto-optimizer status & parameter adjustments\n"
                 "/rules - 📋 Signal rules status (M1/M5/SR/Breakout)\n\n"
+                "*📊 Dashboard Commands:*\n"
+                "/dashboard - 📊 Tampilkan dashboard real-time\n"
+                "/stopdashboard - Hentikan update dashboard\n"
+                "/refresh - Refresh dashboard manual\n\n"
                 "*👨‍💼 Admin Commands:*\n"
                 "/riset - 🔴 Reset database trading\n\n"
                 "*⚙️ System Info:*\n"
@@ -4067,6 +4559,9 @@ class TradingBot:
         self.app.add_handler(CommandHandler("rules", self.rules_command))
         self.app.add_handler(CommandHandler("analyze", self.analyze_command))
         self.app.add_handler(CommandHandler("backtest", self.backtest_command))
+        self.app.add_handler(CommandHandler("dashboard", self.dashboard_command))
+        self.app.add_handler(CommandHandler("stopdashboard", self.stopdashboard_command))
+        self.app.add_handler(CommandHandler("refresh", self.refresh_command))
         
         self.app.add_error_handler(self._handle_telegram_error)
         logger.info("✅ Global error handler registered for Telegram updates")
