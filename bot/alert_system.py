@@ -87,6 +87,12 @@ class Alert:
 
 
 class AlertSystem:
+    """Alert system dengan per-user alert tracking dan cleanup.
+    
+    Clean user data: called on user cleanup
+    - Method clear_user_alerts() untuk membersihkan alert per user saat logout/session clear
+    - Mencegah memory leak dari alert yang tidak di-cleanup
+    """
     def __init__(self, config, db_manager):
         self.config = config
         self.db = db_manager
@@ -98,6 +104,9 @@ class AlertSystem:
         self.max_history = MAX_HISTORY_SIZE
         self.max_queue_size = MAX_QUEUE_SIZE
         self.send_message_callback = None
+        
+        self._user_active_alerts: Dict[int, List[Alert]] = {}
+        self._user_alert_lock = asyncio.Lock()
         
         self.rate_limiter = RateLimiter(
             max_calls=30,
@@ -119,14 +128,12 @@ class AlertSystem:
         self._critical_dropped = 0
         self._last_history_cleanup = time.time()
         
-        # Flag untuk tracking status daily summary
-        # Digunakan oleh TradingBot untuk skip signal detection saat daily summary sedang dikirim
         self._is_sending_daily_summary: bool = False
         self._daily_summary_lock = asyncio.Lock()
         self._last_daily_summary_time: Optional[datetime] = None
         self._daily_summary_error_count: int = 0
         
-        logger.info(f"Alert system initialized (max_queue={MAX_QUEUE_SIZE}, max_history={MAX_HISTORY_SIZE})")
+        logger.info(f"Alert system initialized (max_queue={MAX_QUEUE_SIZE}, max_history={MAX_HISTORY_SIZE}, per-user tracking enabled)")
     
     def set_telegram_app(self, app, chat_ids: List[int], send_message_callback=None):
         self.telegram_app = app
@@ -613,6 +620,90 @@ class AlertSystem:
     def clear_alert_queue(self):
         self.alert_queue.clear()
         logger.info("Alert queue cleared")
+    
+    def clear_user_alerts(self, user_id: int) -> bool:
+        """Clean user data: called on user cleanup
+        
+        Membersihkan semua alert untuk user_id tertentu untuk mencegah memory leak.
+        Dipanggil saat user logout atau session clear.
+        
+        Args:
+            user_id: ID user yang alert-nya akan dihapus
+            
+        Returns:
+            True jika ada alert yang dihapus, False jika tidak ada
+        """
+        cleared_count = 0
+        
+        try:
+            original_queue_len = len(self.alert_queue)
+            self.alert_queue = [
+                alert for alert in self.alert_queue 
+                if alert.data.get('user_id') != user_id
+            ]
+            queue_cleared = original_queue_len - len(self.alert_queue)
+            cleared_count += queue_cleared
+            
+            if user_id in self._user_active_alerts:
+                user_alerts_count = len(self._user_active_alerts[user_id])
+                del self._user_active_alerts[user_id]
+                cleared_count += user_alerts_count
+            
+            original_history_len = len(self.alert_history)
+            self.alert_history = deque(
+                [alert for alert in self.alert_history 
+                 if alert.data.get('user_id') != user_id],
+                maxlen=MAX_HISTORY_SIZE
+            )
+            history_cleared = original_history_len - len(self.alert_history)
+            cleared_count += history_cleared
+            
+            if cleared_count > 0:
+                logger.info(f"Cleared {cleared_count} alerts for user {user_id}")
+                return True
+            else:
+                logger.debug(f"No alerts to clear for user {user_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error clearing alerts for user {user_id}: {type(e).__name__}: {e}")
+            return False
+    
+    async def clear_user_alerts_async(self, user_id: int) -> bool:
+        """Async version dari clear_user_alerts dengan lock protection.
+        
+        Clean user data: called on user cleanup
+        
+        Args:
+            user_id: ID user yang alert-nya akan dihapus
+            
+        Returns:
+            True jika ada alert yang dihapus, False jika tidak ada
+        """
+        async with self._user_alert_lock:
+            return self.clear_user_alerts(user_id)
+    
+    def track_user_alert(self, user_id: int, alert: Alert):
+        """Track alert untuk user tertentu (untuk per-user cleanup).
+        
+        Args:
+            user_id: ID user
+            alert: Alert yang akan di-track
+        """
+        if user_id not in self._user_active_alerts:
+            self._user_active_alerts[user_id] = []
+        self._user_active_alerts[user_id].append(alert)
+    
+    def get_user_alert_count(self, user_id: int) -> int:
+        """Mendapatkan jumlah active alerts untuk user tertentu.
+        
+        Args:
+            user_id: ID user
+            
+        Returns:
+            Jumlah active alerts
+        """
+        return len(self._user_active_alerts.get(user_id, []))
     
     def enable(self):
         self.enabled = True

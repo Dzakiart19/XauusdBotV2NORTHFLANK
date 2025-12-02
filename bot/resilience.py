@@ -1,9 +1,16 @@
 """
-Resilience patterns: Circuit Breaker and Rate Limiter
+Resilience patterns: Circuit Breaker, Rate Limiter, Retry, dan Exponential Backoff
+
+All exceptions logged before re-raise atau return:
+- Semua exception di-log dengan level ERROR sebelum re-raise atau return default
+- Retry attempts di-log dengan backoff duration
+- Rate limiter sleep interruption di-log
+
+Thread-safe: Semua patterns dapat digunakan dari multiple threads/coroutines
 """
 import asyncio
 import time
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, TypeVar, Union
 from enum import Enum
 from collections import deque
 from datetime import datetime, timedelta
@@ -11,10 +18,25 @@ import logging
 
 logger = logging.getLogger('Resilience')
 
+T = TypeVar('T')
+
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_BASE_DELAY = 1.0
+DEFAULT_MAX_DELAY = 60.0
+DEFAULT_LOCK_TIMEOUT = 5.0
+
 
 class ResilienceError(Exception):
     """Base exception for resilience-related errors"""
     pass
+
+
+class RetryExhaustedError(ResilienceError):
+    """Raised when all retry attempts are exhausted"""
+    def __init__(self, attempts: int, last_exception: Optional[Exception] = None):
+        self.attempts = attempts
+        self.last_exception = last_exception
+        super().__init__(f"Retry exhausted after {attempts} attempts: {last_exception}")
 
 
 class CircuitBreakerOpenException(Exception):
@@ -254,6 +276,10 @@ class RateLimiter:
     async def acquire_async(self, wait: bool = False) -> bool:
         """Try to acquire permission (async version)
         
+        All exceptions logged before re-raise atau return:
+        - Log exception jika sleep interrupted
+        - Handle asyncio.CancelledError dengan proper cleanup
+        
         Args:
             wait: If True, wait until permission is available
             
@@ -261,31 +287,55 @@ class RateLimiter:
             True if call is allowed, False if rate limit exceeded (when wait=False)
         """
         while True:
-            now = time.time()
-            
-            while self.call_times and now - self.call_times[0] > self.time_window:
-                self.call_times.popleft()
-            
-            if len(self.call_times) < self.max_calls:
-                self.call_times.append(now)
-                self.last_call_time = now
-                return True
-            else:
-                if not wait:
+            try:
+                now = time.time()
+                
+                while self.call_times and now - self.call_times[0] > self.time_window:
+                    self.call_times.popleft()
+                
+                if len(self.call_times) < self.max_calls:
+                    self.call_times.append(now)
+                    self.last_call_time = now
+                    return True
+                else:
+                    if not wait:
+                        oldest_call = self.call_times[0]
+                        wait_time = self.time_window - (now - oldest_call)
+                        logger.warning(
+                            f"RateLimiter '{self.name}': Rate limit exceeded. "
+                            f"Wait {wait_time:.1f}s"
+                        )
+                        return False
+                    
                     oldest_call = self.call_times[0]
                     wait_time = self.time_window - (now - oldest_call)
-                    logger.warning(
-                        f"RateLimiter '{self.name}': Rate limit exceeded. "
-                        f"Wait {wait_time:.1f}s"
+                    logger.info(
+                        f"RateLimiter '{self.name}': Waiting {wait_time:.1f}s for rate limit"
                     )
-                    return False
-                
-                oldest_call = self.call_times[0]
-                wait_time = self.time_window - (now - oldest_call)
-                logger.info(
-                    f"RateLimiter '{self.name}': Waiting {wait_time:.1f}s for rate limit"
+                    
+                    try:
+                        await asyncio.sleep(wait_time + 0.1)
+                    except asyncio.CancelledError:
+                        logger.warning(
+                            f"RateLimiter '{self.name}': Sleep interrupted by cancellation"
+                        )
+                        raise
+                    except Exception as sleep_error:
+                        logger.error(
+                            f"RateLimiter '{self.name}': Error saat waitlist sleep: "
+                            f"{type(sleep_error).__name__}: {sleep_error}"
+                        )
+                        return False
+                        
+            except asyncio.CancelledError:
+                logger.warning(f"RateLimiter '{self.name}': acquire_async dibatalkan")
+                raise
+            except Exception as e:
+                logger.error(
+                    f"RateLimiter '{self.name}': Error tidak terduga: "
+                    f"{type(e).__name__}: {e}"
                 )
-                await asyncio.sleep(wait_time + 0.1)
+                return False
     
     def get_remaining(self) -> int:
         """Get remaining calls in current window"""
@@ -338,3 +388,278 @@ class RateLimiter:
         self.call_times.clear()
         for ts in call_times:
             self.call_times.append(ts)
+
+
+def retry(
+    func: Callable[..., T],
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+    exceptions: tuple = (Exception,),
+    on_retry: Optional[Callable[[int, Exception, float], None]] = None,
+    default: Optional[T] = None,
+    raise_on_exhaust: bool = True
+) -> Callable[..., T]:
+    """Retry decorator/wrapper untuk fungsi sync dengan exception handling.
+    
+    All exceptions logged before re-raise atau return:
+    - Log exception dengan level ERROR jika callback fail
+    - Increment failure counter dan log setiap retry attempt
+    - Optionally re-raise atau return default (tergantung use case)
+    
+    Args:
+        func: Fungsi yang akan di-retry
+        max_attempts: Maksimum percobaan (default: 3)
+        base_delay: Delay awal dalam detik (default: 1.0)
+        max_delay: Delay maksimum dalam detik (default: 60.0)
+        exceptions: Tuple exception types yang akan di-retry
+        on_retry: Optional callback saat retry (attempt, exception, next_delay)
+        default: Nilai default jika retry exhausted dan raise_on_exhaust=False
+        raise_on_exhaust: Raise exception jika semua retry gagal (default: True)
+        
+    Returns:
+        Hasil fungsi atau default value
+        
+    Raises:
+        RetryExhaustedError: Jika semua retry gagal dan raise_on_exhaust=True
+    """
+    def wrapper(*args, **kwargs) -> T:
+        last_exception: Optional[Exception] = None
+        attempt = 0
+        
+        while attempt < max_attempts:
+            attempt += 1
+            try:
+                result = func(*args, **kwargs)
+                if attempt > 1:
+                    logger.info(f"Retry berhasil pada percobaan ke-{attempt}")
+                return result
+            except exceptions as e:
+                last_exception = e
+                logger.error(
+                    f"Retry attempt {attempt}/{max_attempts} gagal: "
+                    f"{type(e).__name__}: {e}"
+                )
+                
+                if attempt < max_attempts:
+                    delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                    logger.info(f"Retry dalam {delay:.2f}s (exponential backoff)...")
+                    
+                    if on_retry:
+                        try:
+                            on_retry(attempt, e, delay)
+                        except Exception as cb_error:
+                            logger.error(f"Error dalam on_retry callback: {cb_error}")
+                    
+                    time.sleep(delay)
+            except (KeyboardInterrupt, SystemExit):
+                logger.warning("Retry interrupted oleh KeyboardInterrupt/SystemExit")
+                raise
+            except Exception as e:
+                logger.error(f"Exception tidak terduga di retry: {type(e).__name__}: {e}")
+                last_exception = e
+                break
+        
+        logger.error(
+            f"Retry exhausted setelah {attempt} percobaan. "
+            f"Last error: {last_exception}"
+        )
+        
+        if raise_on_exhaust:
+            raise RetryExhaustedError(attempt, last_exception)
+        
+        return default  # type: ignore
+    
+    return wrapper
+
+
+async def retry_async(
+    func: Callable[..., Any],
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+    exceptions: tuple = (Exception,),
+    on_retry: Optional[Callable[[int, Exception, float], None]] = None,
+    default: Optional[Any] = None,
+    raise_on_exhaust: bool = True
+) -> Any:
+    """Async retry wrapper dengan exception handling.
+    
+    All exceptions logged before re-raise atau return.
+    
+    Args:
+        func: Async fungsi yang akan di-retry
+        max_attempts: Maksimum percobaan
+        base_delay: Delay awal dalam detik
+        max_delay: Delay maksimum dalam detik
+        exceptions: Tuple exception types yang akan di-retry
+        on_retry: Optional callback saat retry
+        default: Nilai default jika retry exhausted
+        raise_on_exhaust: Raise exception jika semua retry gagal
+        
+    Returns:
+        Hasil fungsi atau default value
+    """
+    last_exception: Optional[Exception] = None
+    attempt = 0
+    
+    while attempt < max_attempts:
+        attempt += 1
+        try:
+            result = await func()
+            if attempt > 1:
+                logger.info(f"Async retry berhasil pada percobaan ke-{attempt}")
+            return result
+        except exceptions as e:
+            last_exception = e
+            logger.error(
+                f"Async retry attempt {attempt}/{max_attempts} gagal: "
+                f"{type(e).__name__}: {e}"
+            )
+            
+            if attempt < max_attempts:
+                delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                logger.info(f"Async retry dalam {delay:.2f}s (exponential backoff)...")
+                
+                if on_retry:
+                    try:
+                        on_retry(attempt, e, delay)
+                    except Exception as cb_error:
+                        logger.error(f"Error dalam on_retry callback: {cb_error}")
+                
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    logger.warning("Async retry sleep dibatalkan")
+                    raise
+                except Exception as sleep_error:
+                    logger.error(f"Error saat async sleep dalam retry: {sleep_error}")
+        except asyncio.CancelledError:
+            logger.warning("Async retry dibatalkan")
+            raise
+        except (KeyboardInterrupt, SystemExit):
+            logger.warning("Async retry interrupted")
+            raise
+        except Exception as e:
+            logger.error(f"Exception tidak terduga di async retry: {type(e).__name__}: {e}")
+            last_exception = e
+            break
+    
+    logger.error(
+        f"Async retry exhausted setelah {attempt} percobaan. "
+        f"Last error: {last_exception}"
+    )
+    
+    if raise_on_exhaust:
+        raise RetryExhaustedError(attempt, last_exception)
+    
+    return default
+
+
+def exponential_backoff(
+    attempt: int,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    jitter: bool = True
+) -> float:
+    """Menghitung delay exponential backoff dengan max_attempts check.
+    
+    All exceptions logged before re-raise atau return:
+    - Log setiap retry attempt dengan backoff duration
+    - Ensure semua exception di-catch
+    - max_attempts check untuk prevent infinite loop
+    
+    Args:
+        attempt: Nomor percobaan saat ini (1-indexed)
+        base_delay: Delay dasar dalam detik
+        max_delay: Delay maksimum dalam detik
+        max_attempts: Maksimum percobaan untuk validation
+        jitter: Tambahkan jitter random untuk mencegah thundering herd
+        
+    Returns:
+        Delay dalam detik
+        
+    Raises:
+        ValueError: Jika attempt melebihi max_attempts
+    """
+    try:
+        if attempt <= 0:
+            logger.warning(f"Invalid attempt number: {attempt}, using 1")
+            attempt = 1
+        
+        if attempt > max_attempts:
+            logger.error(
+                f"Attempt {attempt} melebihi max_attempts {max_attempts} - "
+                f"prevent infinite loop"
+            )
+            raise ValueError(
+                f"Attempt {attempt} melebihi max_attempts {max_attempts}"
+            )
+        
+        delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+        
+        if jitter:
+            import random
+            jitter_factor = random.uniform(0.8, 1.2)
+            delay = delay * jitter_factor
+        
+        logger.debug(
+            f"Exponential backoff: attempt={attempt}/{max_attempts}, "
+            f"delay={delay:.2f}s (base={base_delay}s, max={max_delay}s)"
+        )
+        
+        return delay
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(f"Error menghitung exponential backoff: {type(e).__name__}: {e}")
+        return min(base_delay, max_delay)
+
+
+async def exponential_backoff_async(
+    attempt: int,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    jitter: bool = True
+) -> None:
+    """Async exponential backoff dengan sleep.
+    
+    All exceptions logged before re-raise atau return.
+    
+    Args:
+        attempt: Nomor percobaan saat ini
+        base_delay: Delay dasar dalam detik
+        max_delay: Delay maksimum dalam detik
+        max_attempts: Maksimum percobaan
+        jitter: Tambahkan jitter random
+        
+    Raises:
+        ValueError: Jika attempt melebihi max_attempts
+        asyncio.CancelledError: Jika sleep dibatalkan
+    """
+    try:
+        delay = exponential_backoff(
+            attempt, base_delay, max_delay, max_attempts, jitter
+        )
+        
+        logger.info(f"Async backoff sleeping for {delay:.2f}s...")
+        
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            logger.warning(f"Async backoff sleep dibatalkan pada attempt {attempt}")
+            raise
+        except Exception as sleep_error:
+            logger.error(f"Error saat async backoff sleep: {sleep_error}")
+            raise
+            
+    except ValueError:
+        raise
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error(f"Error dalam exponential_backoff_async: {type(e).__name__}: {e}")
+        raise

@@ -85,6 +85,12 @@ def validate_chart_data(df: pd.DataFrame) -> Tuple[bool, Optional[str]]:
         return False, f"Error validasi: {str(e)}"
 
 class ChartGenerator:
+    """Chart generator dengan idempotent shutdown.
+    
+    idempotent: safe to call multiple times
+    - shutdown() dan shutdown_async() aman dipanggil berkali-kali
+    - Double shutdown tidak akan crash executor
+    """
     def __init__(self, config):
         self.config = config
         self.chart_dir = 'charts'
@@ -93,6 +99,7 @@ class ChartGenerator:
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="chart_gen")
         self._shutdown_requested = False
         self._shutdown_in_progress = False
+        self._shutdown_complete = False
         self._pending_charts: set = set()
         self._pending_tasks: set = set()
         self._active_futures: dict = {}
@@ -589,14 +596,26 @@ class ChartGenerator:
             return False
     
     def shutdown(self, timeout: Optional[float] = None):
-        """Graceful synchronous shutdown dengan cleanup semua pending charts"""
+        """Graceful synchronous shutdown dengan cleanup semua pending charts.
+        
+        idempotent: safe to call multiple times
+        - Aman dipanggil berkali-kali tanpa menyebabkan crash
+        - Pengecekan _shutdown_complete untuk mencegah double shutdown
+        - _shutdown_complete hanya diset jika executor shutdown berhasil
+        - _shutdown_in_progress direset jika gagal untuk izinkan retry
+        """
         with self._sync_shutdown_lock:
+            if self._shutdown_complete:
+                logger.debug("Shutdown sudah selesai sebelumnya, melewati panggilan berulang")
+                return
             if self._shutdown_in_progress:
                 logger.debug("Shutdown sudah dalam proses, melewati panggilan berulang")
                 return
             self._shutdown_in_progress = True
         
         effective_timeout = timeout if timeout is not None else self.shutdown_timeout
+        executor_shutdown_success = False
+        cleanup_success = False
         
         try:
             logger.info(f"Mematikan ChartGenerator executor (timeout={effective_timeout}s)...")
@@ -628,19 +647,23 @@ class ChartGenerator:
             
             try:
                 self.executor.shutdown(wait=True, cancel_futures=True)
+                executor_shutdown_success = True
             except Exception as executor_error:
                 logger.warning(f"Error saat executor shutdown: {executor_error}")
                 try:
                     self.executor.shutdown(wait=False, cancel_futures=True)
-                except Exception:
-                    pass
+                    executor_shutdown_success = True
+                except Exception as force_error:
+                    logger.error(f"Force shutdown juga gagal: {force_error}")
             
-            logger.info("ChartGenerator executor berhasil dimatikan")
+            if executor_shutdown_success:
+                logger.info("ChartGenerator executor berhasil dimatikan")
         except Exception as e:
             logger.error(f"Error saat mematikan executor: {e}")
         finally:
             try:
                 self._cleanup_pending_charts()
+                cleanup_success = True
             except Exception as cleanup_error:
                 logger.error(f"Error saat final cleanup: {cleanup_error}")
             
@@ -649,16 +672,35 @@ class ChartGenerator:
                 logger.debug("gc.collect() selesai setelah shutdown")
             except Exception as gc_error:
                 logger.debug(f"gc.collect() error: {gc_error}")
+            
+            if executor_shutdown_success and cleanup_success:
+                self._shutdown_complete = True
+                logger.debug("Shutdown complete flag diset ke True")
+            else:
+                self._shutdown_in_progress = False
+                logger.warning("Shutdown tidak selesai sempurna, retry diizinkan")
     
     async def shutdown_async(self, timeout: Optional[float] = None):
-        """Graceful async shutdown dengan timeout dan cleanup semua pending charts"""
+        """Graceful async shutdown dengan timeout dan cleanup semua pending charts.
+        
+        idempotent: safe to call multiple times
+        - Aman dipanggil berkali-kali tanpa menyebabkan crash
+        - Pengecekan _shutdown_complete untuk mencegah double shutdown
+        - _shutdown_complete hanya diset jika executor shutdown berhasil
+        - _shutdown_in_progress direset jika gagal untuk izinkan retry
+        """
         async with self._shutdown_lock:
+            if self._shutdown_complete:
+                logger.debug("Shutdown sudah selesai sebelumnya, melewati panggilan berulang (async)")
+                return
             if self._shutdown_in_progress:
                 logger.debug("Shutdown sudah dalam proses, melewati panggilan berulang (async)")
                 return
             self._shutdown_in_progress = True
         
         effective_timeout = timeout if timeout is not None else self.shutdown_timeout
+        executor_shutdown_success = False
+        cleanup_success = False
         
         try:
             logger.info(f"Mematikan ChartGenerator (async, timeout={effective_timeout}s)...")
@@ -699,25 +741,30 @@ class ChartGenerator:
                     ),
                     timeout=effective_timeout
                 )
+                executor_shutdown_success = True
             except asyncio.TimeoutError:
                 logger.warning(f"Executor shutdown timeout setelah {effective_timeout}s, memaksa shutdown")
                 try:
                     self.executor.shutdown(wait=False, cancel_futures=True)
+                    executor_shutdown_success = True
                 except Exception as force_error:
                     logger.error(f"Error saat memaksa executor shutdown: {force_error}")
             except Exception as executor_error:
                 logger.error(f"Error saat async executor shutdown: {executor_error}")
                 try:
                     self.executor.shutdown(wait=False, cancel_futures=True)
-                except Exception:
-                    pass
+                    executor_shutdown_success = True
+                except Exception as force_error:
+                    logger.error(f"Force shutdown juga gagal: {force_error}")
             
-            logger.info("ChartGenerator executor berhasil dimatikan (async)")
+            if executor_shutdown_success:
+                logger.info("ChartGenerator executor berhasil dimatikan (async)")
         except Exception as e:
             logger.error(f"Error saat mematikan executor (async): {e}")
         finally:
             try:
                 await self._cleanup_pending_charts_async()
+                cleanup_success = True
             except Exception as cleanup_error:
                 logger.error(f"Error saat final cleanup (async): {cleanup_error}")
             
@@ -726,6 +773,13 @@ class ChartGenerator:
                 logger.debug("gc.collect() selesai setelah async shutdown")
             except Exception as gc_error:
                 logger.debug(f"gc.collect() error (async): {gc_error}")
+            
+            if executor_shutdown_success and cleanup_success:
+                self._shutdown_complete = True
+                logger.debug("Shutdown complete flag diset ke True (async)")
+            else:
+                self._shutdown_in_progress = False
+                logger.warning("Shutdown tidak selesai sempurna (async), retry diizinkan")
     
     def _cleanup_pending_charts(self):
         """Cleanup semua pending chart files dengan try-finally untuk memastikan cleanup"""

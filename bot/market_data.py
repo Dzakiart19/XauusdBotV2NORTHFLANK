@@ -683,16 +683,22 @@ class ConnectionMetrics:
 
 
 class MarketDataClient:
+    """Client untuk market data dengan thread-safety pada akses bid/ask.
+    
+    Thread-safe: protected by _market_lock
+    - Property bid dan ask dilindungi oleh _market_lock untuk mencegah race condition
+    - Method get_latest_candle() dan update_candle() thread-safe
+    """
     SYMBOL_FALLBACKS = ["frxXAUUSD"]
     
     def __init__(self, config, db_manager=None):
         self.config = config
         self.ws_url = "wss://ws.derivws.com/websockets/v3?app_id=1089"
         self.symbol = config.DERIV_SYMBOL if hasattr(config, 'DERIV_SYMBOL') else "frxXAUUSD"
-        self.current_bid = None
-        self.current_ask = None
-        self.current_quote = None
-        self.current_timestamp = None
+        self._current_bid = None
+        self._current_ask = None
+        self._current_quote = None
+        self._current_timestamp = None
         self.ws = None
         self.connected = False
         self.reconnect_attempts = 0
@@ -701,6 +707,8 @@ class MarketDataClient:
         self.use_simulator = False
         self.simulator_task = None
         self.last_ping = 0
+        
+        self._market_lock = threading.RLock()
         
         self._connection_state = ConnectionState.DISCONNECTED
         self._connection_state_lock = asyncio.Lock()
@@ -775,6 +783,105 @@ class MarketDataClient:
         logger.info("✅ State machine koneksi diinisialisasi")
         logger.info("✅ Mekanisme candle close event diinisialisasi")
         logger.info("✅ H1 candle close callback registered untuk immediate DB persistence")
+    
+    @property
+    def current_bid(self) -> Optional[float]:
+        """Thread-safe: protected by _market_lock
+        
+        Mendapatkan harga bid saat ini dengan proteksi lock.
+        """
+        with self._market_lock:
+            return self._current_bid
+    
+    @current_bid.setter
+    def current_bid(self, value: Optional[float]):
+        """Thread-safe setter untuk current_bid"""
+        with self._market_lock:
+            self._current_bid = value
+    
+    @property
+    def current_ask(self) -> Optional[float]:
+        """Thread-safe: protected by _market_lock
+        
+        Mendapatkan harga ask saat ini dengan proteksi lock.
+        """
+        with self._market_lock:
+            return self._current_ask
+    
+    @current_ask.setter
+    def current_ask(self, value: Optional[float]):
+        """Thread-safe setter untuk current_ask"""
+        with self._market_lock:
+            self._current_ask = value
+    
+    @property
+    def current_quote(self) -> Optional[float]:
+        """Thread-safe: protected by _market_lock
+        
+        Mendapatkan quote saat ini dengan proteksi lock.
+        """
+        with self._market_lock:
+            return self._current_quote
+    
+    @current_quote.setter
+    def current_quote(self, value: Optional[float]):
+        """Thread-safe setter untuk current_quote"""
+        with self._market_lock:
+            self._current_quote = value
+    
+    @property
+    def current_timestamp(self) -> Optional[datetime]:
+        """Thread-safe: protected by _market_lock
+        
+        Mendapatkan timestamp data saat ini dengan proteksi lock.
+        """
+        with self._market_lock:
+            return self._current_timestamp
+    
+    @current_timestamp.setter
+    def current_timestamp(self, value: Optional[datetime]):
+        """Thread-safe setter untuk current_timestamp"""
+        with self._market_lock:
+            self._current_timestamp = value
+    
+    def get_latest_candle(self, timeframe: str = 'M1') -> Optional[Dict]:
+        """Thread-safe: protected by _market_lock
+        
+        Mendapatkan candle terakhir untuk timeframe tertentu.
+        
+        Args:
+            timeframe: Timeframe yang diinginkan ('M1', 'M5', 'H1')
+            
+        Returns:
+            Dict candle data atau None jika tidak ada data
+        """
+        with self._market_lock:
+            if timeframe == 'M1':
+                return self.m1_builder.get_latest_complete_candle()
+            elif timeframe == 'M5':
+                return self.m5_builder.get_latest_complete_candle()
+            elif timeframe == 'H1':
+                return self.h1_builder.get_latest_complete_candle()
+            else:
+                logger.warning(f"Timeframe tidak dikenal: {timeframe}")
+                return None
+    
+    def update_market_data(self, bid: float, ask: float, quote: float, timestamp: datetime):
+        """Thread-safe: protected by _market_lock
+        
+        Update semua data market dalam satu operasi atomic.
+        
+        Args:
+            bid: Harga bid baru
+            ask: Harga ask baru
+            quote: Quote baru
+            timestamp: Timestamp data baru
+        """
+        with self._market_lock:
+            self._current_bid = bid
+            self._current_ask = ask
+            self._current_quote = quote
+            self._current_timestamp = timestamp
     
     @property
     def is_ready(self) -> bool:
