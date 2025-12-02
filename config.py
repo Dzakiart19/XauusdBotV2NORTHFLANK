@@ -550,6 +550,10 @@ class Config:
     HEALTH_CHECK_TIMEOUT = _get_int_env('HEALTH_CHECK_TIMEOUT', '30')
     HEALTH_CHECK_LONG_TIMEOUT = _get_int_env('HEALTH_CHECK_LONG_TIMEOUT', '35')
     
+    SELF_PING_ENABLED = os.getenv('SELF_PING_ENABLED', 'true').lower() == 'true'
+    SELF_PING_INTERVAL = _get_int_env('SELF_PING_INTERVAL', '240')
+    SELF_PING_TIMEOUT = _get_int_env('SELF_PING_TIMEOUT', '10')
+    
     TRADING_HOURS_START = _get_int_env('TRADING_HOURS_START', '0')
     TRADING_HOURS_END = _get_int_env('TRADING_HOURS_END', '23')
     FRIDAY_CUTOFF_HOUR = _get_int_env('FRIDAY_CUTOFF_HOUR', '23')

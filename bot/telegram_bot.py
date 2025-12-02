@@ -1119,9 +1119,14 @@ class TradingBot:
             force_cancelled_count = 0
             
             try:
-                events_to_wait = [self._monitoring_drain_complete.get(cid) for cid in chat_ids if self._monitoring_drain_complete.get(cid)]
+                events_to_wait: List[asyncio.Event] = []
+                for cid in chat_ids:
+                    event = self._monitoring_drain_complete.get(cid)
+                    if event is not None:
+                        events_to_wait.append(event)
+                
                 if events_to_wait:
-                    wait_tasks = [asyncio.create_task(event.wait()) for event in events_to_wait]
+                    wait_tasks = [asyncio.create_task(ev.wait()) for ev in events_to_wait]
                     done, pending = await asyncio.wait(wait_tasks, timeout=timeout)
                     drained_count = len(done)
                     
@@ -2545,8 +2550,107 @@ class TradingBot:
                 self.monitoring_chats.append(chat_id)
                 logger.info(f"Auto-starting monitoring for chat {mask_user_id(chat_id)}")
                 task = asyncio.create_task(self._monitoring_loop(chat_id))
+                task.add_done_callback(
+                    lambda t, cid=chat_id: self._on_monitoring_task_done(cid, t)
+                )
                 self.monitoring_tasks[chat_id] = task
-                logger.info(f"✅ Monitoring task created for chat {mask_user_id(chat_id)}")
+                logger.info(f"✅ Monitoring task created for chat {mask_user_id(chat_id)} with completion callback")
+    
+    def _on_monitoring_task_done(self, chat_id: int, task: asyncio.Task):
+        """Callback when monitoring task completes - handles cleanup.
+        
+        This callback is registered via add_done_callback() to handle:
+        1. Normal completion (shutdown signal received)
+        2. Cancelled tasks (explicit cancellation)
+        3. Failed tasks (exceptions)
+        
+        Args:
+            chat_id: The chat ID whose monitoring task completed
+            task: The completed asyncio.Task
+        """
+        try:
+            task_status = "unknown"
+            if task.cancelled():
+                task_status = "cancelled"
+            elif task.done():
+                exc = task.exception() if not task.cancelled() else None
+                if exc:
+                    task_status = f"failed: {type(exc).__name__}"
+                    logger.error(f"❌ Monitoring task for chat {mask_user_id(chat_id)} failed: {exc}")
+                else:
+                    task_status = "completed"
+            
+            logger.info(f"📋 Monitoring task for chat {mask_user_id(chat_id)} done (status: {task_status})")
+            
+            if chat_id in self.monitoring_tasks:
+                del self.monitoring_tasks[chat_id]
+            
+            if chat_id in self.monitoring_chats:
+                self.monitoring_chats.remove(chat_id)
+            
+            if chat_id in self._monitoring_drain_complete:
+                self._monitoring_drain_complete[chat_id].set()
+            
+            asyncio.create_task(self._cleanup_user_monitoring_resources(chat_id))
+            
+        except Exception as e:
+            logger.error(f"Error in monitoring task done callback for chat {mask_user_id(chat_id)}: {e}")
+    
+    async def _cleanup_user_monitoring_resources(self, chat_id: int):
+        """Clean up all user-specific monitoring resources after task completion.
+        
+        Cleans up:
+        - Dashboard streaming tasks
+        - Signal cache entries for this user
+        - Active monitoring tracking
+        - Any pending charts for this user
+        
+        Args:
+            chat_id: The chat ID to clean up resources for
+        """
+        logger.debug(f"🧹 Cleaning up monitoring resources for chat {mask_user_id(chat_id)}")
+        cleanup_count = 0
+        
+        try:
+            if chat_id in self.active_dashboards:
+                dash_info = self.active_dashboards.pop(chat_id, None)
+                if dash_info:
+                    task = dash_info.get('task')
+                    if task and not task.done():
+                        task.cancel()
+                        try:
+                            await asyncio.wait_for(task, timeout=2.0)
+                        except (asyncio.CancelledError, asyncio.TimeoutError):
+                            pass
+                    cleanup_count += 1
+                    logger.debug(f"  - Dashboard task cancelled for chat {mask_user_id(chat_id)}")
+            
+            if chat_id in self.dashboard_tasks:
+                task = self.dashboard_tasks.pop(chat_id, None)
+                if task and not task.done():
+                    task.cancel()
+                    cleanup_count += 1
+            
+            if chat_id in self._active_monitoring:
+                del self._active_monitoring[chat_id]
+                cleanup_count += 1
+            
+            if chat_id in self._pending_charts:
+                del self._pending_charts[chat_id]
+                cleanup_count += 1
+            
+            if chat_id in self.dashboard_enabled:
+                del self.dashboard_enabled[chat_id]
+            if chat_id in self.dashboard_messages:
+                del self.dashboard_messages[chat_id]
+            if chat_id in self._dashboard_last_hash:
+                del self._dashboard_last_hash[chat_id]
+            
+            if cleanup_count > 0:
+                logger.info(f"✅ Cleaned up {cleanup_count} resources for chat {mask_user_id(chat_id)}")
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up resources for chat {mask_user_id(chat_id)}: {e}")
     
     async def stopmonitor_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user is None or update.message is None or update.effective_chat is None:

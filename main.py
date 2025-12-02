@@ -526,6 +526,15 @@ class TradingBotOrchestrator:
                 logger.info(f"✅ health_check_long_running restarted successfully")
                 return True
             
+            elif task_name == "self_ping_keep_alive":
+                logger.warning(f"🔄 Restarting self_ping_keep_alive (attempt {task_info.restart_count}/{task_info.max_restarts})")
+                new_task = asyncio.create_task(self._self_ping_keep_alive())
+                task_info.task = new_task
+                task_info.created_at = datetime.now()
+                task_info.status = TaskStatus.RUNNING
+                logger.info(f"✅ self_ping_keep_alive restarted successfully")
+                return True
+            
             else:
                 logger.warning(f"⚠️ No restart handler for task: {task_name}")
                 return False
@@ -610,6 +619,92 @@ class TradingBotOrchestrator:
         except Exception as e:
             logger.error(f"Error checking market data health: {e}")
             return True
+    
+    async def _self_ping_keep_alive(self):
+        """Self-ping task to keep Koyeb service awake on free tier.
+        
+        Koyeb free tier puts services to sleep after 5 minutes of inactivity.
+        This task sends HTTP requests to the health endpoint every SELF_PING_INTERVAL
+        seconds to keep the service active 24/7.
+        """
+        if not self.config.SELF_PING_ENABLED:
+            logger.info("🔇 Self-ping keep-alive is DISABLED (SELF_PING_ENABLED=false)")
+            return
+        
+        logger.info(f"🏓 Starting self-ping keep-alive task (interval: {self.config.SELF_PING_INTERVAL}s)")
+        
+        ping_count = 0
+        success_count = 0
+        fail_count = 0
+        
+        self_url = None
+        koyeb_public_domain = os.getenv('KOYEB_PUBLIC_DOMAIN', '')
+        replit_dev_domain = os.getenv('REPLIT_DEV_DOMAIN', '')
+        
+        if koyeb_public_domain:
+            self_url = f"https://{koyeb_public_domain.strip()}/health"
+            logger.info(f"🏓 Self-ping URL (Koyeb): {self_url}")
+        elif replit_dev_domain:
+            self_url = f"https://{replit_dev_domain.strip()}/health"
+            logger.info(f"🏓 Self-ping URL (Replit): {self_url}")
+        else:
+            self_url = f"http://localhost:{self.config.HEALTH_CHECK_PORT}/health"
+            logger.info(f"🏓 Self-ping URL (localhost): {self_url}")
+        
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                while self.running and not self._shutdown_in_progress:
+                    try:
+                        await asyncio.sleep(self.config.SELF_PING_INTERVAL)
+                        
+                        if not self.running or self._shutdown_in_progress:
+                            break
+                        
+                        ping_count += 1
+                        
+                        try:
+                            async with session.get(
+                                self_url,
+                                timeout=aiohttp.ClientTimeout(total=self.config.SELF_PING_TIMEOUT),
+                                ssl=False
+                            ) as response:
+                                if response.status == 200:
+                                    success_count += 1
+                                    if ping_count % 15 == 0:
+                                        logger.info(
+                                            f"🏓 Self-ping #{ping_count} OK "
+                                            f"(success: {success_count}, fail: {fail_count})"
+                                        )
+                                    else:
+                                        logger.debug(f"🏓 Self-ping #{ping_count} OK (status: {response.status})")
+                                else:
+                                    fail_count += 1
+                                    logger.warning(f"⚠️ Self-ping #{ping_count} returned status {response.status}")
+                        
+                        except asyncio.TimeoutError:
+                            fail_count += 1
+                            logger.warning(f"⚠️ Self-ping #{ping_count} timeout after {self.config.SELF_PING_TIMEOUT}s")
+                        
+                        except aiohttp.ClientError as e:
+                            fail_count += 1
+                            logger.warning(f"⚠️ Self-ping #{ping_count} failed: {type(e).__name__}: {e}")
+                    
+                    except asyncio.CancelledError:
+                        logger.info(f"🏓 Self-ping cancelled after {ping_count} pings (success: {success_count}, fail: {fail_count})")
+                        raise
+                    
+                    except Exception as e:
+                        fail_count += 1
+                        logger.error(f"❌ Self-ping error: {type(e).__name__}: {e}")
+                        await asyncio.sleep(30)
+            
+            logger.info(f"🏓 Self-ping stopped (total: {ping_count}, success: {success_count}, fail: {fail_count})")
+        
+        except asyncio.CancelledError:
+            logger.info("🏓 Self-ping task cancelled")
+        except Exception as e:
+            logger.error(f"❌ Self-ping task fatal error: {e}")
     
     def _auto_detect_webhook_url(self) -> Optional[str]:
         if self.config.WEBHOOK_URL and self.config.WEBHOOK_URL.strip():
@@ -1891,6 +1986,21 @@ class TradingBotOrchestrator:
         try:
             logger.info("Starting health check server...")
             await self.start_health_server()
+            
+            if self.config.SELF_PING_ENABLED:
+                logger.info("Starting self-ping keep-alive task (prevents Koyeb sleeping)...")
+                self_ping_task = asyncio.create_task(self._self_ping_keep_alive())
+                await self.register_task(
+                    name="self_ping_keep_alive",
+                    task=self_ping_task,
+                    priority=TaskPriority.LOW,
+                    critical=False,
+                    cancel_timeout=3.0,
+                    max_restarts=-1
+                )
+                logger.info(f"✅ Self-ping task started (interval: {self.config.SELF_PING_INTERVAL}s)")
+            else:
+                logger.info("🔇 Self-ping keep-alive is DISABLED")
             
             logger.info("Starting health check for long-running tasks...")
             health_check_task = asyncio.create_task(self._health_check_long_running())
