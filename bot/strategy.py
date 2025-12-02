@@ -1529,31 +1529,64 @@ class TradingStrategy:
             'details': []
         }
         
+        mtf_enabled = getattr(self.config, 'MTF_ENABLED', True)
+        if not mtf_enabled:
+            mtf_data['total_score'] = 1.0
+            return True, "✅ MTF Filter DISABLED - signal diizinkan", 1.0, mtf_data
+        
         try:
             if not m1_indicators:
                 return False, "❌ MTF: M1 data tidak tersedia", 0.0, mtf_data
             
             ema_5_m1 = m1_indicators.get(f'ema_{self.config.EMA_PERIODS[0]}')
             ema_20_m1 = m1_indicators.get(f'ema_{self.config.EMA_PERIODS[1]}')
+            rsi_m1 = m1_indicators.get('rsi')
+            stoch_k_m1 = m1_indicators.get('stoch_k')
+            macd_m1 = m1_indicators.get('macd')
+            macd_signal_m1 = m1_indicators.get('macd_signal')
+            
+            m1_alignment_count = 0
+            m1_alignment_reasons = []
             
             if is_valid_number(ema_5_m1) and is_valid_number(ema_20_m1):
                 ema5 = safe_float(ema_5_m1, 0.0)
                 ema20 = safe_float(ema_20_m1, 0.0)
                 
                 if signal_type == 'BUY' and ema5 > ema20:
-                    mtf_data['m1_aligned'] = True
-                    mtf_data['timeframes_aligned'] += 1
-                    mtf_data['details'].append("M1: ✅ Bullish")
+                    m1_alignment_count += 1
+                    m1_alignment_reasons.append("EMA")
                 elif signal_type == 'SELL' and ema5 < ema20:
-                    mtf_data['m1_aligned'] = True
-                    mtf_data['timeframes_aligned'] += 1
-                    mtf_data['details'].append("M1: ✅ Bearish")
-                else:
-                    mtf_data['details'].append(f"M1: ⚠️ Tidak sejalan dengan {signal_type}")
+                    m1_alignment_count += 1
+                    m1_alignment_reasons.append("EMA")
+            
+            if is_valid_number(rsi_m1):
+                rsi_val = safe_float(rsi_m1, 50.0)
+                if signal_type == 'BUY' and rsi_val < 65:
+                    m1_alignment_count += 1
+                    m1_alignment_reasons.append("RSI")
+                elif signal_type == 'SELL' and rsi_val > 35:
+                    m1_alignment_count += 1
+                    m1_alignment_reasons.append("RSI")
+            
+            if is_valid_number(macd_m1) and is_valid_number(macd_signal_m1):
+                macd = safe_float(macd_m1, 0.0)
+                macd_sig = safe_float(macd_signal_m1, 0.0)
+                if signal_type == 'BUY' and macd > macd_sig:
+                    m1_alignment_count += 1
+                    m1_alignment_reasons.append("MACD")
+                elif signal_type == 'SELL' and macd < macd_sig:
+                    m1_alignment_count += 1
+                    m1_alignment_reasons.append("MACD")
+            
+            if m1_alignment_count >= 1:
+                mtf_data['m1_aligned'] = True
+                mtf_data['timeframes_aligned'] += 1
+                aligned_str = "+".join(m1_alignment_reasons) if m1_alignment_reasons else "momentum"
+                mtf_data['details'].append(f"M1: ✅ Aligned ({aligned_str})")
             else:
                 mtf_data['m1_aligned'] = True
                 mtf_data['timeframes_aligned'] += 1
-                mtf_data['details'].append("M1: ✅ (Data EMA tidak tersedia)")
+                mtf_data['details'].append(f"M1: ⚠️ Momentum check (signal diizinkan)")
             
             if m5_indicators:
                 mtf_data['m5_available'] = True
@@ -2882,6 +2915,10 @@ class TradingStrategy:
             'reversal_detected': False,
             'slope_strength': 'weak'
         }
+        
+        ema_slope_filter_enabled = getattr(self.config, 'EMA_SLOPE_FILTER_ENABLED', False)
+        if not ema_slope_filter_enabled:
+            return True, "✅ EMA Slope Filter DISABLED - signal diizinkan", slope_data
         
         try:
             ema_slope = indicators.get('ema_slope')
