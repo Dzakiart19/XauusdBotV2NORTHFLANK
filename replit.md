@@ -4,6 +4,11 @@
 This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision.
 
 ## Recent Changes (December 2025)
+- **Per-User Data Filtering Complete (Dec 02)**: 
+  - Dashboard API `/api/candles` now filters active_position per user_id
+  - Frontend sends user_id to all API endpoints (dashboard, candles, trade-history)
+  - Telegram WebApp user authentication with fallback to URL parameter and localStorage
+  - Each user only sees their own positions and trading data
 - **Real-Time Dashboard v5.1**: Major dashboard enhancement with 7 key improvements:
   - Virtual Scrolling: Trade history with pagination (20 trades per page, max 50), "Load More" button
   - EMA Overlay Chart: EMA 9/21 overlay on candlestick chart with optimized series management (no memory leaks)
