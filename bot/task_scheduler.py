@@ -67,7 +67,14 @@ FLUSH_PENDING_TIMEOUT = 15
 STALE_TASK_THRESHOLD_MINUTES = 30
 MAX_CONSECUTIVE_FAILURES_AUTO_DISABLE = 10
 EXCEPTION_HISTORY_LIMIT = 20
-CLEANUP_INTERVAL_SECONDS = 300
+CLEANUP_INTERVAL_SECONDS = Config.COMPLETED_TASKS_CLEANUP_INTERVAL
+
+# Task lifecycle optimization constants (dari Config)
+TASK_AUTO_CANCEL_THRESHOLD = Config.TASK_AUTO_CANCEL_THRESHOLD
+TASK_ROTATION_INTERVAL = Config.TASK_ROTATION_INTERVAL
+TASK_RESTART_BACKOFF_BASE = Config.TASK_RESTART_BACKOFF_BASE
+TASK_RESTART_BACKOFF_MAX = Config.TASK_RESTART_BACKOFF_MAX
+COMPLETED_TASKS_MAX_SIZE = Config.COMPLETED_TASKS_MAX_SIZE
 
 # Timeout tambahan untuk cleanup operations yang robust
 CLEANUP_TASK_TIMEOUT = 10  # Timeout untuk setiap cleanup task individual
@@ -755,8 +762,12 @@ class TaskScheduler:
             'orphaned_tasks_cleaned': 0,
             'stale_tasks_detected': 0,
             'auto_disabled_tasks': 0,
-            'last_cleanup_time': None
+            'last_cleanup_time': None,
+            'auto_cancelled_stuck_tasks': 0,
+            'entries_cleaned_by_size': 0,
+            'task_rotations': 0
         }
+        self._last_rotation = datetime.now(pytz.timezone('Asia/Jakarta'))
         self._state: LifecycleState = LifecycleState.IDLE
         self._lifecycle_lock = asyncio.Lock()
         self._cleanup_results: List[CleanupResult] = []
@@ -1349,6 +1360,13 @@ class TaskScheduler:
         Menggunakan timeout untuk setiap operasi cleanup dan fallback mechanism
         jika cleanup utama gagal.
         
+        Termasuk:
+        - Cleanup completed tasks
+        - Cleanup orphaned tasks
+        - Auto-cancel stuck tasks (> TASK_AUTO_CANCEL_THRESHOLD detik)
+        - Task rotation (setiap TASK_ROTATION_INTERVAL detik)
+        - Cleanup by size (jika > COMPLETED_TASKS_MAX_SIZE entries)
+        
         Returns:
             Dict dengan hasil cleanup
         """
@@ -1359,6 +1377,9 @@ class TaskScheduler:
         stale_tasks = []
         failing_tasks = []
         cleanup_errors = []
+        stuck_cancelled = 0
+        size_cleaned = 0
+        rotation_result = {}
         
         # Cleanup completed tasks dengan timeout dan fallback
         try:
@@ -1369,7 +1390,6 @@ class TaskScheduler:
                 operation_name="cleanup completed tasks"
             )
             if cleanup_success:
-                # Ambil nilai dari stats yang sudah diupdate
                 completed_cleaned = self._cleanup_stats.get('completed_tasks_cleaned', 0)
         except asyncio.CancelledError:
             raise
@@ -1392,6 +1412,39 @@ class TaskScheduler:
         except Exception as e:
             cleanup_errors.append(f"cleanup_orphaned: {e}")
             logger.error(f"Error saat cleanup orphaned tasks: {e}")
+        
+        # Auto-cancel stuck tasks (Task Lifecycle Optimization)
+        try:
+            stuck_cancelled = await self.auto_cancel_stuck_tasks()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            cleanup_errors.append(f"auto_cancel_stuck: {e}")
+            logger.error(f"Error saat auto-cancel stuck tasks: {e}")
+        
+        # Cleanup by size limit (Task Lifecycle Optimization)
+        try:
+            size_cleaned = await self.cleanup_completed_tasks_by_size()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            cleanup_errors.append(f"cleanup_by_size: {e}")
+            logger.error(f"Error saat cleanup by size: {e}")
+        
+        # Task rotation (setiap TASK_ROTATION_INTERVAL detik)
+        try:
+            now = datetime.now(pytz.timezone('Asia/Jakarta'))
+            time_since_rotation = (now - self._last_rotation).total_seconds()
+            if time_since_rotation >= TASK_ROTATION_INTERVAL:
+                rotation_result = await self.perform_task_rotation()
+                self._last_rotation = now
+                self._cleanup_stats['task_rotations'] = \
+                    self._cleanup_stats.get('task_rotations', 0) + 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            cleanup_errors.append(f"task_rotation: {e}")
+            logger.error(f"Error saat task rotation: {e}")
         
         # Detect stale dan failing tasks (operasi sync, tidak perlu timeout)
         try:
@@ -1424,6 +1477,9 @@ class TaskScheduler:
         results = {
             'completed_tasks_cleaned': completed_cleaned,
             'orphaned_tasks_cleaned': orphaned_cleaned,
+            'stuck_tasks_cancelled': stuck_cancelled,
+            'size_entries_cleaned': size_cleaned,
+            'task_rotation': rotation_result,
             'stale_tasks': stale_tasks,
             'failing_tasks': failing_tasks,
             'auto_disabled_tasks': self.get_auto_disabled_tasks(),
@@ -1556,6 +1612,232 @@ class TaskScheduler:
             self.tasks[name].enable(reset_failures=True)
             return True
         return False
+    
+    async def auto_cancel_stuck_tasks(self) -> int:
+        """
+        Auto-cancel tasks yang stuck lebih dari TASK_AUTO_CANCEL_THRESHOLD detik.
+        
+        Task dianggap stuck jika sedang executing tapi tidak selesai dalam waktu threshold.
+        
+        Returns:
+            Jumlah tasks yang di-cancel
+        """
+        cancelled_count = 0
+        now = datetime.now(pytz.timezone('Asia/Jakarta'))
+        threshold_seconds = TASK_AUTO_CANCEL_THRESHOLD
+        
+        try:
+            for task_name, task in list(self.tasks.items()):
+                try:
+                    if not task._is_executing:
+                        continue
+                    
+                    if task._execution_start_time is None:
+                        continue
+                    
+                    execution_start = task._execution_start_time
+                    if execution_start.tzinfo is None:
+                        execution_start = pytz.timezone('Asia/Jakarta').localize(execution_start)
+                    
+                    elapsed_seconds = (now - execution_start).total_seconds()
+                    
+                    if elapsed_seconds > threshold_seconds:
+                        logger.warning(
+                            f"Task {task_name} stuck selama {elapsed_seconds:.1f}s "
+                            f"(threshold: {threshold_seconds}s), melakukan auto-cancel"
+                        )
+                        
+                        if task.current_execution_task and not task.current_execution_task.done():
+                            task.current_execution_task.cancel()
+                            cancelled_count += 1
+                            
+                            task._is_executing = False
+                            task.error_count += 1
+                            task.consecutive_failures += 1
+                            task._calculate_next_run()
+                            
+                            self._cleanup_stats['auto_cancelled_stuck_tasks'] = \
+                                self._cleanup_stats.get('auto_cancelled_stuck_tasks', 0) + 1
+                            
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(f"Error saat auto-cancel task {task_name}: {e}")
+                    
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Error di auto_cancel_stuck_tasks: {e}")
+        
+        if cancelled_count > 0:
+            logger.info(f"Auto-cancelled {cancelled_count} stuck tasks")
+        
+        return cancelled_count
+    
+    async def perform_task_rotation(self) -> Dict[str, Any]:
+        """
+        Perform task rotation untuk memastikan task tidak stuck dalam state tertentu.
+        
+        Task rotation meliputi:
+        - Reset task yang auto-disabled setelah interval tertentu
+        - Re-enable task yang healthy tapi disabled
+        - Refresh next_run untuk task yang stale
+        
+        Returns:
+            Dict dengan hasil rotation
+        """
+        results = {
+            'rotated_tasks': [],
+            're_enabled_tasks': [],
+            'refreshed_tasks': [],
+            'errors': []
+        }
+        
+        now = datetime.now(pytz.timezone('Asia/Jakarta'))
+        
+        try:
+            for task_name, task in list(self.tasks.items()):
+                try:
+                    if task._auto_disabled:
+                        if task.consecutive_failures < MAX_CONSECUTIVE_FAILURES_AUTO_DISABLE:
+                            task._auto_disabled = False
+                            task.enabled = True
+                            task._calculate_next_run()
+                            results['re_enabled_tasks'].append(task_name)
+                            logger.info(f"Task {task_name} di-re-enable setelah rotation")
+                    
+                    if task.enabled and not task._is_executing:
+                        if task.next_run and task.next_run < now - timedelta(seconds=TASK_ROTATION_INTERVAL):
+                            old_next_run = task.next_run
+                            task._calculate_next_run()
+                            results['refreshed_tasks'].append({
+                                'name': task_name,
+                                'old_next_run': old_next_run.isoformat() if old_next_run else None,
+                                'new_next_run': task.next_run.isoformat() if task.next_run else None
+                            })
+                            logger.debug(f"Task {task_name} next_run di-refresh: {old_next_run} -> {task.next_run}")
+                    
+                    results['rotated_tasks'].append(task_name)
+                    
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    error_msg = f"Error rotating task {task_name}: {e}"
+                    results['errors'].append(error_msg)
+                    logger.error(error_msg)
+                    
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            error_msg = f"Error di perform_task_rotation: {e}"
+            results['errors'].append(error_msg)
+            logger.error(error_msg)
+        
+        if results['re_enabled_tasks'] or results['refreshed_tasks']:
+            logger.info(
+                f"Task rotation selesai: {len(results['re_enabled_tasks'])} re-enabled, "
+                f"{len(results['refreshed_tasks'])} refreshed"
+            )
+        
+        return results
+    
+    def calculate_restart_backoff(self, consecutive_failures: int) -> float:
+        """
+        Hitung exponential backoff delay untuk restart task yang gagal.
+        
+        Formula: min(base * (2 ** failures), max_backoff)
+        
+        Args:
+            consecutive_failures: Jumlah kegagalan berturut-turut
+            
+        Returns:
+            Delay dalam detik untuk restart berikutnya
+        """
+        if consecutive_failures <= 0:
+            return 0.0
+        
+        base = TASK_RESTART_BACKOFF_BASE
+        max_backoff = TASK_RESTART_BACKOFF_MAX
+        
+        backoff = base * (2 ** (consecutive_failures - 1))
+        
+        return min(backoff, max_backoff)
+    
+    def get_task_restart_delay(self, task_name: str) -> float:
+        """
+        Dapatkan delay untuk restart task berdasarkan consecutive failures.
+        
+        Args:
+            task_name: Nama task
+            
+        Returns:
+            Delay dalam detik, 0 jika task tidak ada
+        """
+        task = self.tasks.get(task_name)
+        if not task:
+            return 0.0
+        
+        return self.calculate_restart_backoff(task.consecutive_failures)
+    
+    async def cleanup_completed_tasks_by_size(self) -> int:
+        """
+        Cleanup completed tasks jika jumlahnya melebihi COMPLETED_TASKS_MAX_SIZE.
+        
+        Method ini membatasi ukuran _task_exceptions dan _exception_history
+        untuk mencegah memory leak.
+        
+        Returns:
+            Jumlah entries yang dibersihkan
+        """
+        cleaned = 0
+        max_size = COMPLETED_TASKS_MAX_SIZE
+        
+        try:
+            if len(self._task_exceptions) > max_size:
+                excess = len(self._task_exceptions) - max_size
+                keys_to_remove = list(self._task_exceptions.keys())[:excess]
+                for key in keys_to_remove:
+                    try:
+                        del self._task_exceptions[key]
+                        cleaned += 1
+                    except KeyError:
+                        pass
+                logger.info(f"Cleaned {excess} excess task exceptions (max: {max_size})")
+            
+            if len(self._exception_history) > max_size:
+                excess = len(self._exception_history) - max_size
+                for _ in range(excess):
+                    try:
+                        self._exception_history.popleft()
+                        cleaned += 1
+                    except IndexError:
+                        break
+                logger.info(f"Cleaned excess exception history entries (max: {max_size})")
+            
+            for task_name, task in list(self.tasks.items()):
+                try:
+                    if len(task._exception_history) > max_size:
+                        excess = len(task._exception_history) - max_size
+                        for _ in range(excess):
+                            try:
+                                task._exception_history.popleft()
+                                cleaned += 1
+                            except IndexError:
+                                break
+                except Exception as e:
+                    logger.error(f"Error cleaning task {task_name} exception history: {e}")
+                    
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Error di cleanup_completed_tasks_by_size: {e}")
+        
+        if cleaned > 0:
+            logger.debug(f"Cleaned {cleaned} entries by size limit ({max_size})")
+            self._cleanup_stats['entries_cleaned_by_size'] = \
+                self._cleanup_stats.get('entries_cleaned_by_size', 0) + cleaned
+        
+        return cleaned
     
     async def _track_task(self, task: asyncio.Task, task_name: str):
         """

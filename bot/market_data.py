@@ -4,6 +4,7 @@ import websockets
 import json
 import math
 import time
+import gc
 import aiohttp
 from datetime import datetime, timedelta
 from collections import deque
@@ -14,6 +15,7 @@ import random
 from typing import Optional, Dict, List, Tuple, Any, Union, Callable
 from bot.logger import setup_logger
 from bot.resilience import CircuitBreaker
+from config import Config
 
 logger = setup_logger('MarketData')
 
@@ -148,16 +150,34 @@ class OHLCBuilder:
     - _tick_lock: Melindungi akses ke candle data (sync operations)
     - _callback_lock: Melindungi akses ke callback list (sync operations)
     - Kedua lock menggunakan threading.Lock karena dipanggil dari sync context
+    
+    Memory Optimization:
+    - maxlen uses Config.MAX_CANDLE_HISTORY (default 150 in FREE_TIER_MODE)
+    - lazy_load_charts parameter untuk menunda loading chart data hingga dibutuhkan
     """
     
-    def __init__(self, timeframe_minutes: int = 1):
+    def __init__(self, timeframe_minutes: int = 1, maxlen: Optional[int] = None, lazy_load_charts: bool = False):
+        """Initialize OHLCBuilder with configurable memory optimization.
+        
+        Args:
+            timeframe_minutes: Timeframe dalam menit (default: 1)
+            maxlen: Maximum candle history length (default: Config.MAX_CANDLE_HISTORY)
+            lazy_load_charts: Jika True, chart data tidak di-load hingga diperlukan (default: False)
+        """
         if timeframe_minutes <= 0:
             raise ValueError(f"Invalid timeframe_minutes: {timeframe_minutes}. Must be > 0")
         
         self.timeframe_minutes = timeframe_minutes
         self.timeframe_seconds = timeframe_minutes * 60
         self.current_candle = None
-        self.candles = deque(maxlen=500)
+        
+        candle_maxlen = maxlen if maxlen is not None else Config.MAX_CANDLE_HISTORY
+        self.candles = deque(maxlen=candle_maxlen)
+        self._candle_maxlen = candle_maxlen
+        
+        self.lazy_load_charts = lazy_load_charts
+        self._chart_data_loaded = not lazy_load_charts
+        
         self.tick_count = 0
         self.nan_scrub_count = 0
         self.invalid_ohlc_count = 0
@@ -165,12 +185,15 @@ class OHLCBuilder:
         self.candle_close_callbacks: List[Callable] = []
         self.last_update_time: Optional[float] = None
         
+        self._tick_data: deque = deque(maxlen=3600)
+        self._last_gc_time: float = time.time()
+        
         self._tick_lock = threading.Lock()
         self._callback_lock = threading.Lock()
         
         self._async_lock: Optional[asyncio.Lock] = None
         
-        logger.debug(f"OHLCBuilder diinisialisasi untuk M{timeframe_minutes} dengan hybrid threading/asyncio locks")
+        logger.debug(f"OHLCBuilder diinisialisasi untuk M{timeframe_minutes} dengan maxlen={candle_maxlen}, lazy_load={lazy_load_charts}")
     
     def _scrub_nan_prices(self, prices: Dict) -> Tuple[bool, Dict]:
         """Scrub NaN values from price dictionary at builder boundary.
@@ -494,6 +517,65 @@ class OHLCBuilder:
                 self.candle_close_callbacks.remove(callback)
                 logger.info(f"Callback candle close dihapus dari M{self.timeframe_minutes}")
     
+    def cleanup_old_tick_data(self, retention_hours: Optional[int] = None) -> int:
+        """Bersihkan tick data yang lebih tua dari retention period.
+        
+        Thread-safe menggunakan _tick_lock.
+        
+        Args:
+            retention_hours: Jam retensi tick data (default: Config.TICK_DATA_RETENTION_HOURS)
+            
+        Returns:
+            Jumlah tick data yang dibersihkan
+        """
+        retention = retention_hours if retention_hours is not None else Config.TICK_DATA_RETENTION_HOURS
+        cutoff_time = datetime.now(pytz.UTC) - timedelta(hours=retention)
+        
+        cleaned = 0
+        with self._tick_lock:
+            old_len = len(self._tick_data)
+            while self._tick_data and len(self._tick_data) > 0:
+                oldest = self._tick_data[0]
+                if isinstance(oldest, dict) and 'timestamp' in oldest:
+                    tick_time = oldest['timestamp']
+                    if tick_time.tzinfo is None:
+                        tick_time = tick_time.replace(tzinfo=pytz.UTC)
+                    if tick_time < cutoff_time:
+                        self._tick_data.popleft()
+                        cleaned += 1
+                    else:
+                        break
+                else:
+                    break
+            
+            if cleaned > 0:
+                logger.debug(f"M{self.timeframe_minutes}: Cleaned {cleaned} old tick data (retention: {retention}h)")
+        
+        return cleaned
+    
+    def run_gc_if_needed(self) -> bool:
+        """Jalankan garbage collection jika sudah waktunya.
+        
+        Menjalankan GC setiap Config.GC_INTERVAL_SECONDS detik.
+        
+        Returns:
+            True jika GC dijalankan, False jika belum waktunya
+        """
+        current_time = time.time()
+        elapsed = current_time - self._last_gc_time
+        
+        if elapsed >= Config.GC_INTERVAL_SECONDS:
+            self._last_gc_time = current_time
+            
+            self.cleanup_old_tick_data()
+            
+            gc.collect()
+            
+            logger.debug(f"M{self.timeframe_minutes}: GC completed after {elapsed:.1f}s interval")
+            return True
+        
+        return False
+    
     def get_stats(self) -> Dict:
         """Mendapatkan statistik builder termasuk NaN scrub count dan invalid OHLC count"""
         with self._tick_lock:
@@ -501,13 +583,18 @@ class OHLCBuilder:
                 return {
                     'timeframe': f"M{self.timeframe_minutes}",
                     'candle_count': len(self.candles),
+                    'candle_maxlen': self._candle_maxlen,
                     'has_current_candle': self.current_candle is not None,
                     'tick_count': self.tick_count,
+                    'tick_data_count': len(self._tick_data),
                     'nan_scrub_count': self.nan_scrub_count,
                     'invalid_ohlc_count': self.invalid_ohlc_count,
                     'last_completed_candle_timestamp': self.last_completed_candle_timestamp.isoformat() if self.last_completed_candle_timestamp else None,
                     'registered_callbacks': len(self.candle_close_callbacks),
-                    'last_update_time': self.last_update_time
+                    'last_update_time': self.last_update_time,
+                    'lazy_load_charts': self.lazy_load_charts,
+                    'chart_data_loaded': self._chart_data_loaded,
+                    'last_gc_time': self._last_gc_time
                 }
     
     def get_latest_complete_candle(self) -> Optional[Dict]:
@@ -1552,7 +1639,7 @@ class MarketDataClient:
         """
         results: Dict[str, str] = {}
         
-        shutdown_order = ['data_monitor', 'stale_cleanup', 'builder_health', 'heartbeat']
+        shutdown_order = ['data_monitor', 'stale_cleanup', 'builder_health', 'gc_cleanup', 'heartbeat']
         
         async with self._ws_tasks_lock:
             tasks_snapshot = dict(self._active_ws_tasks)
@@ -1822,6 +1909,8 @@ class MarketDataClient:
         Uses decorrelated jitter algorithm for better distribution:
         delay = min(max_delay, random(base_delay, previous_delay * 3))
         
+        Jitter range is controlled by Config.WS_RECONNECT_JITTER_MAX (default 5.0s)
+        
         Args:
             attempt: Current reconnection attempt number (1-based)
             
@@ -1830,15 +1919,17 @@ class MarketDataClient:
         """
         base_delay = self.reconnect_delay
         max_delay = self.max_reconnect_delay
+        jitter_max = Config.WS_RECONNECT_JITTER_MAX
         
         exponential_delay = base_delay * (2 ** (attempt - 1))
         
-        jitter_range = exponential_delay * 0.5
-        jitter = random.uniform(-jitter_range, jitter_range)
+        jitter = random.uniform(-jitter_max, jitter_max)
         
         delay_with_jitter = exponential_delay + jitter
         
         final_delay = max(base_delay, min(delay_with_jitter, max_delay))
+        
+        logger.debug(f"Reconnect backoff: attempt={attempt}, base={base_delay}s, exp={exponential_delay:.1f}s, jitter={jitter:.1f}s, final={final_delay:.1f}s")
         
         return final_delay
         
@@ -1951,11 +2042,13 @@ class MarketDataClient:
                         data_monitor_task = asyncio.create_task(self._monitor_data_staleness())
                         stale_cleanup_task = asyncio.create_task(self._periodic_stale_cleanup())
                         builder_health_task = asyncio.create_task(self._monitor_builder_health())
+                        gc_cleanup_task = asyncio.create_task(self._periodic_gc_cleanup())
                         
                         await self._register_ws_task('heartbeat', heartbeat_task)
                         await self._register_ws_task('data_monitor', data_monitor_task)
                         await self._register_ws_task('stale_cleanup', stale_cleanup_task)
                         await self._register_ws_task('builder_health', builder_health_task)
+                        await self._register_ws_task('gc_cleanup', gc_cleanup_task)
                         
                         logger.info(f"📡 WebSocket tasks started and tracked: {list(self._active_ws_tasks.keys())}")
                         
@@ -2057,11 +2150,77 @@ class MarketDataClient:
         except Exception as e:
             logger.error(f"Fatal error in builder health monitor: {e}", exc_info=True)
     
+    async def _periodic_gc_cleanup(self):
+        """Periodic garbage collection and tick data cleanup.
+        
+        Runs every Config.GC_INTERVAL_SECONDS (default 180s) to:
+        1. Clean up old tick data > Config.TICK_DATA_RETENTION_HOURS
+        2. Run garbage collection on all builders
+        3. Perform system-wide gc.collect()
+        """
+        gc_interval = Config.GC_INTERVAL_SECONDS
+        retention_hours = Config.TICK_DATA_RETENTION_HOURS
+        gc_cycles = 0
+        
+        try:
+            logger.info(
+                f"🧹 Starting periodic GC cleanup (interval={gc_interval}s, "
+                f"tick_retention={retention_hours}h)"
+            )
+            
+            while self.running and self.connected:
+                await asyncio.sleep(gc_interval)
+                
+                if self._is_shutting_down:
+                    logger.debug("GC cleanup skipped - shutdown in progress")
+                    break
+                
+                try:
+                    gc_cycles += 1
+                    total_cleaned = 0
+                    
+                    for builder_name, builder in [
+                        ('M1', self.m1_builder),
+                        ('M5', self.m5_builder),
+                        ('H1', self.h1_builder)
+                    ]:
+                        cleaned = builder.cleanup_old_tick_data(retention_hours)
+                        total_cleaned += cleaned
+                        
+                        builder.run_gc_if_needed()
+                    
+                    gc.collect()
+                    
+                    if gc_cycles % 10 == 0 or total_cleaned > 0:
+                        logger.info(
+                            f"🧹 GC cycle {gc_cycles}: cleaned {total_cleaned} old ticks, "
+                            f"M1={len(self.m1_builder.candles)}/{self.m1_builder._candle_maxlen}, "
+                            f"M5={len(self.m5_builder.candles)}/{self.m5_builder._candle_maxlen}, "
+                            f"H1={len(self.h1_builder.candles)}/{self.h1_builder._candle_maxlen}"
+                        )
+                    else:
+                        logger.debug(f"GC cycle {gc_cycles} completed")
+                        
+                except Exception as gc_err:
+                    logger.error(f"Error during GC cleanup cycle {gc_cycles}: {gc_err}")
+                    
+        except asyncio.CancelledError:
+            logger.debug(f"Periodic GC cleanup cancelled after {gc_cycles} cycles")
+        except Exception as e:
+            logger.error(f"Fatal error in periodic GC cleanup: {e}", exc_info=True)
+    
     async def _send_heartbeat(self):
+        """Send WebSocket heartbeat ping with configurable interval.
+        
+        Uses Config.WS_HEARTBEAT_INTERVAL (default 25s) for ping frequency.
+        """
+        heartbeat_interval = Config.WS_HEARTBEAT_INTERVAL
+        logger.debug(f"Heartbeat started with interval {heartbeat_interval}s")
+        
         while self.running and self.ws:
             try:
                 current_time = time.time()
-                if current_time - self.last_ping >= 20:
+                if current_time - self.last_ping >= heartbeat_interval:
                     ping_msg = {"ping": 1}
                     await self.ws.send(json.dumps(ping_msg))
                     self.last_ping = current_time
