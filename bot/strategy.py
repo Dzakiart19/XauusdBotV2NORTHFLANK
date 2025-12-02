@@ -508,12 +508,14 @@ class TradingStrategy:
         sell_cooldown = getattr(self.config, 'SELL_COOLDOWN_SECONDS', 0)
         opposite_cooldown = getattr(self.config, 'OPPOSITE_SIGNAL_COOLDOWN_SECONDS', 0)
         pattern_cooldown = getattr(self.config, 'PATTERN_COOLDOWN_SECONDS', 0)
+        allow_multi_candle = getattr(self.config, 'ALLOW_MULTIPLE_SIGNALS_PER_CANDLE', True)
         
-        if candle_timestamp is not None and self.last_signal_candle_timestamp is not None:
-            if candle_timestamp == self.last_signal_candle_timestamp:
-                reason = f"🚫 Signal di-skip: Masih dalam candle yang sama (timestamp: {candle_timestamp})"
-                logger.info(reason)
-                return False, reason
+        if not allow_multi_candle:
+            if candle_timestamp is not None and self.last_signal_candle_timestamp is not None:
+                if candle_timestamp == self.last_signal_candle_timestamp:
+                    reason = f"🚫 Signal di-skip: Masih dalam candle yang sama (timestamp: {candle_timestamp})"
+                    logger.info(reason)
+                    return False, reason
         
         if global_min_cooldown > 0 and self.last_signal_time is not None:
             time_since_last = (current_time - self.last_signal_time).total_seconds()

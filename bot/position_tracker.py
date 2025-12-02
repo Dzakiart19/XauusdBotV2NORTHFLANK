@@ -1374,10 +1374,20 @@ class PositionTracker:
                 try:
                     # Calculate pips and duration
                     opened_at = pos.get('opened_at')
-                    if opened_at and isinstance(opened_at, datetime):
-                        duration_minutes = int((datetime.now(pytz.UTC) - opened_at).total_seconds() / 60)
-                    else:
-                        duration_minutes = 0
+                    duration_minutes = 0
+                    if opened_at:
+                        try:
+                            if isinstance(opened_at, datetime):
+                                if opened_at.tzinfo is None:
+                                    opened_at = pytz.UTC.localize(opened_at)
+                                duration_minutes = int((datetime.now(pytz.UTC) - opened_at).total_seconds() / 60)
+                            elif isinstance(opened_at, str):
+                                parsed_dt = datetime.fromisoformat(opened_at.replace('Z', '+00:00'))
+                                if parsed_dt.tzinfo is None:
+                                    parsed_dt = pytz.UTC.localize(parsed_dt)
+                                duration_minutes = int((datetime.now(pytz.UTC) - parsed_dt).total_seconds() / 60)
+                        except Exception:
+                            duration_minutes = 0
                     
                     # Calculate actual pips
                     if signal_type == 'BUY':
@@ -1446,13 +1456,20 @@ class PositionTracker:
                         # Chart hanya digunakan untuk exit notification di bawah ini
                         
                         opened_at = pos.get('opened_at')
+                        duration_seconds = 0
                         if opened_at:
                             if isinstance(opened_at, datetime):
+                                if opened_at.tzinfo is None:
+                                    opened_at = pytz.UTC.localize(opened_at)
                                 duration_seconds = (datetime.now(pytz.UTC) - opened_at).total_seconds()
-                            else:
-                                duration_seconds = 0
-                        else:
-                            duration_seconds = 0
+                            elif isinstance(opened_at, str):
+                                try:
+                                    parsed_dt = datetime.fromisoformat(opened_at.replace('Z', '+00:00'))
+                                    if parsed_dt.tzinfo is None:
+                                        parsed_dt = pytz.UTC.localize(parsed_dt)
+                                    duration_seconds = (datetime.now(pytz.UTC) - parsed_dt).total_seconds()
+                                except:
+                                    duration_seconds = 0
                         
                         exit_data = {
                             'result': trade_result,
