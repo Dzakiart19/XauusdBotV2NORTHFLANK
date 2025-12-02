@@ -468,7 +468,12 @@
             return Promise.resolve(cachedCandleData);
         }
         
-        return fetchWithRetry('/api/candles?timeframe=M1&limit=100').then(function(data) {
+        var candlesUrl = '/api/candles?timeframe=M1&limit=100';
+        if (currentUserId) {
+            candlesUrl += '&user_id=' + encodeURIComponent(currentUserId);
+        }
+        
+        return fetchWithRetry(candlesUrl).then(function(data) {
             if (data && data.candles) {
                 debugLog('Candles data received: ' + data.candles.length + ' candles');
                 cachedCandleData = data;

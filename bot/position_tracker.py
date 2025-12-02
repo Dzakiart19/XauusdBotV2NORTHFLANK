@@ -826,7 +826,7 @@ class PositionTracker:
         return pos
         
     async def add_position(self, user_id: int, trade_id: int, signal_type: str, entry_price: float,
-                          stop_loss: float, take_profit: float, signal_quality_id: int = None):
+                          stop_loss: float, take_profit: float, signal_quality_id: Optional[int] = None):
         """Add position with comprehensive validation and error handling
         
         Thread-safe with asyncio.Lock for active_positions access

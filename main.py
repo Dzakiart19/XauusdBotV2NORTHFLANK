@@ -1125,6 +1125,7 @@ class TradingBotOrchestrator:
                     return web.json_response({'error': str(e)}, status=500)
             
             async def api_candles(request):
+                """API endpoint for candle data with per-user position filtering"""
                 try:
                     timeframe = request.query.get('timeframe', 'M1').upper()
                     if timeframe not in ('M1', 'M5', 'H1'):
@@ -1135,6 +1136,18 @@ class TradingBotOrchestrator:
                         limit = max(1, min(limit, 200))
                     except (ValueError, TypeError):
                         limit = 50
+                    
+                    user_id_str = request.query.get('user_id', None)
+                    request_user_id = None
+                    is_authorized = False
+                    
+                    if user_id_str:
+                        try:
+                            request_user_id = int(user_id_str)
+                            if request_user_id in self.config.AUTHORIZED_USER_IDS:
+                                is_authorized = True
+                        except (ValueError, TypeError):
+                            request_user_id = None
                     
                     candles_data = []
                     current_price = None
@@ -1173,7 +1186,8 @@ class TradingBotOrchestrator:
                         try:
                             positions = self.position_tracker.get_active_positions()
                             if positions:
-                                for user_id, user_positions in positions.items():
+                                if request_user_id is not None and is_authorized:
+                                    user_positions = positions.get(request_user_id, {})
                                     if isinstance(user_positions, dict):
                                         for pos_id, pos in user_positions.items():
                                             if isinstance(pos, dict):
@@ -1181,11 +1195,25 @@ class TradingBotOrchestrator:
                                                     'entry_price': pos.get('entry_price'),
                                                     'stop_loss': pos.get('stop_loss'),
                                                     'take_profit': pos.get('take_profit'),
+                                                    'trailing_sl': pos.get('trailing_sl'),
                                                     'direction': pos.get('signal_type', 'BUY')
                                                 }
                                                 break
-                                    if active_position:
-                                        break
+                                else:
+                                    for user_id, user_positions in positions.items():
+                                        if isinstance(user_positions, dict):
+                                            for pos_id, pos in user_positions.items():
+                                                if isinstance(pos, dict):
+                                                    active_position = {
+                                                        'entry_price': pos.get('entry_price'),
+                                                        'stop_loss': pos.get('stop_loss'),
+                                                        'take_profit': pos.get('take_profit'),
+                                                        'trailing_sl': pos.get('trailing_sl'),
+                                                        'direction': pos.get('signal_type', 'BUY')
+                                                    }
+                                                    break
+                                        if active_position:
+                                            break
                         except Exception as e:
                             logger.debug(f"Error getting positions for candles API: {e}")
                     

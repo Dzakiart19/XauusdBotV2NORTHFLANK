@@ -308,8 +308,79 @@
     
     <script>
         debugLog('Before loading app.js');
+        
+        // Extract user_id dari Telegram WebApp dan set untuk API calls
+        (function() {
+            var currentUserId = null;
+            
+            // Method 1: Telegram WebApp
+            if (window.Telegram && window.Telegram.WebApp) {
+                try {
+                    var webAppData = window.Telegram.WebApp.initData;
+                    if (webAppData) {
+                        var params = new URLSearchParams(webAppData);
+                        var userData = params.get('user');
+                        if (userData) {
+                            var user = JSON.parse(userData);
+                            if (user.id) {
+                                currentUserId = user.id;
+                                debugLog('User ID from Telegram WebApp: ' + currentUserId);
+                            }
+                        }
+                    }
+                    
+                    // Fallback: initDataUnsafe
+                    if (!currentUserId && window.Telegram.WebApp.initDataUnsafe && window.Telegram.WebApp.initDataUnsafe.user) {
+                        currentUserId = window.Telegram.WebApp.initDataUnsafe.user.id;
+                        debugLog('User ID from Telegram initDataUnsafe: ' + currentUserId);
+                    }
+                } catch (e) {
+                    debugLog('Error parsing Telegram WebApp data: ' + e.message);
+                }
+            }
+            
+            // Method 2: URL parameter fallback
+            if (!currentUserId) {
+                try {
+                    var urlParams = new URLSearchParams(window.location.search);
+                    var userId = urlParams.get('user_id');
+                    if (userId) {
+                        currentUserId = userId;
+                        debugLog('User ID from URL parameter: ' + currentUserId);
+                    }
+                } catch (e) {
+                    debugLog('Error getting user_id from URL: ' + e.message);
+                }
+            }
+            
+            // Method 3: localStorage fallback
+            if (!currentUserId) {
+                try {
+                    var storedUserId = localStorage.getItem('currentUserId');
+                    if (storedUserId) {
+                        currentUserId = storedUserId;
+                        debugLog('User ID from localStorage: ' + currentUserId);
+                    }
+                } catch (e) {
+                    debugLog('Error getting user_id from localStorage: ' + e.message);
+                }
+            }
+            
+            // Set global variable dan localStorage
+            if (currentUserId) {
+                window.currentUserId = currentUserId;
+                try {
+                    localStorage.setItem('currentUserId', currentUserId);
+                } catch (e) {
+                    debugLog('Error saving user_id to localStorage: ' + e.message);
+                }
+                debugLog('Final currentUserId set: ' + currentUserId);
+            } else {
+                debugLog('No user_id found - running in guest mode');
+            }
+        })();
     </script>
-    <script src="/static/app.js?v=20251201v5"></script>
+    <script src="/static/app.js?v=20251202v1"></script>
     <script>
         debugLog('After loading app.js - checking if loaded');
         if (typeof refreshData === 'function') {
