@@ -2807,37 +2807,52 @@ class TradingBot:
         return is_duplicate
     
     async def _fetch_m5_indicators(self, indicator_engine) -> Optional[Dict]:
-        """Fetch M5 indicators untuk multi-timeframe confirmation."""
+        """Fetch M5 indicators untuk multi-timeframe confirmation.
+        
+        Note: Fetches 100 candles to ensure enough data for EMA50 calculation
+        (min_required = 60 for indicators with EMA50)
+        """
         try:
-            df_m5 = await self.market_data.get_historical_data('M5', 50)
-            if df_m5 is not None and len(df_m5) >= 20:
+            df_m5 = await self.market_data.get_historical_data('M5', 100)
+            if df_m5 is not None and len(df_m5) >= 60:
                 m5_indicators = indicator_engine.get_indicators(df_m5)
-                logger.debug(f"✅ M5 data loaded untuk confirmation ({len(df_m5)} candles)")
-                return m5_indicators
+                if m5_indicators:
+                    logger.info(f"✅ M5 MTF: {len(df_m5)} candles -> indicators calculated")
+                    return m5_indicators
+                else:
+                    logger.info(f"⚠️ M5 MTF: {len(df_m5)} candles but get_indicators returned None")
+                    return None
             else:
-                logger.debug(f"⚠️ M5 data tidak cukup untuk confirmation ({len(df_m5) if df_m5 is not None else 0} candles) - AUTO signal tetap lanjut tanpa M5")
+                candle_count = len(df_m5) if df_m5 is not None else 0
+                logger.info(f"⚠️ M5 MTF: Hanya {candle_count}/60 candles tersedia - lanjut tanpa M5")
                 return None
         except Exception as m5_error:
-            logger.debug(f"⚠️ Error fetching M5 data: {m5_error} - AUTO signal tetap lanjut tanpa M5")
+            logger.warning(f"⚠️ M5 MTF Error: {m5_error} - lanjut tanpa M5")
             return None
     
     async def _fetch_h1_indicators(self, indicator_engine) -> Optional[Dict]:
         """Fetch H1 indicators untuk multi-timeframe confirmation.
         
-        Fetches more candles than needed (50) to ensure enough margin for indicator calculation.
+        Note: Fetches 100 candles to ensure enough data for EMA50 calculation
+        (min_required = 60 for indicators with EMA50)
         Returns None on failure - signal will continue without H1 data (no blocking).
         """
         try:
-            df_h1 = await self.market_data.get_historical_data('H1', 50)
-            if df_h1 is not None and len(df_h1) >= 10:
+            df_h1 = await self.market_data.get_historical_data('H1', 100)
+            if df_h1 is not None and len(df_h1) >= 60:
                 h1_indicators = indicator_engine.get_indicators(df_h1)
-                logger.debug(f"✅ H1 data loaded untuk confirmation ({len(df_h1)} candles)")
-                return h1_indicators
+                if h1_indicators:
+                    logger.info(f"✅ H1 MTF: {len(df_h1)} candles -> indicators calculated")
+                    return h1_indicators
+                else:
+                    logger.info(f"⚠️ H1 MTF: {len(df_h1)} candles but get_indicators returned None")
+                    return None
             else:
-                logger.debug(f"⚠️ H1 data tidak cukup untuk confirmation ({len(df_h1) if df_h1 is not None else 0} candles) - signal tetap lanjut tanpa H1")
+                candle_count = len(df_h1) if df_h1 is not None else 0
+                logger.info(f"⚠️ H1 MTF: Hanya {candle_count}/60 candles tersedia - lanjut tanpa H1")
                 return None
         except Exception as h1_error:
-            logger.debug(f"⚠️ Error fetching H1 data: {h1_error} - signal tetap lanjut tanpa H1")
+            logger.warning(f"⚠️ H1 MTF Error: {h1_error} - lanjut tanpa H1")
             return None
     
     async def _dispatch_signal(self, ctx: MonitoringContext, signal: Dict, 

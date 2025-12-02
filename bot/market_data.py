@@ -1879,7 +1879,7 @@ class MarketDataClient:
                             try:
                                 m1_success = await self.fetch_historical_candles(websocket, timeframe_minutes=1, count=100)
                                 m5_success = await self.fetch_historical_candles(websocket, timeframe_minutes=5, count=100)
-                                h1_success = await self.fetch_historical_candles(websocket, timeframe_minutes=60, count=50)
+                                h1_success = await self.fetch_historical_candles(websocket, timeframe_minutes=60, count=100)
                                 
                                 if not m1_success and not m5_success:
                                     logger.warning("Failed to fetch any historical data, but continuing with live feed")
