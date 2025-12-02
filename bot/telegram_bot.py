@@ -337,6 +337,9 @@ class TradingBot:
         self.monitoring_tasks: Dict[int, asyncio.Task] = {}
         self.active_dashboards: Dict[int, Dict] = {}
         self._is_shutting_down: bool = False
+        self._shutdown_drain_timeout: float = 30.0
+        self._active_monitoring: Dict[int, Dict[str, Any]] = {}
+        self._monitoring_drain_complete: Dict[int, asyncio.Event] = {}
         
         self.dashboard_messages: Dict[int, int] = {}
         self.dashboard_tasks: Dict[int, asyncio.Task] = {}
@@ -416,6 +419,157 @@ class TradingBot:
             user = self.user_manager.get_user(user_id)
             return user.is_admin if user else False
         return False
+    
+    async def prepare_for_shutdown(self, drain_timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Prepare bot for graceful shutdown. Call this before TaskScheduler.stop().
+        
+        This method sets the shutdown flag and waits for monitoring loops to drain
+        their current iterations gracefully without interrupting mid-signal-processing.
+        
+        Args:
+            drain_timeout: Maximum time to wait for monitoring tasks to drain (default: 30s)
+            
+        Returns:
+            Dict containing shutdown statistics
+        """
+        if drain_timeout is not None:
+            self._shutdown_drain_timeout = drain_timeout
+        
+        logger.info("🛑 Preparing TelegramBot for shutdown...")
+        
+        self._is_shutting_down = True
+        logger.info("✅ Shutdown flag set - monitoring loops will exit after current iteration")
+        
+        monitoring_count = len(self.monitoring_tasks)
+        dashboard_count = len(self.active_dashboards)
+        
+        for chat_id in list(self.monitoring_tasks.keys()):
+            if chat_id not in self._monitoring_drain_complete:
+                self._monitoring_drain_complete[chat_id] = asyncio.Event()
+        
+        drain_results = await self._wait_for_monitoring_drain(self._shutdown_drain_timeout)
+        
+        shutdown_stats = {
+            'monitoring_tasks_drained': drain_results.get('drained_count', 0),
+            'monitoring_tasks_timeout': drain_results.get('timeout_count', 0),
+            'dashboard_tasks_cancelled': dashboard_count,
+            'shutdown_initiated_at': datetime.now().isoformat(),
+            'drain_timeout_used': self._shutdown_drain_timeout
+        }
+        
+        logger.info(f"✅ TelegramBot prepared for shutdown: {shutdown_stats}")
+        return shutdown_stats
+    
+    async def _wait_for_monitoring_drain(self, timeout: float) -> Dict[str, int]:
+        """Wait for all monitoring tasks to drain naturally.
+        
+        Args:
+            timeout: Maximum time to wait
+            
+        Returns:
+            Dict with drain statistics
+        """
+        if not self.monitoring_tasks:
+            logger.debug("No monitoring tasks to drain")
+            return {'drained_count': 0, 'timeout_count': 0}
+        
+        drained_count = 0
+        timeout_count = 0
+        
+        logger.info(f"⏳ Waiting for {len(self.monitoring_tasks)} monitoring task(s) to drain (timeout: {timeout}s)...")
+        
+        tasks_to_wait = []
+        chat_ids = list(self.monitoring_tasks.keys())
+        
+        for chat_id in chat_ids:
+            event = self._monitoring_drain_complete.get(chat_id)
+            if event:
+                tasks_to_wait.append((chat_id, event))
+        
+        if tasks_to_wait:
+            try:
+                wait_coros = [event.wait() for _, event in tasks_to_wait]
+                
+                done, pending = await asyncio.wait(
+                    [asyncio.create_task(coro) for coro in wait_coros],
+                    timeout=timeout
+                )
+                
+                drained_count = len(done)
+                timeout_count = len(pending)
+                
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                
+                if timeout_count > 0:
+                    logger.warning(f"⚠️ {timeout_count} monitoring task(s) did not drain within {timeout}s, will be force-cancelled")
+                
+            except asyncio.CancelledError:
+                logger.info("Drain wait was cancelled")
+                raise
+        
+        logger.info(f"✅ Monitoring drain complete: {drained_count} drained, {timeout_count} timed out")
+        return {'drained_count': drained_count, 'timeout_count': timeout_count}
+    
+    async def _drain_user_monitoring(self, chat_id: int, reason: str = "shutdown") -> bool:
+        """Drain monitoring for a specific user with proper cleanup.
+        
+        This method handles per-chat cleanup:
+        - Clear signal cache for the user
+        - Cancel dashboard update tasks
+        - Cleanup active_monitoring tracking
+        - Log drain completion
+        
+        Args:
+            chat_id: The chat ID to drain
+            reason: Reason for drain (for logging)
+            
+        Returns:
+            bool: True if successfully drained
+        """
+        try:
+            logger.info(f"🔄 Draining monitoring for user {mask_user_id(chat_id)} (reason: {reason})...")
+            
+            await self._clear_signal_cache(chat_id)
+            logger.debug(f"✅ Signal cache cleared for user {mask_user_id(chat_id)}")
+            
+            type_keys_to_remove = [k for k in self.last_signal_per_type.keys() if k.startswith(f"{chat_id}_")]
+            async with self._cache_lock:
+                for key in type_keys_to_remove:
+                    self.last_signal_per_type.pop(key, None)
+            if type_keys_to_remove:
+                logger.debug(f"✅ Signal type tracking cleared for user {mask_user_id(chat_id)} ({len(type_keys_to_remove)} entries)")
+            
+            if chat_id in self.active_dashboards:
+                dashboard_info = self.active_dashboards.get(chat_id)
+                if dashboard_info:
+                    task = dashboard_info.get('task')
+                    if task and not task.done():
+                        task.cancel()
+                        try:
+                            await asyncio.wait_for(task, timeout=2.0)
+                        except (asyncio.CancelledError, asyncio.TimeoutError):
+                            pass
+                        logger.debug(f"✅ Dashboard task cancelled for user {mask_user_id(chat_id)}")
+                self.active_dashboards.pop(chat_id, None)
+            
+            self._active_monitoring.pop(chat_id, None)
+            
+            if chat_id in self._monitoring_drain_complete:
+                self._monitoring_drain_complete[chat_id].set()
+            
+            logger.info(f"✅ Monitoring drained for user {mask_user_id(chat_id)}")
+            return True
+            
+        except (asyncio.CancelledError, asyncio.TimeoutError, KeyError, ValueError, RuntimeError) as e:
+            logger.error(f"Error draining monitoring for user {mask_user_id(chat_id)}: {type(e).__name__}: {e}")
+            if chat_id in self._monitoring_drain_complete:
+                self._monitoring_drain_complete[chat_id].set()
+            return False
     
     async def _get_user_rate_limiter(self, user_id: int) -> RateLimiter:
         """Mendapatkan atau membuat rate limiter untuk user tertentu.
@@ -930,37 +1084,104 @@ class TradingBot:
         
         logger.info("All background and monitoring tasks stopped")
     
-    async def _cancel_all_monitoring_tasks(self, timeout: float = 10.0):
-        """Cancel all monitoring tasks with proper cleanup"""
+    async def _cancel_all_monitoring_tasks(self, timeout: float = 10.0, graceful: bool = True):
+        """Cancel all monitoring tasks with proper cleanup using graceful drain pattern.
+        
+        Graceful cancellation flow:
+        1. Set shutdown flag (_is_shutting_down = True) 
+        2. Wait for monitoring loops to finish current iteration naturally
+        3. Only force-cancel if timeout exceeded
+        4. Run per-user cleanup (signal cache, dashboards, etc)
+        
+        Args:
+            timeout: Maximum time to wait for graceful drain
+            graceful: If True, wait for loops to drain; if False, immediate cancel
+        """
         if not self.monitoring_tasks:
             logger.debug("No monitoring tasks to cancel")
             return
         
         self.monitoring = False
         task_count = len(self.monitoring_tasks)
-        logger.info(f"Cancelling {task_count} monitoring tasks...")
+        logger.info(f"🛑 Cancelling {task_count} monitoring task(s) (graceful={graceful})...")
         
-        tasks_to_cancel = []
-        for chat_id, task in list(self.monitoring_tasks.items()):
-            if task and not task.done():
-                task.cancel()
-                tasks_to_cancel.append(task)
-                logger.debug(f"Cancelled monitoring task for chat {mask_user_id(chat_id)}")
+        if graceful and not self._is_shutting_down:
+            self._is_shutting_down = True
+            logger.info("✅ Shutdown flag set - monitoring loops will exit after current iteration")
         
-        if tasks_to_cancel:
+        chat_ids = list(self.monitoring_tasks.keys())
+        for chat_id in chat_ids:
+            if chat_id not in self._monitoring_drain_complete:
+                self._monitoring_drain_complete[chat_id] = asyncio.Event()
+        
+        if graceful:
+            drained_count = 0
+            force_cancelled_count = 0
+            
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks_to_cancel, return_exceptions=True),
-                    timeout=timeout
-                )
-                logger.info(f"✅ All {len(tasks_to_cancel)} monitoring tasks cancelled successfully")
-            except asyncio.TimeoutError:
-                logger.warning(f"Some monitoring tasks did not complete within {timeout}s timeout")
+                events_to_wait = [self._monitoring_drain_complete.get(cid) for cid in chat_ids if self._monitoring_drain_complete.get(cid)]
+                if events_to_wait:
+                    wait_tasks = [asyncio.create_task(event.wait()) for event in events_to_wait]
+                    done, pending = await asyncio.wait(wait_tasks, timeout=timeout)
+                    drained_count = len(done)
+                    
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                    
+                    if pending:
+                        force_cancelled_count = len(pending)
+                        logger.warning(f"⚠️ {force_cancelled_count} task(s) did not drain in time, force-cancelling...")
+                        
+                        for chat_id, task in list(self.monitoring_tasks.items()):
+                            if task and not task.done():
+                                task.cancel()
+                                logger.debug(f"Force-cancelled monitoring task for chat {mask_user_id(chat_id)}")
+                        
+                        tasks_to_cancel = [t for t in self.monitoring_tasks.values() if t and not t.done()]
+                        if tasks_to_cancel:
+                            try:
+                                await asyncio.wait_for(
+                                    asyncio.gather(*tasks_to_cancel, return_exceptions=True),
+                                    timeout=5.0
+                                )
+                            except (asyncio.TimeoutError, asyncio.CancelledError):
+                                pass
+                
+                logger.info(f"✅ Monitoring tasks handled: {drained_count} drained gracefully, {force_cancelled_count} force-cancelled")
+                
             except asyncio.CancelledError:
-                logger.debug("Monitoring task cancellation was itself cancelled")
+                logger.info("Monitoring task cancellation was itself cancelled")
+                raise
+        else:
+            tasks_to_cancel = []
+            for chat_id, task in list(self.monitoring_tasks.items()):
+                if task and not task.done():
+                    task.cancel()
+                    tasks_to_cancel.append(task)
+                    logger.debug(f"Immediately cancelled monitoring task for chat {mask_user_id(chat_id)}")
+            
+            if tasks_to_cancel:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*tasks_to_cancel, return_exceptions=True),
+                        timeout=timeout
+                    )
+                    logger.info(f"✅ All {len(tasks_to_cancel)} monitoring tasks cancelled immediately")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Some monitoring tasks did not complete within {timeout}s timeout")
+                except asyncio.CancelledError:
+                    logger.debug("Monitoring task cancellation was itself cancelled")
         
         self.monitoring_tasks.clear()
         self.monitoring_chats.clear()
+        self._active_monitoring.clear()
+        self._monitoring_drain_complete.clear()
+        
+        logger.info("✅ Monitoring tasks cleanup completed")
     
     async def _cancel_all_dashboard_tasks(self, timeout: float = 5.0):
         """Cancel all dashboard update tasks"""
@@ -2683,13 +2904,28 @@ class TradingBot:
         return True, tick_queue
     
     async def _monitoring_loop(self, chat_id: int):
-        """Main monitoring loop - orchestrates signal detection dengan helper coroutines."""
+        """Main monitoring loop - orchestrates signal detection dengan helper coroutines.
+        
+        Implements graceful shutdown pattern:
+        - Checks _is_shutting_down flag at each iteration
+        - Finishes current signal processing before exiting (drain pattern)
+        - Calls _drain_user_monitoring() for proper per-chat cleanup
+        - Signals drain completion for shutdown coordination
+        """
         tick_queue = await self.market_data.subscribe_ticks(f'telegram_bot_{chat_id}')
         logger.debug(f"Monitoring dimulai untuk user {mask_user_id(chat_id)}")
         
         ctx = MonitoringContext(chat_id=chat_id)
         logger.debug(f"Created new MonitoringContext for chat {mask_user_id(chat_id)}")
         ctx.last_signal_check = datetime.now() - timedelta(seconds=self.config.SIGNAL_COOLDOWN_SECONDS)
+        
+        self._active_monitoring[chat_id] = {
+            'started_at': datetime.now(),
+            'context': ctx,
+            'status': 'running'
+        }
+        
+        exit_reason = "normal"
         
         try:
             while self.monitoring and chat_id in self.monitoring_chats and not self._is_shutting_down:
@@ -2699,6 +2935,9 @@ class TradingBot:
                     
                     tick = await asyncio.wait_for(tick_queue.get(), timeout=30.0)
                     ctx.reset_timeouts()
+                    
+                    if self._is_shutting_down:
+                        logger.info(f"🛑 Shutdown detected mid-iteration for user {mask_user_id(chat_id)}, finishing current tick...")
                     
                     now = datetime.now()
                     time_since_last_tick = (now - ctx.last_tick_process_time).total_seconds()
@@ -2726,51 +2965,86 @@ class TradingBot:
                     await self._process_signal_detection(ctx, df_m1, spread, now)
                     
                 except asyncio.TimeoutError:
+                    if self._is_shutting_down:
+                        logger.info(f"🛑 Timeout during shutdown for user {mask_user_id(chat_id)}, exiting gracefully...")
+                        exit_reason = "shutdown_timeout"
+                        break
                     should_continue, tick_queue = await self._handle_tick_timeout(ctx, tick_queue)
                     if should_continue:
                         continue
                 except asyncio.CancelledError:
                     logger.info(f"Monitoring loop cancelled for user {mask_user_id(chat_id)}")
+                    exit_reason = "cancelled"
                     break
                 except ConnectionError as e:
                     logger.warning(f"Connection error dalam monitoring loop: {e}, retry in {ctx.retry_delay}s")
+                    if self._is_shutting_down:
+                        exit_reason = "shutdown_connection_error"
+                        break
                     await asyncio.sleep(ctx.retry_delay)
                     ctx.increase_retry_delay()
                 except Forbidden as e:
                     logger.warning(f"Forbidden error in monitoring loop for {mask_user_id(chat_id)}: {e}")
                     await self._handle_forbidden_error(chat_id, e)
+                    exit_reason = "forbidden"
                     break
                 except ChatMigrated as e:
                     new_chat_id = await self._handle_chat_migrated(chat_id, e)
                     if new_chat_id:
                         logger.info(f"Monitoring loop: chat migrated {mask_user_id(chat_id)} -> {mask_user_id(new_chat_id)}")
+                    exit_reason = "chat_migrated"
                     break
                 except Conflict as e:
                     await self._handle_conflict_error(e)
+                    exit_reason = "conflict"
                     break
                 except InvalidToken as e:
                     await self._handle_unauthorized_error(e)
+                    exit_reason = "invalid_token"
                     break
                 except BadRequest as e:
                     await self._handle_bad_request(chat_id, e, context="monitoring_loop")
+                    if self._is_shutting_down:
+                        exit_reason = "shutdown_bad_request"
+                        break
                     await asyncio.sleep(ctx.retry_delay)
                     ctx.increase_retry_delay()
                 except (TimedOut, NetworkError) as e:
                     logger.warning(f"Network/Timeout error in monitoring loop for {mask_user_id(chat_id)}: {e}")
+                    if self._is_shutting_down:
+                        exit_reason = "shutdown_network_error"
+                        break
                     await asyncio.sleep(ctx.retry_delay)
                     ctx.increase_retry_delay()
                 except (ValueError, TypeError, KeyError, AttributeError, RuntimeError) as e:
                     logger.error(f"Error processing tick dalam monitoring loop: {type(e).__name__}: {e}")
+                    if self._is_shutting_down:
+                        exit_reason = "shutdown_processing_error"
+                        break
                     await asyncio.sleep(ctx.retry_delay)
                     ctx.increase_retry_delay()
+            
+            if self._is_shutting_down and exit_reason == "normal":
+                exit_reason = "shutdown_graceful"
                     
         finally:
+            if chat_id in self._active_monitoring:
+                self._active_monitoring[chat_id]['status'] = 'draining'
+            
             await self.market_data.unsubscribe_ticks(f'telegram_bot_{chat_id}')
             
             if self.monitoring_tasks.pop(chat_id, None):
                 logger.debug(f"Monitoring task removed from tracking for chat {mask_user_id(chat_id)}")
             
-            logger.debug(f"Monitoring stopped for user {mask_user_id(chat_id)}")
+            if self._is_shutting_down:
+                await self._drain_user_monitoring(chat_id, reason=exit_reason)
+            else:
+                self._active_monitoring.pop(chat_id, None)
+            
+            if chat_id in self._monitoring_drain_complete:
+                self._monitoring_drain_complete[chat_id].set()
+            
+            logger.info(f"✅ Monitoring drained for user {mask_user_id(chat_id)} (reason: {exit_reason})")
     
     @retry_on_telegram_error(max_retries=3, initial_delay=1.0)
     async def _send_telegram_message(self, chat_id: int, text: str, parse_mode: str = 'Markdown', timeout: float = 30.0):

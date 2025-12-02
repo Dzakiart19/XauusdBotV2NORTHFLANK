@@ -753,6 +753,11 @@ class MarketDataClient:
         self._loading_from_db = False
         self._loaded_from_db = False
         self._shutdown_in_progress = False
+        self._is_shutting_down = False
+        
+        self._active_ws_tasks: Dict[str, asyncio.Task] = {}
+        self._ws_tasks_lock = asyncio.Lock()
+        self._ws_task_cancel_timeout = 5.0
         
         self._market_closed = False
         self._market_closed_detected_at = None
@@ -783,6 +788,7 @@ class MarketDataClient:
         logger.info("✅ State machine koneksi diinisialisasi")
         logger.info("✅ Mekanisme candle close event diinisialisasi")
         logger.info("✅ H1 candle close callback registered untuk immediate DB persistence")
+        logger.info("✅ WebSocket task tracking diinisialisasi untuk graceful shutdown")
     
     @property
     def current_bid(self) -> Optional[float]:
@@ -1452,6 +1458,192 @@ class MarketDataClient:
             if subscriber_names:
                 logger.info(f"Unsubscribed all {len(subscriber_names)} subscribers during shutdown")
     
+    async def _register_ws_task(self, name: str, task: asyncio.Task) -> None:
+        """Register an active WebSocket task for tracking
+        
+        Args:
+            name: Task identifier (e.g., 'heartbeat', 'data_monitor', 'stale_cleanup', 'builder_health')
+            task: The asyncio.Task to track
+        """
+        async with self._ws_tasks_lock:
+            if name in self._active_ws_tasks:
+                old_task = self._active_ws_tasks[name]
+                if not old_task.done():
+                    logger.warning(f"Replacing existing task '{name}' - cancelling old task")
+                    old_task.cancel()
+                    try:
+                        await asyncio.wait_for(old_task, timeout=2.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+            
+            self._active_ws_tasks[name] = task
+            logger.debug(f"✅ WebSocket task '{name}' registered for tracking")
+    
+    async def _unregister_ws_task(self, name: str) -> None:
+        """Unregister a WebSocket task after it's completed or cancelled
+        
+        Args:
+            name: Task identifier to unregister
+        """
+        async with self._ws_tasks_lock:
+            if name in self._active_ws_tasks:
+                del self._active_ws_tasks[name]
+                logger.debug(f"WebSocket task '{name}' unregistered")
+    
+    async def _cleanup_old_ws_tasks(self) -> int:
+        """Cleanup old/zombie WebSocket tasks during reconnection
+        
+        Called before starting new connection to ensure no zombie tasks remain.
+        
+        Returns:
+            Number of tasks cleaned up
+        """
+        cleaned = 0
+        async with self._ws_tasks_lock:
+            tasks_to_cleanup = list(self._active_ws_tasks.items())
+        
+        if not tasks_to_cleanup:
+            return 0
+        
+        logger.info(f"🧹 Cleaning up {len(tasks_to_cleanup)} old WebSocket tasks before reconnection...")
+        
+        for name, task in tasks_to_cleanup:
+            try:
+                if task.done():
+                    await self._unregister_ws_task(name)
+                    cleaned += 1
+                    logger.debug(f"Removed already-done task '{name}'")
+                    continue
+                
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=self._ws_task_cancel_timeout)
+                    logger.debug(f"Task '{name}' cancelled successfully")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Task '{name}' did not cancel within {self._ws_task_cancel_timeout}s")
+                except asyncio.CancelledError:
+                    pass
+                
+                await self._unregister_ws_task(name)
+                cleaned += 1
+                
+            except Exception as e:
+                logger.error(f"Error cleaning up task '{name}': {e}")
+        
+        if cleaned > 0:
+            logger.info(f"✅ Cleaned up {cleaned} old WebSocket tasks")
+        
+        return cleaned
+    
+    async def _shutdown_websocket_tasks(self, timeout_per_task: float = 5.0) -> Dict[str, str]:
+        """Gracefully shutdown all active WebSocket tasks with proper ordering
+        
+        Shutdown order (receiver first, then sender):
+        1. data_monitor - Stop monitoring first
+        2. stale_cleanup - Stop cleanup
+        3. builder_health - Stop health check
+        4. heartbeat - Stop heartbeat last (may need to send final ping)
+        
+        Args:
+            timeout_per_task: Timeout in seconds for each task cancellation
+            
+        Returns:
+            Dict mapping task name to final status ('completed', 'cancelled', 'timeout', 'error')
+        """
+        results: Dict[str, str] = {}
+        
+        shutdown_order = ['data_monitor', 'stale_cleanup', 'builder_health', 'heartbeat']
+        
+        async with self._ws_tasks_lock:
+            tasks_snapshot = dict(self._active_ws_tasks)
+        
+        if not tasks_snapshot:
+            logger.info("No active WebSocket tasks to shutdown")
+            return results
+        
+        logger.info(f"🔄 Shutting down {len(tasks_snapshot)} WebSocket tasks...")
+        
+        ordered_tasks = []
+        for name in shutdown_order:
+            if name in tasks_snapshot:
+                ordered_tasks.append((name, tasks_snapshot[name]))
+        
+        for name, task in tasks_snapshot.items():
+            if name not in shutdown_order:
+                ordered_tasks.append((name, task))
+        
+        for name, task in ordered_tasks:
+            try:
+                if task.done():
+                    if task.cancelled():
+                        results[name] = 'already_cancelled'
+                    elif task.exception():
+                        results[name] = f'already_failed: {task.exception()}'
+                    else:
+                        results[name] = 'already_completed'
+                    logger.debug(f"Task '{name}' already done: {results[name]}")
+                    continue
+                
+                logger.debug(f"Cancelling task '{name}'...")
+                task.cancel()
+                
+                try:
+                    await asyncio.wait_for(task, timeout=timeout_per_task)
+                    results[name] = 'cancelled'
+                    logger.info(f"✅ Task '{name}' cancelled gracefully")
+                except asyncio.TimeoutError:
+                    results[name] = 'timeout'
+                    logger.warning(f"⚠️ Task '{name}' did not cancel within {timeout_per_task}s")
+                except asyncio.CancelledError:
+                    results[name] = 'cancelled'
+                    logger.debug(f"Task '{name}' cancelled via CancelledError")
+                    
+            except Exception as e:
+                results[name] = f'error: {e}'
+                logger.error(f"❌ Error shutting down task '{name}': {e}")
+        
+        async with self._ws_tasks_lock:
+            self._active_ws_tasks.clear()
+        
+        completed_count = sum(1 for s in results.values() if 'cancelled' in s or 'completed' in s)
+        logger.info(
+            f"🏁 WebSocket task shutdown complete: "
+            f"{completed_count}/{len(results)} tasks cleanly terminated"
+        )
+        
+        for name, status in results.items():
+            logger.debug(f"  - {name}: {status}")
+        
+        return results
+    
+    def prepare_for_shutdown(self) -> None:
+        """Prepare MarketDataClient for shutdown - call this from main.py before shutdown
+        
+        This method:
+        1. Sets _is_shutting_down flag to disable reconnection attempts
+        2. Sets _shutdown_in_progress flag
+        3. Signals that no new subscriptions should be accepted
+        
+        After calling this, the client will:
+        - Not attempt reconnection on disconnect
+        - Reject new tick subscriptions
+        - Allow graceful completion of current operations
+        """
+        logger.info("🛑 MarketDataClient preparing for shutdown...")
+        self._is_shutting_down = True
+        self._shutdown_in_progress = True
+        
+        logger.info("✅ Shutdown flags set - reconnection disabled, new subscriptions blocked")
+        logger.info(f"Active WebSocket tasks: {list(self._active_ws_tasks.keys())}")
+    
+    def is_shutting_down(self) -> bool:
+        """Check if shutdown is in progress
+        
+        Returns:
+            True if shutdown has been initiated
+        """
+        return self._is_shutting_down
+    
     async def _broadcast_tick(self, tick_data: Dict):
         """Broadcast tick to subscribers with NaN validation and health metrics tracking"""
         if not self.subscribers:
@@ -1760,30 +1952,28 @@ class MarketDataClient:
                         stale_cleanup_task = asyncio.create_task(self._periodic_stale_cleanup())
                         builder_health_task = asyncio.create_task(self._monitor_builder_health())
                         
+                        await self._register_ws_task('heartbeat', heartbeat_task)
+                        await self._register_ws_task('data_monitor', data_monitor_task)
+                        await self._register_ws_task('stale_cleanup', stale_cleanup_task)
+                        await self._register_ws_task('builder_health', builder_health_task)
+                        
+                        logger.info(f"📡 WebSocket tasks started and tracked: {list(self._active_ws_tasks.keys())}")
+                        
                         try:
                             async for message in websocket:
+                                if self._is_shutting_down:
+                                    logger.info("🛑 Shutdown detected, stopping message processing")
+                                    break
                                 await self._on_message(message)
                         finally:
-                            heartbeat_task.cancel()
-                            data_monitor_task.cancel()
-                            stale_cleanup_task.cancel()
-                            builder_health_task.cancel()
-                            try:
-                                await heartbeat_task
-                            except asyncio.CancelledError:
-                                pass
-                            try:
-                                await data_monitor_task
-                            except asyncio.CancelledError:
-                                pass
-                            try:
-                                await stale_cleanup_task
-                            except asyncio.CancelledError:
-                                pass
-                            try:
-                                await builder_health_task
-                            except asyncio.CancelledError:
-                                pass
+                            logger.info("🔄 WebSocket message loop ended, cleaning up tasks...")
+                            
+                            task_cleanup_results = await self._shutdown_websocket_tasks(
+                                timeout_per_task=self._ws_task_cancel_timeout
+                            )
+                            
+                            for name, status in task_cleanup_results.items():
+                                logger.debug(f"Task '{name}' final status: {status}")
                                 
                 except asyncio.TimeoutError:
                     logger.error(f"WebSocket connection timeout ({self.ws_timeout}s)")
@@ -1915,7 +2105,12 @@ class MarketDataClient:
         if not self.running:
             return
         
-        # Jika market tutup, gunakan backoff yang lebih panjang tapi tidak blocking
+        if self._is_shutting_down:
+            logger.info("🛑 Shutdown in progress - skipping reconnection")
+            return
+        
+        await self._cleanup_old_ws_tasks()
+        
         if self._market_closed:
             # Gunakan exponential backoff yang lebih panjang untuk market closed
             wait_time = min(300, self.reconnect_delay * 4)  # Max 5 menit
@@ -2807,35 +3002,99 @@ class MarketDataClient:
             return 0
     
     async def shutdown(self):
-        """Graceful shutdown with proper cleanup of all resources"""
-        logger.info("Initiating MarketDataClient shutdown...")
-        self._shutdown_in_progress = True
+        """Graceful shutdown with proper cleanup of all resources
+        
+        Shutdown sequence:
+        1. Set shutdown flags to disable reconnection
+        2. Stop running loops
+        3. Shutdown all WebSocket tasks with proper awaiting
+        4. Unsubscribe all subscribers
+        5. Close WebSocket connection
+        6. Set final disconnected state
+        """
+        logger.info("🛑 Initiating MarketDataClient shutdown...")
+        
+        self.prepare_for_shutdown()
         
         self.running = False
         self.use_simulator = False
         
+        logger.info("🔄 Shutting down WebSocket tasks...")
+        task_results = await self._shutdown_websocket_tasks(timeout_per_task=self._ws_task_cancel_timeout)
+        
+        completed_count = sum(1 for s in task_results.values() if 'cancelled' in s or 'completed' in s)
+        logger.info(f"📊 WebSocket tasks shutdown: {completed_count}/{len(task_results)} cleanly terminated")
+        
+        logger.info("🔄 Unsubscribing all subscribers...")
         await self._unsubscribe_all()
         
         self.connected = False
         if self.ws:
             try:
-                await self.ws.close()
-                logger.debug("WebSocket closed during shutdown")
+                await asyncio.wait_for(self.ws.close(), timeout=5.0)
+                logger.info("✅ WebSocket closed successfully")
+            except asyncio.TimeoutError:
+                logger.warning("⚠️ WebSocket close timeout - forcing close")
             except Exception as e:
                 logger.debug(f"Error closing WebSocket during shutdown: {e}")
         
         await self._set_connection_state(ConnectionState.DISCONNECTED)
         
-        logger.info("MarketDataClient shutdown complete")
+        logger.info("✅ MarketDataClient shutdown complete")
+    
+    async def disconnect_async(self):
+        """Async disconnect with proper cleanup - prefer this over sync disconnect()
+        
+        This method properly awaits all WebSocket tasks before closing.
+        """
+        logger.info("🔌 Disconnecting MarketDataClient (async)...")
+        
+        self._is_shutting_down = True
+        self.running = False
+        self.use_simulator = False
+        
+        task_results = await self._shutdown_websocket_tasks(timeout_per_task=self._ws_task_cancel_timeout)
+        logger.debug(f"Task cleanup results: {task_results}")
+        
+        self.connected = False
+        if self.ws:
+            try:
+                await asyncio.wait_for(self.ws.close(), timeout=5.0)
+                logger.info("✅ WebSocket closed")
+            except asyncio.TimeoutError:
+                logger.warning("⚠️ WebSocket close timeout")
+            except Exception as e:
+                logger.debug(f"Error closing WebSocket: {e}")
+        
+        await self._set_connection_state(ConnectionState.DISCONNECTED)
+        logger.info("✅ MarketDataClient disconnected (async)")
     
     def disconnect(self):
-        """Synchronous disconnect - use shutdown() for async cleanup"""
+        """Synchronous disconnect - schedules async cleanup
+        
+        Note: For proper cleanup, use disconnect_async() or shutdown() instead.
+        This method schedules async cleanup but may not fully await all tasks.
+        """
+        logger.info("🔌 Disconnecting MarketDataClient (sync)...")
+        
+        self._is_shutting_down = True
         self.running = False
         self.use_simulator = False
         self.connected = False
-        if self.ws:
-            asyncio.create_task(self.ws.close())
-        logger.info("MarketData client disconnected")
+        
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._shutdown_websocket_tasks(timeout_per_task=2.0))
+            if self.ws:
+                loop.create_task(self.ws.close())
+        except RuntimeError:
+            if self.ws:
+                try:
+                    asyncio.run(self.ws.close())
+                except Exception as e:
+                    logger.debug(f"Error closing WebSocket in sync disconnect: {e}")
+        
+        logger.info("MarketData client disconnect initiated (async cleanup scheduled)")
     
     def is_connected(self) -> bool:
         """Check if WebSocket is connected and subscribed to data feed"""
