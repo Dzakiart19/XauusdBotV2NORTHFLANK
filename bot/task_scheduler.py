@@ -3,6 +3,7 @@ import gc
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
+from enum import Enum
 from typing import Callable, Optional, Dict, List, Set, Any, Tuple
 import pytz
 from bot.logger import setup_logger
@@ -14,6 +15,48 @@ logger = setup_logger('TaskScheduler')
 class TaskSchedulerError(Exception):
     """Exception untuk error pada task scheduler"""
     pass
+
+
+class LifecycleState(Enum):
+    """
+    State enum untuk AsyncLifecycleController pattern.
+    
+    State Machine Transitions:
+    - IDLE -> STARTING (via start())
+    - STARTING -> RUNNING (setelah start berhasil)
+    - RUNNING -> STOPPING (via stop())
+    - STOPPING -> IDLE (setelah stop berhasil)
+    - STOPPING -> FAILED_STOP (jika cleanup gagal)
+    - FAILED_STOP -> IDLE (via reset_failed_stop())
+    """
+    IDLE = "idle"               # Belum pernah start atau sudah stop sukses
+    STARTING = "starting"       # Sedang dalam proses start
+    RUNNING = "running"         # Berjalan normal
+    STOPPING = "stopping"       # Sedang dalam proses stop
+    FAILED_STOP = "failed_stop" # Stop gagal, perlu reset manual
+
+
+@dataclass
+class CleanupResult:
+    """
+    Structured result dari cleanup operation.
+    
+    Digunakan untuk tracking cleanup status dan error details.
+    """
+    success: bool
+    operation: str
+    items_cleaned: int = 0
+    error_message: Optional[str] = None
+    duration_ms: float = 0.0
+    
+    def to_dict(self) -> Dict:
+        return {
+            'success': self.success,
+            'operation': self.operation,
+            'items_cleaned': self.items_cleaned,
+            'error_message': self.error_message,
+            'duration_ms': round(self.duration_ms, 2)
+        }
 
 
 # Timeout constants (dalam detik)
@@ -714,11 +757,12 @@ class TaskScheduler:
             'auto_disabled_tasks': 0,
             'last_cleanup_time': None
         }
-        self._stop_complete: bool = False
-        self._stop_in_progress: bool = False
-        self._has_initialized: bool = False
+        self._state: LifecycleState = LifecycleState.IDLE
         self._lifecycle_lock = asyncio.Lock()
-        logger.info(f"Task scheduler initialized with alert system (cleanup interval: {cleanup_interval}s)")
+        self._cleanup_results: List[CleanupResult] = []
+        self._state_transition_history: deque = deque(maxlen=50)
+        self._log_state_transition(None, LifecycleState.IDLE, "Scheduler initialized")
+        logger.info(f"Task scheduler initialized with alert system (cleanup interval: {cleanup_interval}s, state: {self._state.value})")
     
     def _on_task_done(self, task: asyncio.Task, task_name: str) -> None:
         """Callback invoked when a tracked task completes.
@@ -746,6 +790,151 @@ class TaskScheduler:
             logger.error(f"Runtime error in task done callback for {task_name}: {e}")
         except Exception as e:
             logger.error(f"Error in task done callback for {task_name}: {e}")
+    
+    def _log_state_transition(
+        self,
+        from_state: Optional[LifecycleState],
+        to_state: LifecycleState,
+        reason: str = ""
+    ) -> None:
+        """
+        Log state transition untuk telemetry dan debugging.
+        
+        Args:
+            from_state: State sebelumnya (None untuk initial)
+            to_state: State tujuan
+            reason: Alasan transisi
+        """
+        timestamp = datetime.now(pytz.timezone('Asia/Jakarta'))
+        transition_record = {
+            'timestamp': timestamp.isoformat(),
+            'from_state': from_state.value if from_state else None,
+            'to_state': to_state.value,
+            'reason': reason
+        }
+        self._state_transition_history.append(transition_record)
+        
+        from_str = from_state.value if from_state else "INIT"
+        logger.info(f"[LIFECYCLE] State transition: {from_str} -> {to_state.value} ({reason})")
+    
+    def _transition_state(self, to_state: LifecycleState, reason: str = "") -> None:
+        """
+        Transisi ke state baru dengan logging.
+        
+        Args:
+            to_state: State tujuan
+            reason: Alasan transisi
+        """
+        from_state = self._state
+        self._state = to_state
+        self._log_state_transition(from_state, to_state, reason)
+    
+    def get_lifecycle_state(self) -> LifecycleState:
+        """Get current lifecycle state."""
+        return self._state
+    
+    def get_state_transition_history(self, limit: Optional[int] = None) -> List[Dict]:
+        """
+        Get state transition history untuk telemetry.
+        
+        Args:
+            limit: Maksimum jumlah record (None untuk semua)
+            
+        Returns:
+            List of transition records
+        """
+        history = list(self._state_transition_history)
+        if limit is not None:
+            history = history[-limit:]
+        return history
+    
+    def get_cleanup_results(self) -> List[Dict]:
+        """Get structured cleanup results dari stop terakhir."""
+        return [result.to_dict() for result in self._cleanup_results]
+    
+    async def reset_failed_stop(self) -> bool:
+        """
+        Reset dari FAILED_STOP state ke IDLE untuk recovery manual.
+        
+        Hanya bisa dipanggil jika current state adalah FAILED_STOP.
+        Method ini akan membersihkan semua resources yang tersisa
+        dan melakukan emergency cleanup.
+        
+        Returns:
+            bool: True jika berhasil reset, False jika state bukan FAILED_STOP
+        """
+        async with self._lifecycle_lock:
+            if self._state != LifecycleState.FAILED_STOP:
+                logger.warning(
+                    f"reset_failed_stop() dipanggil tapi state bukan FAILED_STOP "
+                    f"(current: {self._state.value})"
+                )
+                return False
+            
+            logger.info("=" * 50)
+            logger.info("RESET FAILED STOP - Manual Recovery")
+            logger.info("=" * 50)
+            
+            try:
+                self.running = False
+                self._shutdown_flag.set()
+                
+                await self._emergency_stop_cleanup()
+                
+                self._shutdown_flag.clear()
+                self._completion_event.clear()
+                self._cleanup_results.clear()
+                
+                gc.collect()
+                
+                self._transition_state(LifecycleState.IDLE, "Manual reset from FAILED_STOP")
+                
+                logger.info("✅ Reset berhasil, scheduler siap untuk start")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error saat reset_failed_stop: {e}")
+                return False
+    
+    def can_start(self) -> Tuple[bool, str]:
+        """
+        Check apakah scheduler bisa di-start.
+        
+        Returns:
+            Tuple (can_start, reason)
+        """
+        if self._state == LifecycleState.IDLE:
+            return True, "Ready to start"
+        elif self._state == LifecycleState.RUNNING:
+            return False, "Scheduler sudah berjalan"
+        elif self._state == LifecycleState.STARTING:
+            return False, "Scheduler sedang dalam proses start"
+        elif self._state == LifecycleState.STOPPING:
+            return False, "Scheduler sedang dalam proses stop"
+        elif self._state == LifecycleState.FAILED_STOP:
+            return False, "Stop sebelumnya gagal, panggil reset_failed_stop() terlebih dahulu"
+        else:
+            return False, f"Unknown state: {self._state.value}"
+    
+    def can_stop(self) -> Tuple[bool, str]:
+        """
+        Check apakah scheduler bisa di-stop.
+        
+        Returns:
+            Tuple (can_stop, reason)
+        """
+        if self._state == LifecycleState.RUNNING:
+            return True, "Ready to stop"
+        elif self._state == LifecycleState.IDLE:
+            return False, "Scheduler belum berjalan"
+        elif self._state == LifecycleState.STARTING:
+            return False, "Scheduler sedang dalam proses start"
+        elif self._state == LifecycleState.STOPPING:
+            return False, "Scheduler sudah dalam proses stop"
+        elif self._state == LifecycleState.FAILED_STOP:
+            return False, "Scheduler dalam state FAILED_STOP"
+        else:
+            return False, f"Unknown state: {self._state.value}"
     
     def add_task(self, name: str, func: Callable, interval: Optional[int] = None,
                 schedule_time: Optional[time] = None, timezone: str = 'Asia/Jakarta'):
@@ -1137,6 +1326,7 @@ class TaskScheduler:
         
         return {
             'running': self.running,
+            'lifecycle_state': self._state.value,
             'total_tasks': len(tasks),
             'enabled_tasks': len(enabled_tasks),
             'executing_tasks': len(executing_tasks),
@@ -1605,133 +1795,118 @@ class TaskScheduler:
         Menggunakan lifecycle lock untuk serialize start/stop transitions
         dan mencegah race condition dengan concurrent stop.
         
-        Start conditions:
-        - First start: _has_initialized == False
-        - Restart: _has_initialized == True AND _stop_complete == True
-        """
-        lock_acquired = await _acquire_lock_with_timeout(self._lifecycle_lock, LOCK_ACQUIRE_TIMEOUT)
-        if not lock_acquired:
-            logger.warning("Gagal acquire lifecycle lock untuk start scheduler")
-            return
+        State Machine Transition:
+        - IDLE -> STARTING -> RUNNING (sukses)
+        - IDLE -> STARTING -> IDLE (gagal)
         
-        try:
-            if self._stop_in_progress:
-                logger.warning("Stop sedang dalam proses, tidak bisa start scheduler sekarang")
+        Transition Guard:
+        - start() hanya boleh dari state IDLE
+        """
+        async with self._lifecycle_lock:
+            can_start, reason = self.can_start()
+            if not can_start:
+                logger.warning(f"Cannot start scheduler: {reason} (state: {self._state.value})")
                 return
             
-            if self.running:
-                logger.warning("Scheduler sudah berjalan")
-                return
+            self._transition_state(LifecycleState.STARTING, "start() called")
             
-            if self._has_initialized and not self._stop_complete:
-                logger.warning("Stop sebelumnya tidak sukses, tidak bisa restart scheduler")
-                return
-            
-            self._has_initialized = True
-            self._shutdown_flag.clear()
-            self._completion_event.clear()
-            self.running = True
-            
-            self.scheduler_task = asyncio.create_task(self._scheduler_loop())
-            self.scheduler_task.set_name("scheduler_loop")
-            
-            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-            self._cleanup_task.set_name("cleanup_loop")
-            
-            self._stop_complete = False
-            logger.info("Task scheduler dimulai dengan cleanup loop")
-        except Exception as e:
-            logger.error(f"Error saat memulai scheduler: {e}")
-            self.running = False
-            raise
-        finally:
-            self._lifecycle_lock.release()
+            try:
+                self._shutdown_flag.clear()
+                self._completion_event.clear()
+                self._cleanup_results.clear()
+                self.running = True
+                
+                self.scheduler_task = asyncio.create_task(self._scheduler_loop())
+                self.scheduler_task.set_name("scheduler_loop")
+                
+                self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+                self._cleanup_task.set_name("cleanup_loop")
+                
+                self._transition_state(LifecycleState.RUNNING, "Scheduler started successfully")
+                logger.info("Task scheduler dimulai dengan cleanup loop")
+                
+            except Exception as e:
+                logger.error(f"Error saat memulai scheduler: {e}")
+                self.running = False
+                self._transition_state(LifecycleState.IDLE, f"Start failed: {e}")
+                raise
     
     async def stop(self, graceful_timeout: float = SCHEDULER_STOP_TIMEOUT):
         """
         Stop scheduler dengan graceful shutdown dan robust exception handling.
         
         Menggunakan lifecycle lock untuk serialize start/stop transitions.
-        Semua operasi cleanup dibungkus dengan try-except-finally untuk memastikan
-        cleanup selalu complete meskipun ada exception.
+        Lock di-hold sampai semua cleanup awaits selesai.
+        
+        State Machine Transition:
+        - RUNNING -> STOPPING -> IDLE (sukses)
+        - RUNNING -> STOPPING -> FAILED_STOP (gagal, perlu reset manual)
+        
+        Transition Guard:
+        - stop() hanya boleh dari state RUNNING
         
         Args:
             graceful_timeout: Waktu maksimum untuk menunggu graceful shutdown
         """
-        lock_acquired = await _acquire_lock_with_timeout(self._lifecycle_lock, LOCK_ACQUIRE_TIMEOUT)
-        if not lock_acquired:
-            logger.warning("Gagal acquire lifecycle lock untuk stop scheduler")
-            return
-        
-        try:
-            if self._stop_complete:
-                logger.debug("Stop sudah selesai sebelumnya, melewati panggilan berulang")
-                return
-            if self._stop_in_progress:
-                logger.debug("Stop sudah dalam proses, melewati panggilan berulang")
+        async with self._lifecycle_lock:
+            can_stop, reason = self.can_stop()
+            if not can_stop:
+                logger.debug(f"Cannot stop scheduler: {reason} (state: {self._state.value})")
                 return
             
-            self._stop_in_progress = True
-            stop_success = False
+            self._transition_state(LifecycleState.STOPPING, "stop() called")
+            self._cleanup_results.clear()
+            
+            cleanup_failed = False
+            
             logger.info("=" * 50)
             logger.info("MENGHENTIKAN TASK SCHEDULER")
             logger.info(f"Active task executions: {len(self._active_task_executions)}")
             logger.info(f"Total tracked tasks: {len(self._all_created_tasks)}")
             logger.info("=" * 50)
             
-            if not self.running:
-                logger.warning("Scheduler tidak berjalan")
-                return
-            
-            # Set shutdown flag terlebih dahulu
             self._shutdown_flag.set()
             self.running = False
             
             logger.info("Shutdown flag di-set, menunggu scheduler loop berhenti...")
             
-            # 1. Hentikan cleanup loop dengan timeout dan fallback
-            try:
-                await self._stop_cleanup_loop()
-            except Exception as e:
-                logger.error(f"Error saat menghentikan cleanup loop: {e}")
+            result = await self._stop_cleanup_loop_with_result()
+            self._cleanup_results.append(result)
+            if not result.success:
+                cleanup_failed = True
             
-            # 2. Hentikan scheduler loop dengan timeout dan fallback
-            try:
-                await self._stop_scheduler_loop()
-            except Exception as e:
-                logger.error(f"Error saat menghentikan scheduler loop: {e}")
+            result = await self._stop_scheduler_loop_with_result()
+            self._cleanup_results.append(result)
+            if not result.success:
+                cleanup_failed = True
             
-            # 3. Cancel individual task executions dengan proper error handling
-            try:
-                await self._cancel_individual_tasks()
-            except Exception as e:
-                logger.error(f"Error saat cancel individual tasks: {e}")
+            result = await self._cancel_individual_tasks_with_result()
+            self._cleanup_results.append(result)
+            if not result.success:
+                cleanup_failed = True
             
-            # 4. Cancel active task executions dengan timeout
-            try:
-                await self._cancel_active_executions(graceful_timeout)
-            except Exception as e:
-                logger.error(f"Error saat cancel active executions: {e}")
+            result = await self._cancel_active_executions_with_result(graceful_timeout)
+            self._cleanup_results.append(result)
+            if not result.success:
+                cleanup_failed = True
             
-            # 5. Final cleanup dengan fallback
-            try:
-                await self._final_cleanup()
-            except Exception as e:
-                logger.error(f"Error saat final cleanup: {e}")
-                # Emergency cleanup jika final cleanup gagal
+            result = await self._final_cleanup_with_result()
+            self._cleanup_results.append(result)
+            if not result.success:
+                cleanup_failed = True
                 await self._emergency_stop_cleanup()
             
-            # Log hasil akhir
             self._log_stop_summary()
-            stop_success = True
-        finally:
-            if stop_success:
-                self._stop_complete = True
-                self._stop_in_progress = False
-                logger.debug("Stop complete flag diset ke True, _stop_in_progress cleared")
+            
+            if cleanup_failed:
+                self._transition_state(
+                    LifecycleState.FAILED_STOP,
+                    "Stop completed with cleanup failures - call reset_failed_stop() to recover"
+                )
+                logger.warning("⚠️ Stop selesai dengan error cleanup - panggil reset_failed_stop() untuk recovery")
             else:
-                logger.warning("Stop gagal, _stop_in_progress tetap True - restart memerlukan process restart")
-            self._lifecycle_lock.release()
+                self._transition_state(LifecycleState.IDLE, "Stop completed successfully")
+                logger.info("✅ Scheduler berhasil dihentikan")
     
     async def _stop_cleanup_loop(self) -> None:
         """Hentikan cleanup loop dengan timeout protection."""
@@ -1747,6 +1922,287 @@ class TaskScheduler:
                 logger.info("✅ Cleanup loop dibatalkan")
             except Exception as e:
                 logger.error(f"Error saat menghentikan cleanup loop: {e}")
+    
+    async def _stop_cleanup_loop_with_result(self) -> CleanupResult:
+        """Hentikan cleanup loop dengan structured result tracking."""
+        start_time = datetime.now(pytz.timezone('Asia/Jakarta'))
+        
+        if not self._cleanup_task or self._cleanup_task.done():
+            return CleanupResult(
+                success=True,
+                operation="stop_cleanup_loop",
+                items_cleaned=0,
+                duration_ms=0.0
+            )
+        
+        try:
+            logger.info("Membatalkan cleanup loop task...")
+            self._cleanup_task.cancel()
+            await asyncio.wait_for(self._cleanup_task, timeout=TASK_CANCEL_TIMEOUT)
+            logger.info("✅ Cleanup loop berhenti dengan graceful")
+            
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=True,
+                operation="stop_cleanup_loop",
+                items_cleaned=1,
+                duration_ms=duration_ms
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Pembatalan cleanup loop timeout setelah {TASK_CANCEL_TIMEOUT}s")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=False,
+                operation="stop_cleanup_loop",
+                error_message=f"Timeout setelah {TASK_CANCEL_TIMEOUT}s",
+                duration_ms=duration_ms
+            )
+        except asyncio.CancelledError:
+            logger.info("✅ Cleanup loop dibatalkan")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=True,
+                operation="stop_cleanup_loop",
+                items_cleaned=1,
+                duration_ms=duration_ms
+            )
+        except Exception as e:
+            logger.error(f"Error saat menghentikan cleanup loop: {e}")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=False,
+                operation="stop_cleanup_loop",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+    
+    async def _stop_scheduler_loop_with_result(self) -> CleanupResult:
+        """Hentikan scheduler loop dengan structured result tracking."""
+        start_time = datetime.now(pytz.timezone('Asia/Jakarta'))
+        
+        if not self.scheduler_task or self.scheduler_task.done():
+            return CleanupResult(
+                success=True,
+                operation="stop_scheduler_loop",
+                items_cleaned=0,
+                duration_ms=0.0
+            )
+        
+        try:
+            logger.info("Membatalkan scheduler loop task...")
+            self.scheduler_task.cancel()
+            await asyncio.wait_for(self.scheduler_task, timeout=TASK_CANCEL_TIMEOUT)
+            logger.info("✅ Scheduler loop berhenti dengan graceful")
+            
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=True,
+                operation="stop_scheduler_loop",
+                items_cleaned=1,
+                duration_ms=duration_ms
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Pembatalan scheduler loop timeout setelah {TASK_CANCEL_TIMEOUT}s")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=False,
+                operation="stop_scheduler_loop",
+                error_message=f"Timeout setelah {TASK_CANCEL_TIMEOUT}s",
+                duration_ms=duration_ms
+            )
+        except asyncio.CancelledError:
+            logger.info("✅ Scheduler loop dibatalkan")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=True,
+                operation="stop_scheduler_loop",
+                items_cleaned=1,
+                duration_ms=duration_ms
+            )
+        except Exception as e:
+            logger.error(f"Error saat menghentikan scheduler loop: {e}")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=False,
+                operation="stop_scheduler_loop",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+    
+    async def _cancel_individual_tasks_with_result(self) -> CleanupResult:
+        """Cancel individual task executions dengan structured result tracking."""
+        start_time = datetime.now(pytz.timezone('Asia/Jakarta'))
+        cancelled_count = 0
+        failed_count = 0
+        errors = []
+        
+        logger.info("Membatalkan individual task executions...")
+        
+        for task_name, task in list(self.tasks.items()):
+            if task._is_executing:
+                try:
+                    logger.info(f"Membatalkan running task: {task_name}")
+                    success = await asyncio.wait_for(
+                        task.cancel_execution(timeout=TASK_CANCEL_TIMEOUT),
+                        timeout=TASK_CANCEL_TIMEOUT + 1
+                    )
+                    if success:
+                        cancelled_count += 1
+                    else:
+                        failed_count += 1
+                        errors.append(f"{task_name}: cancellation returned false")
+                except asyncio.TimeoutError:
+                    failed_count += 1
+                    errors.append(f"{task_name}: timeout")
+                except Exception as e:
+                    failed_count += 1
+                    errors.append(f"{task_name}: {e}")
+        
+        logger.info(f"Membatalkan {cancelled_count} individual task executions")
+        duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+        
+        return CleanupResult(
+            success=failed_count == 0,
+            operation="cancel_individual_tasks",
+            items_cleaned=cancelled_count,
+            error_message="; ".join(errors) if errors else None,
+            duration_ms=duration_ms
+        )
+    
+    async def _cancel_active_executions_with_result(self, graceful_timeout: float) -> CleanupResult:
+        """Cancel active task executions dengan structured result tracking."""
+        start_time = datetime.now(pytz.timezone('Asia/Jakarta'))
+        
+        lock_acquired = await _acquire_lock_with_timeout(self._lock, LOCK_ACQUIRE_TIMEOUT)
+        
+        if lock_acquired:
+            try:
+                active_tasks = list(self._active_task_executions)
+            finally:
+                try:
+                    self._lock.release()
+                except RuntimeError:
+                    pass
+        else:
+            logger.warning("Gagal acquire lock, menggunakan fallback untuk active executions")
+            active_tasks = list(self._active_task_executions)
+        
+        active_count = len(active_tasks)
+        if active_count == 0:
+            logger.info("Tidak ada active task executions untuk dibatalkan")
+            return CleanupResult(
+                success=True,
+                operation="cancel_active_executions",
+                items_cleaned=0,
+                duration_ms=0.0
+            )
+        
+        logger.info(f"Membatalkan {active_count} remaining active task executions...")
+        
+        for task_exec in active_tasks:
+            try:
+                if not task_exec.done():
+                    task_exec.cancel()
+            except Exception as e:
+                logger.error(f"Error saat cancel task execution: {e}")
+        
+        try:
+            done, pending = await asyncio.wait(
+                active_tasks,
+                timeout=graceful_timeout,
+                return_when=asyncio.ALL_COMPLETED
+            )
+            
+            completed = len(done)
+            still_pending = len(pending)
+            
+            if still_pending > 0:
+                logger.warning(f"{still_pending} task executions tidak selesai dalam timeout")
+                for p in pending:
+                    try:
+                        p.cancel()
+                    except Exception:
+                        pass
+            else:
+                logger.info(f"✅ Semua {completed} task executions selesai")
+            
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=still_pending == 0,
+                operation="cancel_active_executions",
+                items_cleaned=completed,
+                error_message=f"{still_pending} tasks still pending" if still_pending > 0 else None,
+                duration_ms=duration_ms
+            )
+        except Exception as e:
+            logger.error(f"Error saat menunggu task executions: {e}")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=False,
+                operation="cancel_active_executions",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+    
+    async def _final_cleanup_with_result(self) -> CleanupResult:
+        """Final cleanup dengan structured result tracking."""
+        start_time = datetime.now(pytz.timezone('Asia/Jakarta'))
+        items_cleaned = 0
+        
+        lock_acquired = await _acquire_lock_with_timeout(self._lock, LOCK_ACQUIRE_TIMEOUT)
+        
+        try:
+            if lock_acquired:
+                remaining = len(self._all_created_tasks)
+                if remaining > 0:
+                    logger.info(f"Membersihkan {remaining} remaining tracked tasks...")
+                    for task in list(self._all_created_tasks):
+                        try:
+                            if not task.done():
+                                task.cancel()
+                                items_cleaned += 1
+                        except Exception:
+                            pass
+                    self._all_created_tasks.clear()
+                
+                self._active_task_executions.clear()
+            else:
+                logger.warning("Final cleanup tanpa lock (fallback)")
+                for task in list(self._all_created_tasks):
+                    try:
+                        if not task.done():
+                            task.cancel()
+                            items_cleaned += 1
+                    except Exception:
+                        pass
+                self._all_created_tasks.clear()
+                self._active_task_executions.clear()
+            
+            self._completion_event.set()
+            
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=True,
+                operation="final_cleanup",
+                items_cleaned=items_cleaned,
+                duration_ms=duration_ms
+            )
+        except Exception as e:
+            logger.error(f"Error saat final cleanup: {e}")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=False,
+                operation="final_cleanup",
+                items_cleaned=items_cleaned,
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+        finally:
+            if lock_acquired:
+                try:
+                    self._lock.release()
+                except RuntimeError:
+                    pass
     
     async def _stop_scheduler_loop(self) -> None:
         """Hentikan scheduler loop dengan timeout protection."""
@@ -1919,9 +2375,17 @@ class TaskScheduler:
         failing_tasks = [t for t in tasks if t.has_high_failure_rate()]
         auto_disabled = [t for t in tasks if t._auto_disabled]
         
+        can_start, can_start_reason = self.can_start()
+        can_stop, can_stop_reason = self.can_stop()
+        
         return {
             'running': self.running,
             'shutting_down': self._shutdown_flag.is_set(),
+            'lifecycle_state': self._state.value,
+            'can_start': can_start,
+            'can_start_reason': can_start_reason,
+            'can_stop': can_stop,
+            'can_stop_reason': can_stop_reason,
             'total_tasks': len(self.tasks),
             'enabled_tasks': len([t for t in tasks if t.enabled]),
             'executing_tasks': len([t for t in tasks if t._is_executing]),
@@ -1932,6 +2396,8 @@ class TaskScheduler:
             'total_tracked_tasks': len(self._all_created_tasks),
             'pending_exceptions': len(self._task_exceptions),
             'exception_history_count': len(self._exception_history),
+            'state_transition_history_count': len(self._state_transition_history),
+            'cleanup_results': self.get_cleanup_results(),
             'cleanup_stats': self._cleanup_stats.copy(),
             'tasks': {name: task.to_dict() for name, task in self.tasks.items()}
         }
