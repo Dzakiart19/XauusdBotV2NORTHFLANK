@@ -69,6 +69,27 @@ MAX_CONSECUTIVE_FAILURES_AUTO_DISABLE = 10
 EXCEPTION_HISTORY_LIMIT = 20
 CLEANUP_INTERVAL_SECONDS = Config.COMPLETED_TASKS_CLEANUP_INTERVAL
 
+# Task history cleanup constants
+MAX_COMPLETED_TASK_HISTORY = 100
+COMPLETED_TASK_MAX_AGE_MINUTES = 30
+HISTORY_CLEANUP_INTERVAL_SECONDS = 300  # 5 minutes
+DEFAULT_DRAIN_TIMEOUT = 30  # Default timeout for draining tasks during shutdown
+
+
+class TaskPriority(Enum):
+    """
+    Priority levels for task execution.
+    
+    - CRITICAL: Tasks run immediately, bypass all delays
+    - HIGH: Tasks skip regular interval delays
+    - NORMAL: Tasks follow regular schedule
+    - LOW: Tasks run only when scheduler is not busy
+    """
+    CRITICAL = 1
+    HIGH = 2
+    NORMAL = 3
+    LOW = 4
+
 # Task lifecycle optimization constants (dari Config)
 TASK_AUTO_CANCEL_THRESHOLD = Config.TASK_AUTO_CANCEL_THRESHOLD
 TASK_ROTATION_INTERVAL = Config.TASK_ROTATION_INTERVAL
@@ -321,15 +342,23 @@ class ScheduledTask:
     - Tracks success rate, execution times, and exception history
     - Auto-disables tasks with excessive consecutive failures
     - Detects stale tasks that haven't run for extended periods
+    
+    Priority System:
+    - CRITICAL: Run immediately, bypass all delays
+    - HIGH: Skip interval delays
+    - NORMAL: Follow regular schedule
+    - LOW: Run only when scheduler is not busy
     """
     def __init__(self, name: str, func: Callable, interval: Optional[int] = None,
                  schedule_time: Optional[time] = None, timezone: str = 'Asia/Jakarta',
-                 auto_disable_threshold: int = MAX_CONSECUTIVE_FAILURES_AUTO_DISABLE):
+                 auto_disable_threshold: int = MAX_CONSECUTIVE_FAILURES_AUTO_DISABLE,
+                 priority: TaskPriority = TaskPriority.NORMAL):
         self.name = name
         self.func = func
         self.interval = interval
         self.schedule_time = schedule_time
         self.timezone = pytz.timezone(timezone)
+        self.priority = priority
         self.last_run = None
         self.next_run = None
         self.enabled = True
@@ -346,6 +375,7 @@ class ScheduledTask:
         self._auto_disabled = False
         self._created_at = datetime.now(self.timezone)
         self._execution_start_time: Optional[datetime] = None
+        self._completion_time: Optional[datetime] = None
         
         self._calculate_next_run()
     
@@ -405,7 +435,67 @@ class ScheduledTask:
             return False
         
         now = datetime.now(self.timezone)
+        
+        # CRITICAL priority tasks always run if not currently executing
+        if self.priority == TaskPriority.CRITICAL:
+            return True
+        
+        # HIGH priority tasks skip delay check
+        if self.priority == TaskPriority.HIGH:
+            return True
+        
         return now >= self.next_run
+    
+    def should_run_priority(self, active_task_count: int = 0, max_concurrent: int = 10) -> bool:
+        """
+        Check if task should run considering priority and system load.
+        
+        Args:
+            active_task_count: Number of currently active tasks
+            max_concurrent: Maximum concurrent tasks allowed
+            
+        Returns:
+            bool: True if task should run
+        """
+        if not self.enabled or self._is_executing:
+            return False
+        
+        # CRITICAL always runs regardless of load
+        if self.priority == TaskPriority.CRITICAL:
+            return True
+        
+        # HIGH priority runs unless at max capacity
+        if self.priority == TaskPriority.HIGH:
+            return active_task_count < max_concurrent
+        
+        # NORMAL priority follows regular schedule
+        if self.priority == TaskPriority.NORMAL:
+            if self.next_run is None:
+                return False
+            now = datetime.now(self.timezone)
+            return now >= self.next_run and active_task_count < max_concurrent
+        
+        # LOW priority only runs when scheduler is not busy (< 50% capacity)
+        if self.priority == TaskPriority.LOW:
+            if self.next_run is None:
+                return False
+            now = datetime.now(self.timezone)
+            return now >= self.next_run and active_task_count < (max_concurrent // 2)
+        
+        return False
+    
+    def set_priority(self, priority: TaskPriority) -> None:
+        """Set task priority."""
+        self.priority = priority
+        logger.info(f"Task {self.name} priority set to {priority.name}")
+    
+    def mark_completed(self) -> None:
+        """Mark task as completed with timestamp."""
+        self._completion_time = datetime.now(self.timezone)
+    
+    def get_completion_time(self) -> Optional[datetime]:
+        """Get task completion timestamp."""
+        return self._completion_time
     
     def is_stale(self, threshold_minutes: int = STALE_TASK_THRESHOLD_MINUTES) -> bool:
         """Check if task is stale (enabled but hasn't run for extended period).
@@ -712,9 +802,12 @@ class ScheduledTask:
             'name': self.name,
             'interval': self.interval,
             'schedule_time': self.schedule_time.isoformat() if self.schedule_time else None,
+            'priority': self.priority.name,
+            'priority_value': self.priority.value,
             'enabled': self.enabled,
             'last_run': self.last_run.isoformat() if self.last_run else None,
             'next_run': self.next_run.isoformat() if self.next_run else None,
+            'completion_time': self._completion_time.isoformat() if self._completion_time else None,
             'run_count': self.run_count,
             'error_count': self.error_count,
             'consecutive_failures': self.consecutive_failures,
@@ -726,6 +819,31 @@ class ScheduledTask:
             'health_metrics': self._health_metrics.to_dict(),
             'exception_history_count': len(self._exception_history)
         }
+
+@dataclass
+class CompletedTaskRecord:
+    """Record of a completed task execution."""
+    task_name: str
+    completion_time: datetime
+    success: bool
+    execution_time_ms: float = 0.0
+    error_message: Optional[str] = None
+    
+    def to_dict(self) -> Dict:
+        return {
+            'task_name': self.task_name,
+            'completion_time': self.completion_time.isoformat(),
+            'success': self.success,
+            'execution_time_ms': round(self.execution_time_ms, 2),
+            'error_message': self.error_message
+        }
+    
+    def age_minutes(self, now: datetime) -> float:
+        """Get age of this record in minutes."""
+        if self.completion_time.tzinfo is None:
+            return (now.replace(tzinfo=None) - self.completion_time).total_seconds() / 60
+        return (now - self.completion_time).total_seconds() / 60
+
 
 class TaskScheduler:
     """Task scheduler with background task callbacks and graceful shutdown.
@@ -740,6 +858,12 @@ class TaskScheduler:
     - Periodic cleanup of completed tasks from _active_task_executions
     - Cleanup of orphaned tasks (tasks without scheduler)
     - Detection of stale tasks that haven't run for extended periods
+    
+    Priority System:
+    - CRITICAL: Tasks run immediately, bypass all delays
+    - HIGH: Tasks skip interval delays  
+    - NORMAL: Tasks follow regular schedule
+    - LOW: Tasks run only when scheduler is not busy
     """
     def __init__(self, config, alert_system=None, cleanup_interval: int = CLEANUP_INTERVAL_SECONDS):
         self.config = config
@@ -748,6 +872,7 @@ class TaskScheduler:
         self.running = False
         self.scheduler_task = None
         self._cleanup_task = None
+        self._history_cleanup_task = None
         self._shutdown_flag = asyncio.Event()
         self._active_task_executions: Set[asyncio.Task] = set()
         self._all_created_tasks: Set[asyncio.Task] = set()
@@ -757,6 +882,11 @@ class TaskScheduler:
         self._completion_event = asyncio.Event()
         self._cleanup_interval = cleanup_interval
         self._last_cleanup = datetime.now(pytz.timezone('Asia/Jakarta'))
+        
+        # Completed task history tracking
+        self._completed_tasks_history: deque = deque(maxlen=MAX_COMPLETED_TASK_HISTORY * 2)
+        self._last_history_cleanup = datetime.now(pytz.timezone('Asia/Jakarta'))
+        
         self._cleanup_stats = {
             'completed_tasks_cleaned': 0,
             'orphaned_tasks_cleaned': 0,
@@ -765,7 +895,9 @@ class TaskScheduler:
             'last_cleanup_time': None,
             'auto_cancelled_stuck_tasks': 0,
             'entries_cleaned_by_size': 0,
-            'task_rotations': 0
+            'task_rotations': 0,
+            'history_entries_cleaned': 0,
+            'history_cleanups_run': 0
         }
         self._last_rotation = datetime.now(pytz.timezone('Asia/Jakarta'))
         self._state: LifecycleState = LifecycleState.IDLE
@@ -948,24 +1080,47 @@ class TaskScheduler:
             return False, f"Unknown state: {self._state.value}"
     
     def add_task(self, name: str, func: Callable, interval: Optional[int] = None,
-                schedule_time: Optional[time] = None, timezone: str = 'Asia/Jakarta'):
+                schedule_time: Optional[time] = None, timezone: str = 'Asia/Jakarta',
+                priority: TaskPriority = TaskPriority.NORMAL):
         if name in self.tasks:
             logger.warning(f"Task {name} already exists, replacing")
         
-        task = ScheduledTask(name, func, interval, schedule_time, timezone)
+        task = ScheduledTask(name, func, interval, schedule_time, timezone, priority=priority)
         self.tasks[name] = task
         
-        logger.info(f"Task added: {name} (interval={interval}s, schedule={schedule_time})")
+        logger.info(f"Task added: {name} (interval={interval}s, schedule={schedule_time}, priority={priority.name})")
         return task
     
     def add_interval_task(self, name: str, func: Callable, interval_seconds: int,
-                         timezone: str = 'Asia/Jakarta'):
-        return self.add_task(name, func, interval=interval_seconds, timezone=timezone)
+                         timezone: str = 'Asia/Jakarta', priority: TaskPriority = TaskPriority.NORMAL):
+        return self.add_task(name, func, interval=interval_seconds, timezone=timezone, priority=priority)
     
     def add_daily_task(self, name: str, func: Callable, hour: int, minute: int = 0,
-                      timezone: str = 'Asia/Jakarta'):
+                      timezone: str = 'Asia/Jakarta', priority: TaskPriority = TaskPriority.NORMAL):
         schedule_time = time(hour=hour, minute=minute)
-        return self.add_task(name, func, schedule_time=schedule_time, timezone=timezone)
+        return self.add_task(name, func, schedule_time=schedule_time, timezone=timezone, priority=priority)
+    
+    def add_critical_task(self, name: str, func: Callable, interval_seconds: int,
+                         timezone: str = 'Asia/Jakarta'):
+        """Add a critical priority task that runs immediately when scheduled."""
+        return self.add_task(name, func, interval=interval_seconds, timezone=timezone, 
+                           priority=TaskPriority.CRITICAL)
+    
+    def set_task_priority(self, name: str, priority: TaskPriority) -> bool:
+        """Set the priority of an existing task.
+        
+        Args:
+            name: Name of the task
+            priority: New priority level
+            
+        Returns:
+            bool: True if task was found and updated, False otherwise
+        """
+        if name in self.tasks:
+            self.tasks[name].set_priority(priority)
+            return True
+        logger.warning(f"Task not found for priority change: {name}")
+        return False
     
     def remove_task(self, name: str) -> bool:
         if name in self.tasks:
@@ -1352,6 +1507,211 @@ class TaskScheduler:
             'exception_history_count': len(self._exception_history),
             'cleanup_stats': self._cleanup_stats.copy()
         }
+    
+    def record_task_completion(self, task_name: str, success: bool, 
+                               execution_time_ms: float = 0.0,
+                               error_message: Optional[str] = None) -> None:
+        """
+        Record a completed task execution in history.
+        
+        Args:
+            task_name: Name of the completed task
+            success: Whether the task completed successfully
+            execution_time_ms: Execution time in milliseconds
+            error_message: Error message if task failed
+        """
+        try:
+            record = CompletedTaskRecord(
+                task_name=task_name,
+                completion_time=datetime.now(pytz.timezone('Asia/Jakarta')),
+                success=success,
+                execution_time_ms=execution_time_ms,
+                error_message=error_message
+            )
+            self._completed_tasks_history.append(record)
+            
+            # Also update the task's completion time
+            if task_name in self.tasks:
+                self.tasks[task_name].mark_completed()
+                
+        except Exception as e:
+            logger.error(f"Error recording task completion for {task_name}: {e}")
+    
+    async def _cleanup_completed_tasks_history(self) -> int:
+        """
+        Cleanup completed task history based on age and count limits.
+        
+        Removes:
+        - Tasks older than COMPLETED_TASK_MAX_AGE_MINUTES (30 minutes)
+        - Tasks beyond MAX_COMPLETED_TASK_HISTORY (100)
+        
+        Returns:
+            Number of entries cleaned
+        """
+        cleaned = 0
+        now = datetime.now(pytz.timezone('Asia/Jakarta'))
+        
+        try:
+            # Phase 1: Remove tasks older than 30 minutes
+            old_size = len(self._completed_tasks_history)
+            temp_history = []
+            
+            for record in self._completed_tasks_history:
+                try:
+                    age_minutes = record.age_minutes(now)
+                    if age_minutes <= COMPLETED_TASK_MAX_AGE_MINUTES:
+                        temp_history.append(record)
+                    else:
+                        cleaned += 1
+                except Exception as e:
+                    logger.debug(f"Error checking record age: {e}")
+                    temp_history.append(record)  # Keep if can't check
+            
+            # Phase 2: Keep only last MAX_COMPLETED_TASK_HISTORY entries
+            if len(temp_history) > MAX_COMPLETED_TASK_HISTORY:
+                excess = len(temp_history) - MAX_COMPLETED_TASK_HISTORY
+                temp_history = temp_history[-MAX_COMPLETED_TASK_HISTORY:]
+                cleaned += excess
+            
+            # Update history
+            self._completed_tasks_history.clear()
+            for record in temp_history:
+                self._completed_tasks_history.append(record)
+            
+            if cleaned > 0:
+                logger.info(f"History cleanup: removed {cleaned} old entries (kept {len(self._completed_tasks_history)})")
+                self._cleanup_stats['history_entries_cleaned'] += cleaned
+            
+            self._cleanup_stats['history_cleanups_run'] += 1
+            self._last_history_cleanup = now
+            
+        except Exception as e:
+            logger.error(f"Error in _cleanup_completed_tasks_history: {e}")
+        
+        return cleaned
+    
+    async def _history_cleanup_loop(self) -> None:
+        """
+        Background loop for periodic history cleanup (every 5 minutes).
+        """
+        logger.info(f"History cleanup loop started (interval: {HISTORY_CLEANUP_INTERVAL_SECONDS}s)")
+        
+        try:
+            while self.running and not self._shutdown_flag.is_set():
+                try:
+                    # Wait for shutdown or timeout
+                    try:
+                        await asyncio.wait_for(
+                            self._shutdown_flag.wait(),
+                            timeout=float(HISTORY_CLEANUP_INTERVAL_SECONDS)
+                        )
+                        if self._shutdown_flag.is_set():
+                            logger.info("Shutdown flag detected, exiting history cleanup loop")
+                            break
+                    except asyncio.TimeoutError:
+                        pass
+                    
+                    # Run cleanup if not shutting down
+                    if not self._shutdown_flag.is_set():
+                        await self._cleanup_completed_tasks_history()
+                        
+                except asyncio.CancelledError:
+                    logger.info("History cleanup loop cancelled")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in history cleanup loop: {e}")
+                    if not self._shutdown_flag.is_set():
+                        await asyncio.sleep(5)
+                        
+        except asyncio.CancelledError:
+            logger.info("History cleanup loop cancelled at top level")
+        finally:
+            logger.info("History cleanup loop finished")
+    
+    def get_scheduler_health(self) -> Dict:
+        """
+        Get scheduler health status including memory usage estimate.
+        
+        Returns:
+            Dict containing:
+            - active_tasks: Number of currently executing tasks
+            - stale_tasks: Number of stale tasks
+            - memory_usage_estimate_kb: Estimated memory usage in KB
+            - last_cleanup_time: Timestamp of last cleanup
+            - completed_history_size: Size of completed tasks history
+            - exception_history_size: Size of exception history
+            - lifecycle_state: Current lifecycle state
+        """
+        import sys
+        
+        tasks = list(self.tasks.values())
+        active_tasks = len([t for t in tasks if t._is_executing])
+        stale_tasks = len([t for t in tasks if t.is_stale()])
+        
+        # Estimate memory usage
+        memory_estimate_bytes = 0
+        try:
+            # Estimate size of task objects
+            memory_estimate_bytes += len(self.tasks) * 2048  # ~2KB per task
+            
+            # Estimate size of history
+            memory_estimate_bytes += len(self._completed_tasks_history) * 256  # ~256B per record
+            memory_estimate_bytes += len(self._exception_history) * 512  # ~512B per exception
+            
+            # Estimate size of active executions
+            memory_estimate_bytes += len(self._active_task_executions) * 1024
+            memory_estimate_bytes += len(self._all_created_tasks) * 1024
+            
+            # Add overhead for cleanup stats and other data
+            memory_estimate_bytes += sys.getsizeof(self._cleanup_stats)
+            memory_estimate_bytes += sys.getsizeof(self._task_exceptions)
+            
+        except Exception as e:
+            logger.debug(f"Error estimating memory usage: {e}")
+            memory_estimate_bytes = -1
+        
+        memory_estimate_kb = round(memory_estimate_bytes / 1024, 2) if memory_estimate_bytes >= 0 else -1
+        
+        return {
+            'active_tasks': active_tasks,
+            'stale_tasks': stale_tasks,
+            'memory_usage_estimate_kb': memory_estimate_kb,
+            'last_cleanup_time': self._last_cleanup.isoformat() if self._last_cleanup else None,
+            'last_history_cleanup_time': self._last_history_cleanup.isoformat() if self._last_history_cleanup else None,
+            'completed_history_size': len(self._completed_tasks_history),
+            'exception_history_size': len(self._exception_history),
+            'lifecycle_state': self._state.value,
+            'total_tasks': len(self.tasks),
+            'enabled_tasks': len([t for t in tasks if t.enabled]),
+            'auto_disabled_tasks': len([t for t in tasks if t._auto_disabled]),
+            'active_executions': len(self._active_task_executions),
+            'tracked_tasks': len(self._all_created_tasks),
+            'cleanup_stats': self._cleanup_stats.copy()
+        }
+    
+    def recover_stale_tasks(self) -> List[str]:
+        """
+        Attempt to recover stale tasks by recalculating their next_run time.
+        
+        Returns:
+            List of task names that were recovered
+        """
+        recovered = []
+        stale_tasks = self.detect_stale_tasks()
+        
+        for task_name in stale_tasks:
+            task = self.tasks.get(task_name)
+            if task and task.enabled and not task._is_executing:
+                try:
+                    # Reset next_run to now to force immediate execution
+                    task.next_run = datetime.now(task.timezone)
+                    task._calculate_next_run()
+                    recovered.append(task_name)
+                    logger.info(f"Recovered stale task: {task_name}")
+                except Exception as e:
+                    logger.error(f"Error recovering stale task {task_name}: {e}")
+        
+        return recovered
     
     async def run_aggressive_cleanup(self) -> Dict:
         """
@@ -2072,7 +2432,7 @@ class TaskScheduler:
     
     async def start(self):
         """
-        Mulai task scheduler dengan scheduler loop dan cleanup loop.
+        Mulai task scheduler dengan scheduler loop, cleanup loop, and history cleanup loop.
         
         Menggunakan lifecycle lock untuk serialize start/stop transitions
         dan mencegah race condition dengan concurrent stop.
@@ -2104,8 +2464,12 @@ class TaskScheduler:
                 self._cleanup_task = asyncio.create_task(self._cleanup_loop())
                 self._cleanup_task.set_name("cleanup_loop")
                 
+                # Start history cleanup loop (runs every 5 minutes)
+                self._history_cleanup_task = asyncio.create_task(self._history_cleanup_loop())
+                self._history_cleanup_task.set_name("history_cleanup_loop")
+                
                 self._transition_state(LifecycleState.RUNNING, "Scheduler started successfully")
-                logger.info("Task scheduler dimulai dengan cleanup loop")
+                logger.info("Task scheduler dimulai dengan cleanup loop dan history cleanup loop")
                 
             except Exception as e:
                 logger.error(f"Error saat memulai scheduler: {e}")
@@ -2113,7 +2477,8 @@ class TaskScheduler:
                 self._transition_state(LifecycleState.IDLE, f"Start failed: {e}")
                 raise
     
-    async def stop(self, graceful_timeout: float = SCHEDULER_STOP_TIMEOUT):
+    async def stop(self, graceful_timeout: float = SCHEDULER_STOP_TIMEOUT,
+                   drain_timeout: float = DEFAULT_DRAIN_TIMEOUT):
         """
         Stop scheduler dengan graceful shutdown dan robust exception handling.
         
@@ -2128,7 +2493,8 @@ class TaskScheduler:
         - stop() hanya boleh dari state RUNNING
         
         Args:
-            graceful_timeout: Waktu maksimum untuk menunggu graceful shutdown
+            graceful_timeout: Waktu maksimum untuk menunggu graceful shutdown loop
+            drain_timeout: Waktu maksimum untuk menunggu running tasks selesai sebelum cancel (default 30s)
         """
         async with self._lifecycle_lock:
             can_stop, reason = self.can_stop()
@@ -2141,16 +2507,26 @@ class TaskScheduler:
             
             cleanup_failed = False
             
+            active_count = len(self._active_task_executions)
+            tracked_count = len(self._all_created_tasks)
+            
             logger.info("=" * 50)
             logger.info("MENGHENTIKAN TASK SCHEDULER")
-            logger.info(f"Active task executions: {len(self._active_task_executions)}")
-            logger.info(f"Total tracked tasks: {len(self._all_created_tasks)}")
+            logger.info(f"Active task executions: {active_count}")
+            logger.info(f"Total tracked tasks: {tracked_count}")
+            logger.info(f"Drain timeout: {drain_timeout}s")
             logger.info("=" * 50)
             
             self._shutdown_flag.set()
             self.running = False
             
             logger.info("Shutdown flag di-set, menunggu scheduler loop berhenti...")
+            
+            # Stop history cleanup loop first
+            result = await self._stop_history_cleanup_loop_with_result()
+            self._cleanup_results.append(result)
+            if not result.success:
+                cleanup_failed = True
             
             result = await self._stop_cleanup_loop_with_result()
             self._cleanup_results.append(result)
@@ -2161,6 +2537,13 @@ class TaskScheduler:
             self._cleanup_results.append(result)
             if not result.success:
                 cleanup_failed = True
+            
+            # Drain running tasks - wait for them to complete naturally
+            if active_count > 0:
+                result = await self._drain_running_tasks_with_result(drain_timeout)
+                self._cleanup_results.append(result)
+                if not result.success:
+                    logger.warning("Some tasks did not complete during drain, proceeding with cancellation")
             
             result = await self._cancel_individual_tasks_with_result()
             self._cleanup_results.append(result)
@@ -2189,6 +2572,147 @@ class TaskScheduler:
             else:
                 self._transition_state(LifecycleState.IDLE, "Stop completed successfully")
                 logger.info("✅ Scheduler berhasil dihentikan")
+    
+    async def _stop_history_cleanup_loop_with_result(self) -> CleanupResult:
+        """Stop history cleanup loop with structured result tracking."""
+        start_time = datetime.now(pytz.timezone('Asia/Jakarta'))
+        
+        if not self._history_cleanup_task or self._history_cleanup_task.done():
+            return CleanupResult(
+                success=True,
+                operation="stop_history_cleanup_loop",
+                items_cleaned=0,
+                duration_ms=0.0
+            )
+        
+        try:
+            logger.info("Stopping history cleanup loop...")
+            self._history_cleanup_task.cancel()
+            await asyncio.wait_for(self._history_cleanup_task, timeout=TASK_CANCEL_TIMEOUT)
+            logger.info("✅ History cleanup loop stopped gracefully")
+            
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=True,
+                operation="stop_history_cleanup_loop",
+                items_cleaned=1,
+                duration_ms=duration_ms
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"History cleanup loop cancellation timed out after {TASK_CANCEL_TIMEOUT}s")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=False,
+                operation="stop_history_cleanup_loop",
+                error_message=f"Timeout after {TASK_CANCEL_TIMEOUT}s",
+                duration_ms=duration_ms
+            )
+        except asyncio.CancelledError:
+            logger.info("✅ History cleanup loop cancelled")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=True,
+                operation="stop_history_cleanup_loop",
+                items_cleaned=1,
+                duration_ms=duration_ms
+            )
+        except Exception as e:
+            logger.error(f"Error stopping history cleanup loop: {e}")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=False,
+                operation="stop_history_cleanup_loop",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+    
+    async def _drain_running_tasks_with_result(self, drain_timeout: float) -> CleanupResult:
+        """
+        Wait for running tasks to complete naturally before cancellation.
+        
+        Args:
+            drain_timeout: Maximum time to wait for tasks to complete
+            
+        Returns:
+            CleanupResult with drain status
+        """
+        start_time = datetime.now(pytz.timezone('Asia/Jakarta'))
+        
+        try:
+            active_count = len(self._active_task_executions)
+            if active_count == 0:
+                return CleanupResult(
+                    success=True,
+                    operation="drain_running_tasks",
+                    items_cleaned=0,
+                    duration_ms=0.0
+                )
+            
+            logger.info(f"Draining {active_count} running tasks (timeout: {drain_timeout}s)...")
+            
+            completed_count = 0
+            drain_start = datetime.now(pytz.timezone('Asia/Jakarta'))
+            
+            # Wait for tasks to complete, checking periodically
+            check_interval = 0.5  # Check every 500ms
+            elapsed = 0.0
+            
+            while elapsed < drain_timeout:
+                # Count completed tasks
+                still_running = [t for t in self._active_task_executions if not t.done()]
+                completed_count = active_count - len(still_running)
+                
+                if not still_running:
+                    logger.info(f"✅ All {completed_count} tasks completed during drain")
+                    break
+                
+                # Log progress periodically
+                if int(elapsed) % 5 == 0 and elapsed > 0:
+                    logger.info(f"Drain progress: {completed_count}/{active_count} completed, {len(still_running)} still running")
+                
+                await asyncio.sleep(check_interval)
+                elapsed = (datetime.now(pytz.timezone('Asia/Jakarta')) - drain_start).total_seconds()
+            
+            # Final count
+            still_running_final = [t for t in self._active_task_executions if not t.done()]
+            completed_count = active_count - len(still_running_final)
+            
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            
+            if still_running_final:
+                logger.warning(f"Drain completed: {completed_count} finished, {len(still_running_final)} timed out")
+                return CleanupResult(
+                    success=False,
+                    operation="drain_running_tasks",
+                    items_cleaned=completed_count,
+                    error_message=f"{len(still_running_final)} tasks did not complete",
+                    duration_ms=duration_ms
+                )
+            else:
+                return CleanupResult(
+                    success=True,
+                    operation="drain_running_tasks",
+                    items_cleaned=completed_count,
+                    duration_ms=duration_ms
+                )
+                
+        except asyncio.CancelledError:
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=False,
+                operation="drain_running_tasks",
+                error_message="Drain cancelled",
+                duration_ms=duration_ms
+            )
+        except Exception as e:
+            logger.error(f"Error during task drain: {e}")
+            duration_ms = (datetime.now(pytz.timezone('Asia/Jakarta')) - start_time).total_seconds() * 1000
+            return CleanupResult(
+                success=False,
+                operation="drain_running_tasks",
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
     
     async def _stop_cleanup_loop(self) -> None:
         """Hentikan cleanup loop dengan timeout protection."""

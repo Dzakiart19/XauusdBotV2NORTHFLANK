@@ -59,6 +59,11 @@ class CircuitBreaker:
     
     Tracks failures and opens circuit after threshold is exceeded.
     Automatically attempts recovery after cooldown period.
+    
+    Features:
+    - Half-open state requires consecutive successes before fully closing
+    - Tracks state change statistics (open_count, half_open_count)
+    - Auto-reset option after configurable timeout
     """
     
     def __init__(
@@ -66,7 +71,10 @@ class CircuitBreaker:
         failure_threshold: int = 5,
         recovery_timeout: float = 60.0,
         expected_exception: type = Exception,
-        name: str = "CircuitBreaker"
+        name: str = "CircuitBreaker",
+        success_threshold: int = 3,
+        auto_reset: bool = False,
+        auto_reset_timeout: float = 300.0
     ):
         """Initialize circuit breaker
         
@@ -75,19 +83,32 @@ class CircuitBreaker:
             recovery_timeout: Seconds to wait before attempting recovery
             expected_exception: Exception type to catch
             name: Name for logging
+            success_threshold: Consecutive successes needed in half-open to close (default: 3)
+            auto_reset: Enable automatic reset after timeout (default: False)
+            auto_reset_timeout: Seconds before auto-reset when enabled (default: 300 = 5 minutes)
         """
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.expected_exception = expected_exception
         self.name = name
+        self.success_threshold = success_threshold
+        self.auto_reset = auto_reset
+        self.auto_reset_timeout = auto_reset_timeout
         
         self.failure_count = 0
+        self.success_count = 0
         self.last_failure_time: Optional[float] = None
         self.state = CircuitState.CLOSED
         
+        self.open_count = 0
+        self.half_open_count = 0
+        self.last_state_change: Optional[float] = None
+        self._state_history: list = []
+        
         logger.info(
             f"CircuitBreaker '{name}' initialized: "
-            f"threshold={failure_threshold}, timeout={recovery_timeout}s"
+            f"threshold={failure_threshold}, timeout={recovery_timeout}s, "
+            f"success_threshold={success_threshold}, auto_reset={auto_reset}"
         )
     
     def call(self, func: Callable, *args, **kwargs) -> Any:
@@ -104,10 +125,13 @@ class CircuitBreaker:
         Raises:
             Exception: If circuit is open or function fails
         """
+        self._check_auto_reset()
+        
         if self.state == CircuitState.OPEN:
             if self._should_attempt_reset():
                 logger.info(f"CircuitBreaker '{self.name}': Attempting recovery (HALF_OPEN)")
-                self.state = CircuitState.HALF_OPEN
+                self._set_state(CircuitState.HALF_OPEN)
+                self.success_count = 0
             else:
                 remaining = self.recovery_timeout - (time.time() - (self.last_failure_time or 0))
                 raise CircuitBreakerOpenException(self.name, remaining)
@@ -145,10 +169,13 @@ class CircuitBreaker:
         Raises:
             Exception: If circuit is open or function fails
         """
+        self._check_auto_reset()
+        
         if self.state == CircuitState.OPEN:
             if self._should_attempt_reset():
                 logger.info(f"CircuitBreaker '{self.name}': Attempting recovery (HALF_OPEN)")
-                self.state = CircuitState.HALF_OPEN
+                self._set_state(CircuitState.HALF_OPEN)
+                self.success_count = 0
             else:
                 remaining = self.recovery_timeout - (time.time() - (self.last_failure_time or 0))
                 raise CircuitBreakerOpenException(self.name, remaining)
@@ -170,29 +197,103 @@ class CircuitBreaker:
             return False
         return time.time() - self.last_failure_time >= self.recovery_timeout
     
+    def _check_auto_reset(self) -> bool:
+        """Check if auto-reset should be triggered
+        
+        Returns:
+            True if circuit was auto-reset, False otherwise
+        """
+        if not self.auto_reset:
+            return False
+        
+        if self.state != CircuitState.OPEN:
+            return False
+        
+        if self.last_failure_time is None:
+            return False
+        
+        elapsed = time.time() - self.last_failure_time
+        if elapsed >= self.auto_reset_timeout:
+            logger.info(
+                f"CircuitBreaker '{self.name}': Auto-reset triggered after "
+                f"{elapsed:.1f}s (timeout={self.auto_reset_timeout}s)"
+            )
+            self.reset()
+            return True
+        
+        return False
+    
+    def _record_state_change(self, old_state: CircuitState, new_state: CircuitState):
+        """Record state transition for statistics
+        
+        Args:
+            old_state: Previous circuit state
+            new_state: New circuit state
+        """
+        self.last_state_change = time.time()
+        
+        if new_state == CircuitState.OPEN:
+            self.open_count += 1
+        elif new_state == CircuitState.HALF_OPEN:
+            self.half_open_count += 1
+        
+        self._state_history.append({
+            'timestamp': self.last_state_change,
+            'from_state': old_state.value,
+            'to_state': new_state.value,
+        })
+        
+        if len(self._state_history) > 100:
+            self._state_history = self._state_history[-100:]
+    
+    def _set_state(self, new_state: CircuitState):
+        """Set new state with tracking
+        
+        Args:
+            new_state: New circuit state
+        """
+        if new_state != self.state:
+            old_state = self.state
+            self.state = new_state
+            self._record_state_change(old_state, new_state)
+    
     def _on_success(self):
-        """Handle successful execution"""
+        """Handle successful execution with success threshold for half-open state"""
         if self.state == CircuitState.HALF_OPEN:
-            logger.info(f"CircuitBreaker '{self.name}': Recovery successful (CLOSED)")
-            self.state = CircuitState.CLOSED
-            self.failure_count = 0
+            self.success_count += 1
+            logger.debug(
+                f"CircuitBreaker '{self.name}': Half-open success "
+                f"{self.success_count}/{self.success_threshold}"
+            )
+            
+            if self.success_count >= self.success_threshold:
+                logger.info(
+                    f"CircuitBreaker '{self.name}': Recovery successful after "
+                    f"{self.success_threshold} consecutive successes (CLOSED)"
+                )
+                self._set_state(CircuitState.CLOSED)
+                self.failure_count = 0
+                self.success_count = 0
+        elif self.state == CircuitState.CLOSED:
+            self.failure_count = max(0, self.failure_count - 1)
     
     def _on_failure(self):
         """Handle failed execution"""
         self.failure_count += 1
         self.last_failure_time = time.time()
+        self.success_count = 0
         
         if self.state == CircuitState.HALF_OPEN:
             logger.warning(
                 f"CircuitBreaker '{self.name}': Recovery failed (OPEN again)"
             )
-            self.state = CircuitState.OPEN
+            self._set_state(CircuitState.OPEN)
         elif self.failure_count >= self.failure_threshold:
             logger.error(
                 f"CircuitBreaker '{self.name}': Threshold exceeded "
                 f"({self.failure_count}/{self.failure_threshold}) - Opening circuit"
             )
-            self.state = CircuitState.OPEN
+            self._set_state(CircuitState.OPEN)
         else:
             logger.warning(
                 f"CircuitBreaker '{self.name}': Failure {self.failure_count}/{self.failure_threshold}"
@@ -201,9 +302,13 @@ class CircuitBreaker:
     def reset(self):
         """Manually reset circuit breaker"""
         logger.info(f"CircuitBreaker '{self.name}': Manual reset")
+        old_state = self.state
         self.state = CircuitState.CLOSED
         self.failure_count = 0
+        self.success_count = 0
         self.last_failure_time = None
+        if old_state != CircuitState.CLOSED:
+            self._record_state_change(old_state, CircuitState.CLOSED)
     
     def get_state(self) -> dict:
         """Get current circuit breaker state"""
@@ -213,6 +318,34 @@ class CircuitBreaker:
             'failure_count': self.failure_count,
             'failure_threshold': self.failure_threshold,
             'last_failure_time': self.last_failure_time
+        }
+    
+    def get_circuit_stats(self) -> dict:
+        """Get circuit breaker statistics
+        
+        Returns:
+            Dict with open_count, half_open_count, last_state_change, and more
+        """
+        self._check_auto_reset()
+        
+        return {
+            'name': self.name,
+            'state': self.state.value,
+            'open_count': self.open_count,
+            'half_open_count': self.half_open_count,
+            'last_state_change': self.last_state_change,
+            'last_state_change_iso': (
+                datetime.fromtimestamp(self.last_state_change).isoformat()
+                if self.last_state_change else None
+            ),
+            'failure_count': self.failure_count,
+            'success_count': self.success_count,
+            'failure_threshold': self.failure_threshold,
+            'success_threshold': self.success_threshold,
+            'recovery_timeout': self.recovery_timeout,
+            'auto_reset': self.auto_reset,
+            'auto_reset_timeout': self.auto_reset_timeout,
+            'recent_transitions': self._state_history[-10:] if self._state_history else [],
         }
 
 

@@ -19,8 +19,8 @@ Base = declarative_base()
 
 _transaction_lock = threading.Lock()
 
-POOL_SIZE = 5
-MAX_OVERFLOW = 10
+POOL_SIZE = 3
+MAX_OVERFLOW = 5
 POOL_TIMEOUT = 30
 POOL_RECYCLE = 3600
 POOL_PRE_PING = True
@@ -30,6 +30,8 @@ POOL_HIGH_UTILIZATION_THRESHOLD = 80
 TRANSACTION_MAX_RETRIES = 3
 TRANSACTION_INITIAL_DELAY = 0.1
 DEADLOCK_RETRY_DELAY = 0.2
+QUERY_CACHE_TTL = 30
+CONNECTION_ACQUIRE_TIMEOUT = 10
 
 class DatabaseError(Exception):
     """Base exception for database errors"""
@@ -54,6 +56,128 @@ class DeadlockError(DatabaseError):
 class OrphanedRecordError(DatabaseError):
     """Orphaned record detected - trade/position mismatch"""
     pass
+
+
+class QueryCache:
+    """Simple TTL-based query cache for frequently accessed data.
+    
+    Thread-safe cache implementation with automatic expiration.
+    Optimized for Koyeb 512MB memory constraints.
+    """
+    
+    def __init__(self, default_ttl: int = QUERY_CACHE_TTL):
+        self._cache: Dict[str, Any] = {}
+        self._timestamps: Dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._default_ttl = default_ttl
+        self._stats = {
+            'hits': 0,
+            'misses': 0,
+            'evictions': 0
+        }
+    
+    def get(self, key: str) -> Optional[Any]:
+        """Get cached value if not expired.
+        
+        Args:
+            key: Cache key
+            
+        Returns:
+            Cached value or None if not found/expired
+        """
+        with self._lock:
+            if key not in self._cache:
+                self._stats['misses'] += 1
+                return None
+            
+            if time.time() - self._timestamps[key] > self._default_ttl:
+                del self._cache[key]
+                del self._timestamps[key]
+                self._stats['evictions'] += 1
+                self._stats['misses'] += 1
+                return None
+            
+            self._stats['hits'] += 1
+            return self._cache[key]
+    
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        """Set cached value with TTL.
+        
+        Args:
+            key: Cache key
+            value: Value to cache
+            ttl: Optional TTL override in seconds
+        """
+        with self._lock:
+            self._cache[key] = value
+            self._timestamps[key] = time.time()
+    
+    def invalidate(self, key: str) -> bool:
+        """Invalidate a specific cache entry.
+        
+        Args:
+            key: Cache key to invalidate
+            
+        Returns:
+            True if key was found and removed, False otherwise
+        """
+        with self._lock:
+            if key in self._cache:
+                del self._cache[key]
+                del self._timestamps[key]
+                return True
+            return False
+    
+    def clear(self) -> int:
+        """Clear all cached entries.
+        
+        Returns:
+            Number of entries cleared
+        """
+        with self._lock:
+            count = len(self._cache)
+            self._cache.clear()
+            self._timestamps.clear()
+            return count
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get cache statistics.
+        
+        Returns:
+            Dict with hits, misses, evictions, and hit rate
+        """
+        with self._lock:
+            total = self._stats['hits'] + self._stats['misses']
+            hit_rate = (self._stats['hits'] / total * 100) if total > 0 else 0.0
+            return {
+                'hits': self._stats['hits'],
+                'misses': self._stats['misses'],
+                'evictions': self._stats['evictions'],
+                'hit_rate': round(hit_rate, 2),
+                'cached_items': len(self._cache)
+            }
+    
+    def cleanup_expired(self) -> int:
+        """Remove all expired entries.
+        
+        Returns:
+            Number of entries removed
+        """
+        with self._lock:
+            current_time = time.time()
+            expired_keys = [
+                key for key, ts in self._timestamps.items()
+                if current_time - ts > self._default_ttl
+            ]
+            for key in expired_keys:
+                del self._cache[key]
+                del self._timestamps[key]
+                self._stats['evictions'] += 1
+            return len(expired_keys)
+
+
+_query_cache = QueryCache()
+
 
 def _is_deadlock_error(error: Exception) -> bool:
     """Deteksi apakah error adalah deadlock.
@@ -975,8 +1099,14 @@ class DatabaseManager:
         except (DatabaseError, AttributeError, KeyError) as e:
             logger.error(f"⚠️ Tidak dapat mengambil status pool: {e}")
     
-    def get_session(self):
+    def get_session(self, timeout: Optional[int] = None):
         """Get database session with pool timeout handling and retry logic.
+        
+        Optimized for Koyeb 512MB memory with reduced pool size.
+        Uses CONNECTION_ACQUIRE_TIMEOUT for acquiring connections.
+        
+        Args:
+            timeout: Optional custom timeout in seconds (uses CONNECTION_ACQUIRE_TIMEOUT by default)
         
         Returns:
             Session object for database operations
@@ -984,8 +1114,57 @@ class DatabaseManager:
         Raises:
             ConnectionPoolExhausted: If pool is exhausted after all retries
             DatabaseError: If session creation fails
+            
+        Note:
+            Remember to close the session when done:
+            ```python
+            session = db.get_session()
+            try:
+                # operations
+            finally:
+                session.close()
+            ```
+            Or use safe_session() context manager for automatic cleanup.
         """
         return self._get_session_with_pool_retry()
+    
+    @contextmanager
+    def read_only_session(self) -> Generator:
+        """Context manager for read-only database operations.
+        
+        Provides session that auto-closes without commit.
+        Optimized for query operations that don't modify data.
+        
+        Usage:
+            with db.read_only_session() as session:
+                results = session.query(Model).all()
+                # session auto-closes, no commit needed
+        
+        Yields:
+            Session object for read-only operations
+            
+        Raises:
+            ConnectionPoolExhausted: If pool is exhausted after all retries
+            DatabaseError: If session creation fails
+        """
+        session = None
+        try:
+            session = self.get_session()
+            if session is None:
+                raise DatabaseError("Gagal mendapatkan session database")
+            yield session
+        except ConnectionPoolExhausted:
+            logger.error("❌ Read-only session gagal: connection pool habis")
+            raise
+        except (OperationalError, SQLAlchemyError) as e:
+            logger.error(f"❌ Database error pada read-only session: {e}")
+            raise
+        finally:
+            if session:
+                try:
+                    session.close()
+                except (OperationalError, SQLAlchemyError) as e:
+                    logger.warning(f"⚠️ Error saat menutup read-only session: {e}")
     
     @contextmanager
     def safe_session(self) -> Generator:
@@ -2067,8 +2246,13 @@ class DatabaseManager:
                 session.close()
     
     @retry_on_db_error(max_retries=3, initial_delay=0.1)
-    def get_performance_stats(self) -> Dict[str, Any]:
-        """Get comprehensive performance statistics.
+    def get_performance_stats(self, use_cache: bool = True) -> Dict[str, Any]:
+        """Get comprehensive performance statistics with optional caching.
+        
+        Results are cached for QUERY_CACHE_TTL seconds to reduce database load.
+        
+        Args:
+            use_cache: If True, return cached results if available (default: True)
         
         Returns:
             Dict containing:
@@ -2079,7 +2263,17 @@ class DatabaseManager:
                 - by_signal_type: Win rate breakdown by BUY/SELL
                 - by_timeframe: Win rate breakdown by timeframe
                 - recent_trades: List of recent trade summaries
+                - cached: Whether the result was from cache
         """
+        cache_key = 'performance_stats'
+        
+        if use_cache:
+            cached_result = _query_cache.get(cache_key)
+            if cached_result is not None:
+                logger.debug("📦 Returning cached performance stats")
+                cached_result['cached'] = True
+                return cached_result
+        
         result = {
             'overall': {
                 'total_trades': 0,
@@ -2094,7 +2288,8 @@ class DatabaseManager:
             'by_volatility': {},
             'by_signal_type': {},
             'by_timeframe': {},
-            'recent_trades': []
+            'recent_trades': [],
+            'cached': False
         }
         
         session = None
@@ -2212,6 +2407,9 @@ class DatabaseManager:
                 })
             
             logger.info(f"📊 Performance stats: {wins}W/{losses}L ({result['overall']['win_rate']:.1f}%), Total P&L: {total_pnl:.2f}")
+            
+            _query_cache.set(cache_key, result)
+            logger.debug(f"📦 Cached performance stats for {QUERY_CACHE_TTL}s")
             return result
             
         except (OperationalError, SQLAlchemyError) as e:
@@ -2223,6 +2421,27 @@ class DatabaseManager:
         finally:
             if session:
                 session.close()
+    
+    def invalidate_performance_cache(self) -> bool:
+        """Invalidate the performance stats cache.
+        
+        Call this after operations that modify performance data.
+        
+        Returns:
+            True if cache was invalidated, False if not found
+        """
+        result = _query_cache.invalidate('performance_stats')
+        if result:
+            logger.debug("🗑️ Performance stats cache invalidated")
+        return result
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get query cache statistics.
+        
+        Returns:
+            Dict with cache hit/miss rates and current size
+        """
+        return _query_cache.get_stats()
     
     @retry_on_db_error(max_retries=3, initial_delay=0.1)
     def get_signal_performance_by_id(self, signal_id: int) -> Optional[Dict[str, Any]]:
@@ -2483,11 +2702,198 @@ class DatabaseManager:
             if session:
                 session.close()
 
+    @retry_on_db_error(max_retries=3, initial_delay=0.1)
+    def batch_insert_candles(self, candles: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Batch insert candle data for improved performance.
+        
+        Uses bulk insert operations for efficient database writes.
+        Optimized for Koyeb memory constraints by processing in chunks.
+        
+        Args:
+            candles: List of candle dictionaries with keys:
+                - timeframe: Timeframe string (e.g., 'M1', 'M5', 'H1')
+                - timestamp: Datetime object
+                - open, high, low, close: Float price values
+                - volume: Optional float volume
+                - is_partial: Optional bool (default: False)
+                
+        Returns:
+            Dict containing:
+                - inserted: Number of candles inserted
+                - skipped: Number of duplicates skipped
+                - errors: Number of errors encountered
+                - success: Whether operation completed without critical errors
+        """
+        result = {
+            'inserted': 0,
+            'skipped': 0,
+            'errors': 0,
+            'success': True
+        }
+        
+        if not candles:
+            return result
+        
+        BATCH_SIZE = 50
+        session = None
+        
+        try:
+            session = self.get_session()
+            
+            for i in range(0, len(candles), BATCH_SIZE):
+                batch = candles[i:i + BATCH_SIZE]
+                candle_objects = []
+                
+                for candle_data in batch:
+                    try:
+                        timeframe = candle_data.get('timeframe')
+                        timestamp = candle_data.get('timestamp')
+                        
+                        if not timeframe or not timestamp:
+                            result['errors'] += 1
+                            continue
+                        
+                        existing = session.query(CandleData).filter(
+                            CandleData.timeframe == timeframe,
+                            CandleData.timestamp == timestamp
+                        ).first()
+                        
+                        if existing:
+                            result['skipped'] += 1
+                            continue
+                        
+                        candle = CandleData(
+                            timeframe=timeframe,
+                            timestamp=timestamp,
+                            open=candle_data.get('open', 0.0),
+                            high=candle_data.get('high', 0.0),
+                            low=candle_data.get('low', 0.0),
+                            close=candle_data.get('close', 0.0),
+                            volume=candle_data.get('volume', 0.0),
+                            is_partial=candle_data.get('is_partial', False)
+                        )
+                        candle_objects.append(candle)
+                        
+                    except (KeyError, TypeError, ValueError) as e:
+                        logger.warning(f"⚠️ Invalid candle data: {e}")
+                        result['errors'] += 1
+                        continue
+                
+                if candle_objects:
+                    try:
+                        session.bulk_save_objects(candle_objects)
+                        session.commit()
+                        result['inserted'] += len(candle_objects)
+                    except IntegrityError as e:
+                        session.rollback()
+                        logger.warning(f"⚠️ Integrity error during batch insert: {e}")
+                        for candle in candle_objects:
+                            try:
+                                session.add(candle)
+                                session.commit()
+                                result['inserted'] += 1
+                            except IntegrityError:
+                                session.rollback()
+                                result['skipped'] += 1
+                            except SQLAlchemyError:
+                                session.rollback()
+                                result['errors'] += 1
+            
+            logger.info(
+                f"📊 Batch insert complete: {result['inserted']} inserted, "
+                f"{result['skipped']} skipped, {result['errors']} errors"
+            )
+            return result
+            
+        except (OperationalError, SQLAlchemyError) as e:
+            if session:
+                try:
+                    session.rollback()
+                except (OperationalError, SQLAlchemyError):
+                    pass
+            logger.error(f"❌ Database error during batch insert: {e}")
+            result['success'] = False
+            return result
+        except (ValueError, TypeError, AttributeError) as e:
+            if session:
+                try:
+                    session.rollback()
+                except (OperationalError, SQLAlchemyError):
+                    pass
+            logger.error(f"❌ Error during batch insert: {type(e).__name__}: {e}")
+            result['success'] = False
+            return result
+        finally:
+            if session:
+                try:
+                    session.close()
+                except (OperationalError, SQLAlchemyError) as e:
+                    logger.warning(f"⚠️ Error closing session: {e}")
+
+    def close_all_connections(self) -> Dict[str, Any]:
+        """Gracefully close all database connections for shutdown.
+        
+        Performs clean shutdown of connection pool:
+        1. Clears query cache
+        2. Removes all sessions
+        3. Disposes engine and all pooled connections
+        4. Logs final pool status
+        
+        Returns:
+            Dict containing:
+                - cache_cleared: Number of cache entries cleared
+                - pool_status: Final pool status before disposal
+                - success: Whether shutdown completed successfully
+        """
+        result = {
+            'cache_cleared': 0,
+            'pool_status': {},
+            'success': True
+        }
+        
+        try:
+            logger.info("🔌 Initiating graceful database shutdown...")
+            
+            result['cache_cleared'] = _query_cache.clear()
+            logger.info(f"📦 Cleared {result['cache_cleared']} cached entries")
+            
+            try:
+                result['pool_status'] = self.get_pool_status()
+                self.log_pool_status()
+            except (DatabaseError, AttributeError) as e:
+                logger.warning(f"⚠️ Could not get final pool status: {e}")
+            
+            if self.Session is not None:
+                try:
+                    self.Session.remove()
+                    logger.info("✅ All sessions removed")
+                except (OperationalError, SQLAlchemyError) as e:
+                    logger.warning(f"⚠️ Error removing sessions: {e}")
+            
+            if self.engine is not None:
+                try:
+                    self.engine.dispose()
+                    logger.info("✅ Engine disposed, all connections closed")
+                except (OperationalError, SQLAlchemyError) as e:
+                    logger.warning(f"⚠️ Error disposing engine: {e}")
+                    result['success'] = False
+            
+            logger.info("✅ Graceful database shutdown complete")
+            return result
+            
+        except (RuntimeError, AttributeError, TypeError) as e:
+            logger.error(f"❌ Error during graceful shutdown: {type(e).__name__}: {e}")
+            result['success'] = False
+            return result
+
     def close(self):
         """Menutup koneksi database dengan error handling dan pool cleanup."""
         try:
             logger.info("🔌 Menutup koneksi database...")
             self.log_pool_status()
+            
+            _query_cache.clear()
+            
             if self.Session is not None:
                 self.Session.remove()
             if self.engine is not None:

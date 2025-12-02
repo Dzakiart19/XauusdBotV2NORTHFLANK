@@ -45,6 +45,7 @@ class ExceptionCategory:
     ATTRIBUTE = "ATTRIBUTE"
     IO = "IO"
     NETWORK = "NETWORK"
+    KOYEB = "KOYEB"
     UNKNOWN = "UNKNOWN"
 
 
@@ -321,6 +322,243 @@ SQLALCHEMY_EXCEPTION_PATTERNS = {
     'sqlalchemy.orm.exc.MultipleResultsFound': ExceptionCategory.SQLALCHEMY,
 }
 
+KOYEB_ERROR_PATTERNS: Dict[str, Dict[str, Any]] = {
+    'connection_reset': {
+        'patterns': [
+            'Connection reset by peer',
+            'ConnectionResetError',
+            'ECONNRESET',
+            'Connection forcibly closed',
+            'Broken pipe',
+        ],
+        'category': ExceptionCategory.KOYEB,
+        'severity': 'WARNING',
+        'recoverable': True,
+        'description': 'Connection was reset by the remote host (common in Koyeb)',
+    },
+    'memory_exceeded': {
+        'patterns': [
+            'MemoryError',
+            'Cannot allocate memory',
+            'Out of memory',
+            'OOM',
+            'memory limit exceeded',
+            'SIGKILL',
+            'killed by signal 9',
+        ],
+        'category': ExceptionCategory.KOYEB,
+        'severity': 'CRITICAL',
+        'recoverable': False,
+        'description': 'Process exceeded memory limits on Koyeb',
+    },
+    'container_restart': {
+        'patterns': [
+            'Container restarting',
+            'Pod restarting',
+            'Instance terminating',
+            'SIGTERM',
+            'graceful shutdown',
+        ],
+        'category': ExceptionCategory.KOYEB,
+        'severity': 'WARNING',
+        'recoverable': True,
+        'description': 'Container/instance is restarting on Koyeb',
+    },
+    'network_unreachable': {
+        'patterns': [
+            'Network unreachable',
+            'Name resolution failed',
+            'DNS lookup failed',
+            'getaddrinfo failed',
+            'Temporary failure in name resolution',
+        ],
+        'category': ExceptionCategory.KOYEB,
+        'severity': 'ERROR',
+        'recoverable': True,
+        'description': 'Network connectivity issues on Koyeb',
+    },
+    'port_binding': {
+        'patterns': [
+            'Address already in use',
+            'bind failed',
+            'port 8000',
+            'Failed to bind',
+            'EADDRINUSE',
+        ],
+        'category': ExceptionCategory.KOYEB,
+        'severity': 'CRITICAL',
+        'recoverable': False,
+        'description': 'Port binding failure on Koyeb',
+    },
+    'health_check_failed': {
+        'patterns': [
+            'health check failed',
+            'readiness probe failed',
+            'liveness probe failed',
+            'Health check timeout',
+        ],
+        'category': ExceptionCategory.KOYEB,
+        'severity': 'WARNING',
+        'recoverable': True,
+        'description': 'Health check failure on Koyeb deployment',
+    },
+}
+
+
+def detect_koyeb_error(error_message: str) -> Optional[Dict[str, Any]]:
+    """Detect Koyeb-specific errors from error message
+    
+    Args:
+        error_message: The error message to analyze
+        
+    Returns:
+        Dict with error info if Koyeb error detected, None otherwise
+    """
+    error_lower = error_message.lower()
+    
+    for error_type, error_info in KOYEB_ERROR_PATTERNS.items():
+        for pattern in error_info['patterns']:
+            if pattern.lower() in error_lower:
+                return {
+                    'type': error_type,
+                    'category': error_info['category'],
+                    'severity': error_info['severity'],
+                    'recoverable': error_info['recoverable'],
+                    'description': error_info['description'],
+                    'matched_pattern': pattern,
+                }
+    
+    return None
+
+
+class ErrorRateLimiter:
+    """Rate limiter to prevent duplicate error logging within a time window
+    
+    Prevents log flooding by suppressing repeated errors of the same type
+    within a configurable time window (default 60 seconds).
+    """
+    
+    def __init__(self, time_window: float = 60.0, max_occurrences: int = 1):
+        """Initialize error rate limiter
+        
+        Args:
+            time_window: Time window in seconds to suppress duplicate errors
+            max_occurrences: Maximum occurrences allowed in time window before suppression
+        """
+        self.time_window = time_window
+        self.max_occurrences = max_occurrences
+        self._error_cache: Dict[str, List[datetime]] = {}
+        self._suppressed_counts: Dict[str, int] = {}
+    
+    def _generate_error_key(self, exception: Exception, context: str = "") -> str:
+        """Generate unique key for an error
+        
+        Args:
+            exception: The exception
+            context: Context string
+            
+        Returns:
+            Unique key string
+        """
+        exc_type = type(exception).__name__
+        exc_msg_hash = hash(str(exception)[:100])
+        return f"{context}:{exc_type}:{exc_msg_hash}"
+    
+    def should_log(self, exception: Exception, context: str = "") -> bool:
+        """Check if an error should be logged
+        
+        Args:
+            exception: The exception to check
+            context: Context string
+            
+        Returns:
+            True if the error should be logged, False if suppressed
+        """
+        error_key = self._generate_error_key(exception, context)
+        now = datetime.now()
+        
+        if error_key not in self._error_cache:
+            self._error_cache[error_key] = [now]
+            self._suppressed_counts[error_key] = 0
+            return True
+        
+        self._error_cache[error_key] = [
+            ts for ts in self._error_cache[error_key]
+            if (now - ts).total_seconds() < self.time_window
+        ]
+        
+        if len(self._error_cache[error_key]) < self.max_occurrences:
+            self._error_cache[error_key].append(now)
+            return True
+        
+        self._suppressed_counts[error_key] = self._suppressed_counts.get(error_key, 0) + 1
+        return False
+    
+    def get_suppressed_count(self, exception: Exception, context: str = "") -> int:
+        """Get count of suppressed occurrences for an error
+        
+        Args:
+            exception: The exception
+            context: Context string
+            
+        Returns:
+            Number of suppressed occurrences
+        """
+        error_key = self._generate_error_key(exception, context)
+        return self._suppressed_counts.get(error_key, 0)
+    
+    def reset_suppressed_count(self, exception: Exception, context: str = ""):
+        """Reset suppressed count for an error (call after logging summary)
+        
+        Args:
+            exception: The exception
+            context: Context string
+        """
+        error_key = self._generate_error_key(exception, context)
+        self._suppressed_counts[error_key] = 0
+    
+    def cleanup_expired(self):
+        """Remove expired entries from the cache"""
+        now = datetime.now()
+        expired_keys = []
+        
+        for key, timestamps in self._error_cache.items():
+            valid_timestamps = [
+                ts for ts in timestamps
+                if (now - ts).total_seconds() < self.time_window
+            ]
+            if not valid_timestamps:
+                expired_keys.append(key)
+            else:
+                self._error_cache[key] = valid_timestamps
+        
+        for key in expired_keys:
+            del self._error_cache[key]
+            if key in self._suppressed_counts:
+                del self._suppressed_counts[key]
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get rate limiter statistics
+        
+        Returns:
+            Dict with stats about current state
+        """
+        self.cleanup_expired()
+        return {
+            'active_error_types': len(self._error_cache),
+            'total_suppressed': sum(self._suppressed_counts.values()),
+            'time_window': self.time_window,
+            'max_occurrences': self.max_occurrences,
+        }
+
+
+_global_error_rate_limiter = ErrorRateLimiter(time_window=60.0, max_occurrences=1)
+
+
+def get_error_rate_limiter() -> ErrorRateLimiter:
+    """Get global error rate limiter instance"""
+    return _global_error_rate_limiter
+
 
 def _get_exception_full_name(exception: Exception) -> str:
     """Get fully qualified name of exception class"""
@@ -376,6 +614,10 @@ def categorize_exception(exception: Exception) -> str:
         if pattern in exc_full_name or exc_class_name in pattern:
             return category
     
+    koyeb_error = detect_koyeb_error(str(exception))
+    if koyeb_error:
+        return ExceptionCategory.KOYEB
+    
     if isinstance(exception, ConnectionError):
         return ExceptionCategory.CONNECTION
     elif isinstance(exception, (TimeoutError, asyncio.TimeoutError)):
@@ -397,17 +639,42 @@ def categorize_exception(exception: Exception) -> str:
         return ExceptionCategory.UNKNOWN
 
 class ErrorHandler:
-    def __init__(self, config):
+    def __init__(self, config, sentry_manager=None):
         self.config = config
         self.error_count = {}
         self.last_error_time = {}
         self.max_retries = 3
         self.retry_delay = 5
+        self._rate_limiter = ErrorRateLimiter(time_window=60.0, max_occurrences=1)
+        self._sentry_manager = sentry_manager
     
-    def log_exception(self, exception: Exception, context: str = ""):
+    def set_sentry_manager(self, sentry_manager):
+        """Set Sentry manager for enhanced error tracking
+        
+        Args:
+            sentry_manager: SentryIntegrationManager instance
+        """
+        self._sentry_manager = sentry_manager
+    
+    def log_exception(self, exception: Exception, context: str = "", 
+                      extra_context: Optional[Dict[str, Any]] = None,
+                      force_log: bool = False) -> Dict[str, Any]:
+        """Log exception with rate limiting and Sentry integration
+        
+        Args:
+            exception: The exception to log
+            context: Context string describing where exception occurred
+            extra_context: Additional context for Sentry
+            force_log: If True, bypass rate limiting
+            
+        Returns:
+            Dict with error information
+        """
         exc_type, exc_value, exc_traceback = sys.exc_info()
         
         category = categorize_exception(exception)
+        
+        koyeb_info = detect_koyeb_error(str(exception))
         
         error_info = {
             'timestamp': datetime.now().isoformat(),
@@ -415,20 +682,73 @@ class ErrorHandler:
             'exception_category': category,
             'exception_message': str(exception),
             'context': context,
-            'traceback': ''.join(traceback.format_tb(exc_traceback)) if exc_traceback else 'N/A'
+            'traceback': ''.join(traceback.format_tb(exc_traceback)) if exc_traceback else 'N/A',
+            'koyeb_error': koyeb_info,
+            'rate_limited': False,
         }
         
-        logger.error(
-            f"[{category}] Exception in {context}: "
-            f"{type(exception).__name__}: {str(exception)}"
-        )
-        logger.debug(f"Full traceback:\n{error_info['traceback']}")
+        should_log = force_log or self._rate_limiter.should_log(exception, context)
+        
+        if should_log:
+            suppressed_count = self._rate_limiter.get_suppressed_count(exception, context)
+            
+            log_message = f"[{category}] Exception in {context}: {type(exception).__name__}: {str(exception)}"
+            
+            if suppressed_count > 0:
+                log_message += f" (suppressed {suppressed_count} similar errors in last 60s)"
+                self._rate_limiter.reset_suppressed_count(exception, context)
+            
+            if koyeb_info:
+                log_message += f" [Koyeb: {koyeb_info['type']} - {koyeb_info['description']}]"
+            
+            logger.error(log_message)
+            logger.debug(f"Full traceback:\n{error_info['traceback']}")
+            
+            if self._sentry_manager:
+                sentry_context = {
+                    'context_name': context,
+                    'category': category,
+                    'exception_type': type(exception).__name__,
+                }
+                
+                if koyeb_info:
+                    sentry_context['koyeb_error_type'] = koyeb_info['type']
+                    sentry_context['koyeb_severity'] = koyeb_info['severity']
+                    sentry_context['koyeb_recoverable'] = koyeb_info['recoverable']
+                    sentry_context['koyeb_description'] = koyeb_info['description']
+                
+                if extra_context:
+                    sentry_context.update(extra_context)
+                
+                try:
+                    event_id = self._sentry_manager.capture_exception(
+                        exception, 
+                        context=sentry_context,
+                        level='critical' if koyeb_info and koyeb_info['severity'] == 'CRITICAL' else 'error'
+                    )
+                    error_info['sentry_event_id'] = event_id
+                except Exception as sentry_error:
+                    logger.debug(f"Failed to send to Sentry: {sentry_error}")
+        else:
+            error_info['rate_limited'] = True
+            logger.debug(
+                f"[{category}] Suppressed duplicate error in {context}: "
+                f"{type(exception).__name__}"
+            )
         
         error_key = f"{context}_{type(exception).__name__}"
         self.error_count[error_key] = self.error_count.get(error_key, 0) + 1
         self.last_error_time[error_key] = datetime.now()
         
         return error_info
+    
+    def get_rate_limiter_stats(self) -> Dict[str, Any]:
+        """Get error rate limiter statistics
+        
+        Returns:
+            Dict with rate limiter stats
+        """
+        return self._rate_limiter.get_stats()
     
     def get_error_stats(self) -> dict:
         return {

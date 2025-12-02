@@ -278,7 +278,9 @@ class Config:
     MEMORY_WARNING_THRESHOLD_MB = _get_int_env('MEMORY_WARNING_THRESHOLD_MB', '400')
     MEMORY_CRITICAL_THRESHOLD_MB = _get_int_env('MEMORY_CRITICAL_THRESHOLD_MB', '450')
     OOM_GRACEFUL_DEGRADATION = os.getenv('OOM_GRACEFUL_DEGRADATION', 'true').lower() == 'true'
-    MAX_CANDLE_HISTORY = _get_int_env('MAX_CANDLE_HISTORY', '150') if FREE_TIER_MODE else _get_int_env('MAX_CANDLE_HISTORY', '500')
+    MAX_CANDLE_HISTORY = _get_int_env('MAX_CANDLE_HISTORY', '100') if FREE_TIER_MODE else _get_int_env('MAX_CANDLE_HISTORY', '500')
+    CHART_CLEANUP_AGE_MINUTES = _get_int_env('CHART_CLEANUP_AGE_MINUTES', '60')
+    MEMORY_MONITOR_INTERVAL_SECONDS = _get_int_env('MEMORY_MONITOR_INTERVAL_SECONDS', '60')
     
     TASK_AUTO_CANCEL_THRESHOLD = _get_int_env('TASK_AUTO_CANCEL_THRESHOLD', '600')
     TASK_ROTATION_INTERVAL = _get_int_env('TASK_ROTATION_INTERVAL', '600')
@@ -318,8 +320,8 @@ class Config:
     DB_ARCHIVE_DAYS = _get_int_env('DB_ARCHIVE_DAYS', '30')
     DB_VACUUM_INTERVAL_HOURS = _get_int_env('DB_VACUUM_INTERVAL_HOURS', '6')
     
-    LOG_MAX_SIZE_MB = _get_int_env('LOG_MAX_SIZE_MB', '3')
-    LOG_BACKUP_COUNT = _get_int_env('LOG_BACKUP_COUNT', '3')
+    LOG_MAX_SIZE_MB = _get_int_env('LOG_MAX_SIZE_MB', '2')
+    LOG_BACKUP_COUNT = _get_int_env('LOG_BACKUP_COUNT', '2')
     
     @classmethod
     def get_masked_token(cls) -> str:

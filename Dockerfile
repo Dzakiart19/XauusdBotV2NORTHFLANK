@@ -1,54 +1,88 @@
-# Trading Bot Docker Image - Dioptimalkan untuk Koyeb Free Tier
-FROM python:3.11-slim
+# Trading Bot Docker Image - Optimized for Koyeb Free Tier (512MB RAM)
+# Multi-stage build for minimal image size
 
-WORKDIR /app
+# ============================================
+# Stage 1: Builder - Install dependencies
+# ============================================
+FROM python:3.11-slim AS builder
 
-# Install system dependencies dengan cleanup untuk hemat memory
+WORKDIR /build
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip wheel --no-cache-dir --wheel-dir=/build/wheels -r requirements.txt
+
+# ============================================
+# Stage 2: Runtime - Minimal production image
+# ============================================
+FROM python:3.11-slim AS runtime
+
+LABEL maintainer="XAUUSD Trading Bot"
+LABEL description="Telegram Trading Bot optimized for Koyeb Free Tier"
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
     fonts-dejavu-core \
     fonts-liberation \
     fontconfig \
     curl \
+    tini \
     && rm -rf /var/lib/apt/lists/* \
-    && fc-cache -fv \
-    && apt-get clean
+    && apt-get clean \
+    && fc-cache -fv
 
-# Copy requirements first untuk caching layer
-COPY requirements.txt .
+COPY --from=builder /build/wheels /wheels
 
-# Install Python dependencies dengan optimasi memory
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    rm -rf /root/.cache/pip/*
+    pip install --no-cache-dir /wheels/* && \
+    rm -rf /wheels /root/.cache/pip/*
 
-# Copy application code
-COPY . .
+COPY bot/ ./bot/
+COPY webapp/ ./webapp/
+COPY config.py .
+COPY main.py .
 
-# Create necessary directories
-RUN mkdir -p data logs charts backups
+RUN mkdir -p data logs charts backups && \
+    chmod -R 755 data logs charts backups
 
-# Set environment variables untuk Koyeb deployment
+# ============================================
+# Environment Variables for Koyeb Free Tier
+# ============================================
+
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/app
 ENV MPLBACKEND=Agg
 ENV FONTCONFIG_PATH=/etc/fonts
 
-# Koyeb-specific environment variables
 ENV FREE_TIER_MODE=true
 ENV SELF_PING_ENABLED=true
 ENV SELF_PING_INTERVAL=240
 
-# Default port (Koyeb akan set PORT env var)
+ENV MEMORY_WARNING_THRESHOLD_MB=380
+ENV MEMORY_CRITICAL_THRESHOLD_MB=450
+ENV MEMORY_MONITOR_INTERVAL_SECONDS=60
+
 ENV PORT=8080
 EXPOSE 8080
 
-# Healthcheck untuk Koyeb - cek setiap 30 detik
+# ============================================
+# Health Check for Koyeb
+# ============================================
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run the bot dengan unbuffered output
+# ============================================
+# Use tini for proper signal handling
+# ============================================
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "-u", "main.py"]

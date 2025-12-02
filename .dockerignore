@@ -1,0 +1,102 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+.python-version
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Testing
+tests/
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytest.ini
+conftest.py
+
+# Documentation
+*.md
+!README.md
+docs/
+DEPLOYMENT_KOYEB.md
+TRADING_STRATEGY.md
+
+# Logs and databases (will be created at runtime)
+logs/
+*.log
+*.log.*
+data/*.db
+data/*.db-shm
+data/*.db-wal
+*.sqlite
+*.sqlite3
+
+# Backups
+backups/
+*.backup
+
+# Charts (generated at runtime)
+charts/
+*.png
+
+# Development files
+.replit
+replit.nix
+replit.md
+Procfile
+
+# Attached assets
+attached_assets/
+
+# Misc
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+*.bak

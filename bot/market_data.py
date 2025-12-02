@@ -866,6 +866,17 @@ class MarketDataClient:
             name="DerivWebSocket"
         )
         
+        self.connection_health_score: int = 100
+        self.last_heartbeat_time: Optional[float] = None
+        self.reconnect_success_count: int = 0
+        self.consecutive_connection_failures: int = 0
+        self.max_consecutive_connection_failures: int = 20
+        self.heartbeat_response_times: deque = deque(maxlen=10)
+        self._pending_heartbeat_time: Optional[float] = None
+        self._heartbeat_timeout_threshold: float = 60.0
+        self._health_check_interval: float = 30.0
+        self._extended_cooldown_duration: float = 300.0
+        
         self.h1_builder.register_candle_close_callback(self._on_h1_candle_close)
         
         logger.info("MarketDataClient diinisialisasi dengan penanganan error yang ditingkatkan")
@@ -876,6 +887,7 @@ class MarketDataClient:
         logger.info("✅ Mekanisme candle close event diinisialisasi")
         logger.info("✅ H1 candle close callback registered untuk immediate DB persistence")
         logger.info("✅ WebSocket task tracking diinisialisasi untuk graceful shutdown")
+        logger.info(f"✅ Connection health monitoring diinisialisasi (max_failures={self.max_consecutive_connection_failures}, heartbeat_timeout={self._heartbeat_timeout_threshold}s)")
     
     @property
     def current_bid(self) -> Optional[float]:
@@ -1903,44 +1915,70 @@ class MarketDataClient:
             logger.error(f"Error fetching historical candles for M{timeframe_minutes}: {e}", exc_info=True)
             return False
     
-    def _calculate_backoff_with_jitter(self, attempt: int) -> float:
-        """Calculate exponential backoff with jitter for reconnection
+    def _calculate_backoff_with_jitter(self, attempt: int, use_extended_cooldown: bool = False) -> float:
+        """Calculate exponential backoff with improved jitter for reconnection
         
-        Uses decorrelated jitter algorithm for better distribution:
-        delay = min(max_delay, random(base_delay, previous_delay * 3))
-        
-        Jitter range is controlled by Config.WS_RECONNECT_JITTER_MAX (default 5.0s)
+        Uses multiplicative jitter (0.5-1.5x multiplier) to prevent thundering herd:
+        - Jitter multiplier provides better distribution than additive jitter
+        - Extended cooldown mode activates after max_consecutive_connection_failures
         
         Args:
             attempt: Current reconnection attempt number (1-based)
+            use_extended_cooldown: If True, use extended cooldown duration
             
         Returns:
             Delay in seconds with jitter applied
         """
+        if use_extended_cooldown:
+            base_delay = self._extended_cooldown_duration
+            jitter_multiplier = random.uniform(0.8, 1.2)
+            final_delay = base_delay * jitter_multiplier
+            logger.warning(
+                f"🔄 Extended cooldown activated: base={base_delay:.0f}s, "
+                f"jitter_mult={jitter_multiplier:.2f}x, final={final_delay:.1f}s"
+            )
+            return final_delay
+        
         base_delay = self.reconnect_delay
         max_delay = self.max_reconnect_delay
-        jitter_max = Config.WS_RECONNECT_JITTER_MAX
         
         exponential_delay = base_delay * (2 ** (attempt - 1))
         
-        jitter = random.uniform(-jitter_max, jitter_max)
+        jitter_multiplier = random.uniform(0.5, 1.5)
         
-        delay_with_jitter = exponential_delay + jitter
+        delay_with_jitter = exponential_delay * jitter_multiplier
         
         final_delay = max(base_delay, min(delay_with_jitter, max_delay))
         
-        logger.debug(f"Reconnect backoff: attempt={attempt}, base={base_delay}s, exp={exponential_delay:.1f}s, jitter={jitter:.1f}s, final={final_delay:.1f}s")
+        logger.info(
+            f"🔄 Reconnect backoff: attempt={attempt}, base={base_delay}s, "
+            f"exp={exponential_delay:.1f}s, jitter_mult={jitter_multiplier:.2f}x, "
+            f"final={final_delay:.1f}s, consecutive_failures={self.consecutive_connection_failures}"
+        )
         
         return final_delay
         
     async def connect_websocket(self):
-        """Connect to WebSocket with state machine and enhanced error handling"""
+        """Connect to WebSocket with state machine, health monitoring, and enhanced error handling.
+        
+        Enhanced features:
+        - Connection health scoring (0-100)
+        - Automatic reset of counters after successful connection
+        - Extended cooldown after max consecutive failures
+        - Improved state transition logging
+        """
         self.running = True
         
         while self.running:
             try:
+                old_state = self._connection_state
                 await self._set_connection_state(ConnectionState.CONNECTING)
-                logger.info(f"Connecting to Deriv WebSocket (attempt {self.reconnect_attempts + 1}): {self.ws_url}")
+                logger.info(
+                    f"🔌 Connecting to Deriv WebSocket: attempt={self.reconnect_attempts + 1}, "
+                    f"consecutive_failures={self.consecutive_connection_failures}, "
+                    f"health_score={self.connection_health_score}, "
+                    f"prev_state={old_state.value}"
+                )
                 
                 try:
                     async with websockets.connect(
@@ -1954,9 +1992,20 @@ class MarketDataClient:
                         self.reconnect_attempts = 0
                         self.last_data_received = datetime.now()
                         
+                        self.reconnect_success_count += 1
+                        self.consecutive_connection_failures = 0
+                        self.connection_health_score = 100
+                        self.heartbeat_response_times.clear()
+                        self.last_heartbeat_time = None
+                        self._pending_heartbeat_time = None
+                        
                         await self._set_connection_state(ConnectionState.CONNECTED)
                         self.connection_metrics.record_connection()
-                        logger.info(f"✅ Connected to Deriv WebSocket successfully")
+                        logger.info(
+                            f"✅ Connected to Deriv WebSocket successfully | "
+                            f"total_successful_reconnects={self.reconnect_success_count}, "
+                            f"health_score={self.connection_health_score}/100"
+                        )
                         
                         if self._loaded_from_db and (len(self.m1_builder.candles) >= 30 or len(self.m5_builder.candles) >= 30):
                             logger.info("✅ Skipping historical fetch - already loaded from DB")
@@ -2210,24 +2259,120 @@ class MarketDataClient:
             logger.error(f"Fatal error in periodic GC cleanup: {e}", exc_info=True)
     
     async def _send_heartbeat(self):
-        """Send WebSocket heartbeat ping with configurable interval.
+        """Send WebSocket heartbeat ping with configurable interval and health monitoring.
         
         Uses Config.WS_HEARTBEAT_INTERVAL (default 25s) for ping frequency.
+        Tracks heartbeat send times and monitors response for connection health.
+        Also periodically checks connection health and triggers reconnection if needed.
         """
         heartbeat_interval = Config.WS_HEARTBEAT_INTERVAL
-        logger.debug(f"Heartbeat started with interval {heartbeat_interval}s")
+        health_check_counter = 0
+        logger.info(f"💓 Heartbeat started: interval={heartbeat_interval}s, health_check_interval={self._health_check_interval}s")
         
         while self.running and self.ws:
             try:
                 current_time = time.time()
+                
                 if current_time - self.last_ping >= heartbeat_interval:
                     ping_msg = {"ping": 1}
+                    self._pending_heartbeat_time = current_time
                     await self.ws.send(json.dumps(ping_msg))
                     self.last_ping = current_time
+                    logger.debug(f"💓 Heartbeat ping sent at {current_time:.0f}")
+                
+                health_check_counter += 1
+                if health_check_counter >= self._health_check_interval:
+                    health_check_counter = 0
+                    health_score = self._check_connection_health()
+                    
+                    if health_score < 30:
+                        logger.error(
+                            f"🔴 Connection health CRITICAL: score={health_score}/100, "
+                            f"triggering reconnection"
+                        )
+                        self.connected = False
+                        if self.ws:
+                            try:
+                                await self.ws.close()
+                            except Exception as close_err:
+                                logger.debug(f"Error closing unhealthy WebSocket: {close_err}")
+                        break
+                    elif health_score < 60:
+                        logger.warning(f"🟡 Connection health WARNING: score={health_score}/100")
+                
                 await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                logger.debug("Heartbeat task cancelled")
+                raise
             except Exception as e:
-                logger.debug(f"Heartbeat error: {e}")
+                logger.warning(f"💓 Heartbeat error: {e}")
                 break
+    
+    def _check_connection_health(self) -> int:
+        """Check connection health based on heartbeat responses and data staleness.
+        
+        Health score factors:
+        - Heartbeat response time: Fast responses = higher score
+        - Time since last heartbeat: Recent = higher score
+        - Data staleness: Fresh data = higher score
+        - Consecutive failures: Fewer = higher score
+        
+        Returns:
+            Health score from 0 (dead) to 100 (perfect)
+        """
+        score = 100
+        current_time = time.time()
+        
+        if self.last_heartbeat_time is not None:
+            time_since_heartbeat = current_time - self.last_heartbeat_time
+            
+            if time_since_heartbeat > self._heartbeat_timeout_threshold * 2:
+                score -= 50
+                logger.warning(
+                    f"❌ No heartbeat response for {time_since_heartbeat:.0f}s "
+                    f"(threshold: {self._heartbeat_timeout_threshold}s)"
+                )
+            elif time_since_heartbeat > self._heartbeat_timeout_threshold:
+                score -= 30
+                logger.warning(
+                    f"⚠️ Heartbeat delayed: {time_since_heartbeat:.0f}s "
+                    f"(threshold: {self._heartbeat_timeout_threshold}s)"
+                )
+            elif time_since_heartbeat > self._heartbeat_timeout_threshold / 2:
+                score -= 10
+        else:
+            if self.connected and current_time - self.last_ping > self._heartbeat_timeout_threshold:
+                score -= 20
+                logger.debug("No heartbeat response received yet")
+        
+        if self.heartbeat_response_times:
+            avg_response_time = sum(self.heartbeat_response_times) / len(self.heartbeat_response_times)
+            if avg_response_time > 10.0:
+                score -= 20
+            elif avg_response_time > 5.0:
+                score -= 10
+            elif avg_response_time > 2.0:
+                score -= 5
+        
+        if self.last_data_received:
+            data_age = (datetime.now() - self.last_data_received).total_seconds()
+            if data_age > 60:
+                score -= 25
+            elif data_age > 30:
+                score -= 10
+        
+        failure_penalty = min(30, self.consecutive_connection_failures * 5)
+        score -= failure_penalty
+        
+        self.connection_health_score = max(0, min(100, score))
+        
+        logger.debug(
+            f"📊 Connection health: score={self.connection_health_score}/100, "
+            f"failures={self.consecutive_connection_failures}, "
+            f"last_heartbeat={self.last_heartbeat_time}"
+        )
+        
+        return self.connection_health_score
     
     async def _monitor_data_staleness(self):
         """Monitor for stale data and trigger reconnection if needed"""
@@ -2258,10 +2403,27 @@ class MarketDataClient:
             logger.error(f"Error in data staleness monitor: {e}")
     
     async def _handle_reconnect(self):
-        """Handle reconnection with state machine, circuit breaker, and enhanced backoff"""
-        self._subscribed = False  # Reset subscription status on reconnect
+        """Handle reconnection with state machine, circuit breaker, health tracking, and enhanced backoff.
+        
+        Enhanced features:
+        - Tracks consecutive connection failures
+        - Triggers extended cooldown after max_consecutive_connection_failures (20)
+        - Decrements health score on each failure
+        - Improved state transition logging
+        """
+        self._subscribed = False
+        
+        self.consecutive_connection_failures += 1
+        self.connection_health_score = max(0, self.connection_health_score - 10)
+        
+        logger.warning(
+            f"🔄 Handling reconnection: consecutive_failures={self.consecutive_connection_failures}, "
+            f"health_score={self.connection_health_score}/100, "
+            f"max_failures_threshold={self.max_consecutive_connection_failures}"
+        )
         
         if not self.running:
+            logger.debug("Not running - skipping reconnection")
             return
         
         if self._is_shutting_down:
@@ -2270,9 +2432,21 @@ class MarketDataClient:
         
         await self._cleanup_old_ws_tasks()
         
+        if self.consecutive_connection_failures >= self.max_consecutive_connection_failures:
+            logger.error(
+                f"🚨 Max consecutive failures ({self.max_consecutive_connection_failures}) reached! "
+                f"Triggering extended cooldown ({self._extended_cooldown_duration}s)"
+            )
+            delay = self._calculate_backoff_with_jitter(1, use_extended_cooldown=True)
+            logger.warning(f"⏸️ Extended cooldown: waiting {delay:.0f}s before next attempt...")
+            await asyncio.sleep(delay)
+            
+            self.consecutive_connection_failures = self.max_consecutive_connection_failures // 2
+            self.connection_health_score = 30
+            logger.info(f"🔄 Cooldown complete: reset failures to {self.consecutive_connection_failures}, health to 30")
+        
         if self._market_closed:
-            # Gunakan exponential backoff yang lebih panjang untuk market closed
-            wait_time = min(300, self.reconnect_delay * 4)  # Max 5 menit
+            wait_time = min(300, self.reconnect_delay * 4)
             logger.info(f"🔒 Market tutup - backoff {wait_time}s sebelum retry")
             self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
             await asyncio.sleep(wait_time)
@@ -2284,7 +2458,10 @@ class MarketDataClient:
         if cb_state['state'] == 'OPEN':
             remaining = self.circuit_breaker.recovery_timeout - (time.time() - (self.circuit_breaker.last_failure_time or 0))
             if remaining > 0:
-                logger.warning(f"Circuit breaker OPEN - waiting {remaining:.1f}s before retry")
+                logger.warning(
+                    f"⚡ Circuit breaker OPEN: waiting {remaining:.1f}s before retry | "
+                    f"failures={self.consecutive_connection_failures}, health={self.connection_health_score}"
+                )
                 logger.warning("Falling back to simulator mode due to circuit breaker")
                 await self._set_connection_state(ConnectionState.DISCONNECTED)
                 self.use_simulator = True
@@ -2299,15 +2476,22 @@ class MarketDataClient:
         try:
             await self.circuit_breaker.call_async(self._attempt_reconnect)
             self.connection_metrics.record_reconnect_attempt(success=True)
+            logger.info(
+                f"✅ Reconnection attempt successful | "
+                f"health={self.connection_health_score}, failures_reset_pending=True"
+            )
         except Exception as e:
-            logger.error(f"Reconnection failed: {e}")
+            logger.error(f"❌ Reconnection failed: {e}")
             self.connection_metrics.record_reconnect_attempt(success=False)
             
             cb_state = self.circuit_breaker.get_state()
-            logger.info(f"Circuit Breaker State: {cb_state}")
+            logger.info(
+                f"📊 Circuit Breaker State: {cb_state['state']}, "
+                f"failures={cb_state['failure_count']}/{cb_state['failure_threshold']}"
+            )
             
             if cb_state['state'] == 'OPEN':
-                logger.warning("Circuit is OPEN - falling back to simulator mode")
+                logger.warning("⚡ Circuit is OPEN - falling back to simulator mode")
                 await self._set_connection_state(ConnectionState.DISCONNECTED)
                 self.use_simulator = True
                 self.connected = False
@@ -2615,7 +2799,28 @@ class MarketDataClient:
                     logger.debug(f"Tick content: {tick}")
                 
             elif "pong" in data:
-                logger.debug("Pong received from server")
+                current_time = time.time()
+                self.last_heartbeat_time = current_time
+                
+                if self._pending_heartbeat_time is not None:
+                    response_time = current_time - self._pending_heartbeat_time
+                    self.heartbeat_response_times.append(response_time)
+                    self._pending_heartbeat_time = None
+                    
+                    if response_time > 5.0:
+                        logger.warning(f"💓 Pong received (SLOW): response_time={response_time:.2f}s")
+                    elif response_time > 2.0:
+                        logger.info(f"💓 Pong received: response_time={response_time:.2f}s")
+                    else:
+                        logger.debug(f"💓 Pong received: response_time={response_time:.3f}s")
+                    
+                    if len(self.heartbeat_response_times) >= 5:
+                        avg_time = sum(self.heartbeat_response_times) / len(self.heartbeat_response_times)
+                        if avg_time > 5.0:
+                            self.connection_health_score = max(0, self.connection_health_score - 10)
+                            logger.warning(f"⚠️ High average heartbeat latency: {avg_time:.2f}s, health={self.connection_health_score}")
+                else:
+                    logger.debug("💓 Pong received (no pending ping tracked)")
             
             elif "error" in data:
                 error = data["error"]
@@ -3261,6 +3466,59 @@ class MarketDataClient:
             return True
         # Must be both connected AND subscribed for usable data
         return self.connected and self._subscribed
+    
+    def cleanup_all_tick_data(self, retention_hours: Optional[int] = None) -> Dict[str, int]:
+        """Cleanup old tick data from all OHLC builders.
+        
+        Thread-safe method to clean up old tick data across all timeframes.
+        Useful for memory management on constrained environments (like Koyeb free tier).
+        
+        Args:
+            retention_hours: Hours to retain tick data (default: Config.TICK_DATA_RETENTION_HOURS)
+            
+        Returns:
+            Dict with cleaned counts per timeframe
+        """
+        retention = retention_hours if retention_hours is not None else Config.TICK_DATA_RETENTION_HOURS
+        
+        results = {
+            'M1': self.m1_builder.cleanup_old_tick_data(retention),
+            'M5': self.m5_builder.cleanup_old_tick_data(retention),
+            'H1': self.h1_builder.cleanup_old_tick_data(retention)
+        }
+        
+        total_cleaned = sum(results.values())
+        if total_cleaned > 0:
+            logger.info(f"🧹 Cleaned {total_cleaned} old tick data entries (M1:{results['M1']}, M5:{results['M5']}, H1:{results['H1']})")
+        
+        return results
+    
+    def run_memory_cleanup(self) -> Dict[str, Any]:
+        """Run comprehensive memory cleanup for all market data structures.
+        
+        This method:
+        1. Cleans up old tick data from all builders
+        2. Triggers garbage collection on each builder
+        3. Forces Python GC
+        
+        Returns:
+            Dict with cleanup statistics
+        """
+        tick_cleanup = self.cleanup_all_tick_data()
+        
+        gc_results = {
+            'M1': self.m1_builder.run_gc_if_needed(),
+            'M5': self.m5_builder.run_gc_if_needed(),
+            'H1': self.h1_builder.run_gc_if_needed()
+        }
+        
+        gc.collect()
+        
+        return {
+            'tick_cleanup': tick_cleanup,
+            'gc_triggered': gc_results,
+            'total_tick_cleaned': sum(tick_cleanup.values())
+        }
     
     def get_status(self) -> Dict:
         return {

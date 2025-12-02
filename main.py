@@ -2,8 +2,12 @@ import asyncio
 import signal
 import sys
 import os
+import gc
 import fcntl
 import atexit
+import psutil
+import glob
+from datetime import timedelta
 from aiohttp import web
 from typing import Optional, Dict, Set, Any, Callable
 from dataclasses import dataclass, field
@@ -541,6 +545,15 @@ class TradingBotOrchestrator:
                 logger.info(f"✅ self_ping_keep_alive restarted successfully")
                 return True
             
+            elif task_name == "memory_monitor":
+                logger.warning(f"🔄 Restarting memory_monitor (attempt {task_info.restart_count}/{task_info.max_restarts})")
+                new_task = asyncio.create_task(self._memory_monitor())
+                task_info.task = new_task
+                task_info.created_at = datetime.now()
+                task_info.status = TaskStatus.RUNNING
+                logger.info(f"✅ memory_monitor restarted successfully")
+                return True
+            
             else:
                 logger.warning(f"⚠️ No restart handler for task: {task_name}")
                 return False
@@ -711,6 +724,178 @@ class TradingBotOrchestrator:
             logger.info("🏓 Self-ping task cancelled")
         except Exception as e:
             logger.error(f"❌ Self-ping task fatal error: {e}")
+    
+    async def _memory_monitor(self):
+        """Memory monitoring coroutine for Koyeb Free Tier (512MB limit).
+        
+        This coroutine:
+        1. Checks memory usage every MEMORY_MONITOR_INTERVAL_SECONDS
+        2. Triggers GC when memory exceeds WARNING threshold (400MB)
+        3. Clears caches when memory exceeds CRITICAL threshold (450MB)
+        4. Cleans up old chart files (older than CHART_CLEANUP_AGE_MINUTES)
+        """
+        logger.info(f"🧠 Starting memory monitor (interval: {self.config.MEMORY_MONITOR_INTERVAL_SECONDS}s)")
+        logger.info(f"   Warning threshold: {self.config.MEMORY_WARNING_THRESHOLD_MB}MB")
+        logger.info(f"   Critical threshold: {self.config.MEMORY_CRITICAL_THRESHOLD_MB}MB")
+        logger.info(f"   Chart cleanup age: {self.config.CHART_CLEANUP_AGE_MINUTES} minutes")
+        
+        check_count = 0
+        gc_trigger_count = 0
+        cache_clear_count = 0
+        chart_cleanup_count = 0
+        
+        try:
+            while self.running and not self._shutdown_in_progress:
+                try:
+                    await asyncio.sleep(self.config.MEMORY_MONITOR_INTERVAL_SECONDS)
+                    
+                    if not self.running or self._shutdown_in_progress:
+                        break
+                    
+                    check_count += 1
+                    
+                    process = psutil.Process()
+                    memory_info = process.memory_info()
+                    memory_mb = memory_info.rss / (1024 * 1024)
+                    memory_percent = process.memory_percent()
+                    
+                    if check_count % 10 == 0:
+                        logger.info(
+                            f"🧠 Memory check #{check_count}: {memory_mb:.1f}MB "
+                            f"({memory_percent:.1f}%) - "
+                            f"GC triggers: {gc_trigger_count}, "
+                            f"Cache clears: {cache_clear_count}, "
+                            f"Chart cleanups: {chart_cleanup_count}"
+                        )
+                    else:
+                        logger.debug(f"🧠 Memory: {memory_mb:.1f}MB ({memory_percent:.1f}%)")
+                    
+                    if memory_mb >= self.config.MEMORY_CRITICAL_THRESHOLD_MB:
+                        logger.warning(
+                            f"⚠️ CRITICAL MEMORY: {memory_mb:.1f}MB >= "
+                            f"{self.config.MEMORY_CRITICAL_THRESHOLD_MB}MB - Clearing caches!"
+                        )
+                        cache_clear_count += 1
+                        await self._clear_all_caches()
+                        
+                        gc.collect()
+                        gc_trigger_count += 1
+                        
+                        new_memory_info = process.memory_info()
+                        new_memory_mb = new_memory_info.rss / (1024 * 1024)
+                        freed_mb = memory_mb - new_memory_mb
+                        logger.info(f"🧹 Cache clear complete - freed {freed_mb:.1f}MB (now {new_memory_mb:.1f}MB)")
+                    
+                    elif memory_mb >= self.config.MEMORY_WARNING_THRESHOLD_MB:
+                        logger.warning(
+                            f"⚠️ HIGH MEMORY: {memory_mb:.1f}MB >= "
+                            f"{self.config.MEMORY_WARNING_THRESHOLD_MB}MB - Triggering GC"
+                        )
+                        gc_trigger_count += 1
+                        
+                        if self.market_data:
+                            self.market_data.run_memory_cleanup()
+                        
+                        gc.collect()
+                        
+                        new_memory_info = process.memory_info()
+                        new_memory_mb = new_memory_info.rss / (1024 * 1024)
+                        freed_mb = memory_mb - new_memory_mb
+                        logger.info(f"🧹 GC complete - freed {freed_mb:.1f}MB (now {new_memory_mb:.1f}MB)")
+                    
+                    if check_count % 5 == 0:
+                        cleaned = self._cleanup_old_chart_files()
+                        if cleaned > 0:
+                            chart_cleanup_count += cleaned
+                            logger.info(f"🗑️ Cleaned up {cleaned} old chart files")
+                    
+                except asyncio.CancelledError:
+                    logger.info(
+                        f"🧠 Memory monitor cancelled after {check_count} checks "
+                        f"(GC: {gc_trigger_count}, Cache clear: {cache_clear_count}, "
+                        f"Charts cleaned: {chart_cleanup_count})"
+                    )
+                    raise
+                
+                except Exception as e:
+                    logger.error(f"❌ Memory monitor error: {type(e).__name__}: {e}")
+                    await asyncio.sleep(30)
+            
+            logger.info(
+                f"🧠 Memory monitor stopped (checks: {check_count}, "
+                f"GC triggers: {gc_trigger_count}, Cache clears: {cache_clear_count})"
+            )
+        
+        except asyncio.CancelledError:
+            logger.info("🧠 Memory monitor task cancelled")
+        except Exception as e:
+            logger.error(f"❌ Memory monitor fatal error: {e}")
+    
+    async def _clear_all_caches(self):
+        """Clear all caches when memory is critically high.
+        
+        This method clears:
+        1. Market data tick data
+        2. Chart generator caches
+        3. Any other in-memory caches
+        """
+        logger.info("🧹 Clearing all caches due to critical memory...")
+        
+        try:
+            if self.market_data:
+                cleanup_result = self.market_data.run_memory_cleanup()
+                logger.info(f"   Market data cleanup: {cleanup_result}")
+            
+            if self.chart_generator:
+                if hasattr(self.chart_generator, '_pending_charts'):
+                    async with self.chart_generator._chart_lock:
+                        self.chart_generator._pending_charts.clear()
+                    logger.info("   Chart generator pending charts cleared")
+                
+                if hasattr(self.chart_generator, '_timed_out_tasks'):
+                    self.chart_generator._timed_out_tasks.clear()
+                    logger.info("   Chart generator timed out tasks cleared")
+            
+            gc.collect(generation=2)
+            logger.info("   Full garbage collection (gen 2) completed")
+            
+        except Exception as e:
+            logger.error(f"❌ Error clearing caches: {e}")
+    
+    def _cleanup_old_chart_files(self) -> int:
+        """Cleanup chart files older than CHART_CLEANUP_AGE_MINUTES.
+        
+        Returns:
+            Number of files deleted
+        """
+        chart_dir = 'charts'
+        if not os.path.exists(chart_dir):
+            return 0
+        
+        cleanup_age_minutes = self.config.CHART_CLEANUP_AGE_MINUTES
+        cutoff_time = datetime.now() - timedelta(minutes=cleanup_age_minutes)
+        
+        deleted_count = 0
+        
+        try:
+            chart_files = glob.glob(os.path.join(chart_dir, '*.png'))
+            
+            for chart_file in chart_files:
+                try:
+                    file_mtime = datetime.fromtimestamp(os.path.getmtime(chart_file))
+                    
+                    if file_mtime < cutoff_time:
+                        os.remove(chart_file)
+                        deleted_count += 1
+                        logger.debug(f"🗑️ Deleted old chart: {chart_file}")
+                        
+                except (OSError, IOError) as e:
+                    logger.debug(f"Could not delete chart {chart_file}: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error during chart cleanup: {e}")
+        
+        return deleted_count
     
     def _auto_detect_webhook_url(self) -> Optional[str]:
         if self.config.WEBHOOK_URL and self.config.WEBHOOK_URL.strip():
@@ -2030,6 +2215,18 @@ class TradingBotOrchestrator:
                 cancel_timeout=3.0,
                 max_restarts=-1
             )
+            
+            logger.info("Starting memory monitor (Koyeb 512MB optimization)...")
+            memory_monitor_task = asyncio.create_task(self._memory_monitor())
+            await self.register_task(
+                name="memory_monitor",
+                task=memory_monitor_task,
+                priority=TaskPriority.LOW,
+                critical=False,
+                cancel_timeout=3.0,
+                max_restarts=-1
+            )
+            logger.info(f"✅ Memory monitor started (interval: {self.config.MEMORY_MONITOR_INTERVAL_SECONDS}s)")
             
             logger.info("Loading candles from database...")
             await self.market_data.load_candles_from_db(self.db_manager)

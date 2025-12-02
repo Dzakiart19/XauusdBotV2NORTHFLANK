@@ -3289,13 +3289,6 @@ class TradingBot:
                         blocking_reason='DUPLICATE_SIGNAL'
                     )
                 
-                if hasattr(self, 'alert_system') and self.alert_system:
-                    await self.alert_system.send_signal_blocked_alert(
-                        user_id=user_id,
-                        signal_data=signal_data_for_tracking,
-                        blocking_reason="Signal duplikat terdeteksi. Signal dengan tipe dan harga yang sama baru saja dikirim."
-                    )
-                
                 return
 
             if await self.position_tracker.has_active_position_async(user_id):
@@ -3315,13 +3308,6 @@ class TradingBot:
                         user_id=user_id,
                         signal_data=signal_data_for_tracking,
                         blocking_reason='ACTIVE_POSITION'
-                    )
-                
-                if hasattr(self, 'alert_system') and self.alert_system:
-                    await self.alert_system.send_signal_blocked_alert(
-                        user_id=user_id,
-                        signal_data=signal_data_for_tracking,
-                        blocking_reason="Anda sudah memiliki posisi aktif. Signal baru tidak dapat dikirim sampai posisi ditutup."
                     )
                 
                 return

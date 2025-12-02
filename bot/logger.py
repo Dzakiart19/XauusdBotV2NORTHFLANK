@@ -1,13 +1,18 @@
 """
 Logging module for the Trading Bot.
 
-Log Retention Policy:
-- Each log file is limited to 5MB (LOG_MAX_BYTES_DEFAULT)
-- Maximum 5 backup files per module (LOG_BACKUP_COUNT_DEFAULT)
-- Total maximum log storage per module: ~30MB (5MB * 6 files)
+Log Retention Policy (Optimized for Koyeb):
+- Each log file is limited to 2MB (MAX_LOG_SIZE_MB)
+- Maximum 2 backup files per module (MAX_LOG_BACKUP_COUNT)
+- Total maximum log storage per module: ~6MB (2MB * 3 files)
 - Stale log files (older than LOG_RETENTION_DAYS) are automatically cleaned
 - Log rotation is handled automatically by RotatingFileHandler
 - Manual cleanup can be triggered via cleanup_old_logs()
+
+Features:
+- Adaptive log level reduction during high load
+- Sampled debug logging for high-frequency messages
+- Compact log format with PID and module identification
 
 Module-specific configurations can be set via LOG_CONFIG dictionary.
 """
@@ -19,13 +24,21 @@ import time
 import glob
 import threading
 from collections import defaultdict
+from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Generator
 
-LOG_MAX_BYTES_DEFAULT = 5 * 1024 * 1024
-LOG_BACKUP_COUNT_DEFAULT = 5
+MAX_LOG_SIZE_MB = 2
+MAX_LOG_BACKUP_COUNT = 2
+LOG_SAMPLING_RATE = 100
+
+LOG_MAX_BYTES_DEFAULT = MAX_LOG_SIZE_MB * 1024 * 1024
+LOG_BACKUP_COUNT_DEFAULT = MAX_LOG_BACKUP_COUNT
 LOG_RETENTION_DAYS = 7
+
+_debug_sample_counter = 0
+_debug_sample_lock = threading.Lock()
 
 
 class LoggerError(Exception):
@@ -33,13 +46,13 @@ class LoggerError(Exception):
     pass
 
 LOG_CONFIG = {
-    'main': {'max_bytes': 10 * 1024 * 1024, 'backup_count': 5},
-    'strategy': {'max_bytes': 5 * 1024 * 1024, 'backup_count': 5},
-    'marketdata': {'max_bytes': 5 * 1024 * 1024, 'backup_count': 3},
-    'telegrambot': {'max_bytes': 5 * 1024 * 1024, 'backup_count': 5},
-    'errorhandler': {'max_bytes': 10 * 1024 * 1024, 'backup_count': 10},
-    'positiontracker': {'max_bytes': 5 * 1024 * 1024, 'backup_count': 5},
-    'riskmanager': {'max_bytes': 5 * 1024 * 1024, 'backup_count': 5},
+    'main': {'max_bytes': 2 * 1024 * 1024, 'backup_count': 2},
+    'strategy': {'max_bytes': 2 * 1024 * 1024, 'backup_count': 2},
+    'marketdata': {'max_bytes': 1 * 1024 * 1024, 'backup_count': 2},
+    'telegrambot': {'max_bytes': 2 * 1024 * 1024, 'backup_count': 2},
+    'errorhandler': {'max_bytes': 3 * 1024 * 1024, 'backup_count': 3},
+    'positiontracker': {'max_bytes': 2 * 1024 * 1024, 'backup_count': 2},
+    'riskmanager': {'max_bytes': 2 * 1024 * 1024, 'backup_count': 2},
     'default': {'max_bytes': LOG_MAX_BYTES_DEFAULT, 'backup_count': LOG_BACKUP_COUNT_DEFAULT}
 }
 
@@ -101,6 +114,80 @@ def sanitize_log_message(message: str) -> str:
                 sanitized = sanitized.replace(key, mask_token(key))
     
     return sanitized
+
+
+@contextmanager
+def adaptive_log_level(logger: logging.Logger, 
+                       high_load_level: int = logging.WARNING) -> Generator[None, None, None]:
+    """
+    Context manager that temporarily reduces log level during high load.
+    
+    Useful for reducing log volume during intensive operations like
+    batch processing, market data bursts, or signal generation.
+    
+    Args:
+        logger: The logger to temporarily modify
+        high_load_level: Log level to use during high load (default: WARNING)
+    
+    Yields:
+        None
+    
+    Example:
+        with adaptive_log_level(logger, logging.ERROR):
+            # Only ERROR and CRITICAL logs will be recorded during this block
+            process_high_frequency_data()
+    """
+    original_level = logger.level
+    try:
+        logger.setLevel(high_load_level)
+        yield
+    finally:
+        logger.setLevel(original_level)
+
+
+def sampled_debug(logger: logging.Logger, 
+                  message: str, 
+                  sampling_rate: Optional[int] = None,
+                  *args, **kwargs) -> bool:
+    """
+    Log debug message with sampling - only logs every Nth message.
+    
+    Useful for high-frequency debug logs that would otherwise overwhelm
+    the log files. Only 1 in N messages will actually be logged.
+    
+    Args:
+        logger: Logger instance to use
+        message: Debug message to log
+        sampling_rate: Sample rate (1 in N logs). Defaults to LOG_SAMPLING_RATE
+        *args, **kwargs: Additional arguments passed to logger.debug()
+    
+    Returns:
+        bool: True if message was logged, False if skipped
+    
+    Example:
+        # Only log 1 in 100 tick updates
+        sampled_debug(logger, f"Tick: {price}", sampling_rate=100)
+    """
+    global _debug_sample_counter
+    
+    if sampling_rate is None:
+        sampling_rate = LOG_SAMPLING_RATE
+    
+    with _debug_sample_lock:
+        _debug_sample_counter += 1
+        should_log = (_debug_sample_counter % sampling_rate) == 0
+    
+    if should_log:
+        logger.debug(f"[sampled 1/{sampling_rate}] {message}", *args, **kwargs)
+        return True
+    return False
+
+
+def reset_sample_counter() -> None:
+    """Reset the debug sample counter to 0."""
+    global _debug_sample_counter
+    with _debug_sample_lock:
+        _debug_sample_counter = 0
 
 
 def get_log_config(name: str) -> dict:
@@ -331,8 +418,8 @@ def setup_logger(name='TradingBot', log_dir='logs', level=None):
         return logger
     
     log_format = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        '[%(process)d] %(asctime)s %(name)s.%(module)s %(levelname)s %(message)s',
+        datefmt='%m%d %H:%M:%S'
     )
     
     config = get_log_config(name)
