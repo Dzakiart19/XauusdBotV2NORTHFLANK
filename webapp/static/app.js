@@ -307,7 +307,14 @@
             return TelegramWebApp.initDataUnsafe.user.id;
         }
         var urlParams = new URLSearchParams(window.location.search);
-        return urlParams.get('user_id') || null;
+        var urlUserId = urlParams.get('user_id');
+        if (urlUserId) return urlUserId;
+        if (window.currentUserId) return window.currentUserId;
+        try {
+            var storedUserId = localStorage.getItem('currentUserId');
+            if (storedUserId) return storedUserId;
+        } catch (e) {}
+        return null;
     }
 
     function getTelegramUserFirstName() {
@@ -1372,6 +1379,7 @@
                 lastCandleDataFetch = 0;
                 refreshData();
                 updateCandleChart(true);
+                fetchTradeHistory();
             }
         });
     }

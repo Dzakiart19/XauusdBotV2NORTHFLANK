@@ -866,6 +866,7 @@ class PositionTracker:
             except Exception:
                 pass
             
+            opened_at = datetime.now(pytz.UTC)
             position = Position(
                 user_id=user_id,
                 trade_id=trade_id,
@@ -881,7 +882,8 @@ class PositionTracker:
                 sl_adjustment_count=0,
                 max_profit_reached=0.0,
                 last_price_update=datetime.now(pytz.UTC),
-                signal_quality_id=signal_quality_id
+                signal_quality_id=signal_quality_id,
+                opened_at=opened_at
             )
             session.add(position)
             session.flush()
@@ -902,6 +904,7 @@ class PositionTracker:
                     'sl_adjustment_count': 0,
                     'max_profit_reached': 0.0,
                     'signal_quality_id': signal_quality_id,
+                    'opened_at': opened_at
                 }
             
             logger.info(f"✅ Position added - User:{user_id} ID:{position_id} {signal_type} @${entry_price:.2f} SL:${stop_loss:.2f} TP:${take_profit:.2f}")
@@ -1341,6 +1344,8 @@ class PositionTracker:
                 position.current_price = exit_price
                 position.unrealized_pl = actual_pl
                 position.closed_at = datetime.now(pytz.UTC)
+            else:
+                logger.warning(f"⚠️ Position {position_id} not found in database for User:{user_id} - may cause data inconsistency")
                 
             trade = session.query(Trade).filter(Trade.id == trade_id, Trade.user_id == user_id).first()
             if trade:
@@ -1349,6 +1354,8 @@ class PositionTracker:
                 trade.actual_pl = actual_pl
                 trade.close_time = datetime.now(pytz.UTC)
                 trade.result = trade_result
+            else:
+                logger.warning(f"⚠️ Trade {trade_id} not found in database for User:{user_id} - trade history may be incomplete")
                 
             session.commit()
             
@@ -1907,7 +1914,8 @@ class PositionTracker:
                         'original_sl': pos.original_sl or pos.stop_loss,
                         'sl_adjustment_count': pos.sl_adjustment_count or 0,
                         'max_profit_reached': pos.max_profit_reached or 0.0,
-                        'signal_quality_id': getattr(pos, 'signal_quality_id', None)
+                        'signal_quality_id': getattr(pos, 'signal_quality_id', None),
+                        'opened_at': pos.opened_at
                     }
             
             total_positions = sum(len(positions) for positions in self.active_positions.values())

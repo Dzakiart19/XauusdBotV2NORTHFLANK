@@ -1779,7 +1779,10 @@ class TradingBot:
         lines.append("📡 *SINYAL TERAKHIR*")
         try:
             has_signal = False
+            user_prefix = f"{chat_id}_"
             for type_key, signal_info in list(self.last_signal_per_type.items()):
+                if not type_key.startswith(user_prefix):
+                    continue
                 if signal_info:
                     signal_type = signal_info.get('signal_type', 'N/A')
                     entry_price = signal_info.get('entry_price', 0)
@@ -1807,7 +1810,7 @@ class TradingBot:
         lines.append("📈 *POSISI AKTIF*")
         try:
             if self.position_tracker:
-                positions = await self.position_tracker.get_active_positions_async()
+                positions = await self.position_tracker.get_active_positions_async(chat_id)
                 if positions:
                     for pos in list(positions.values())[:3]:
                         signal_type = pos.get('signal_type', 'N/A')
