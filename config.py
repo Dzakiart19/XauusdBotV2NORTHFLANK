@@ -249,8 +249,28 @@ class Config:
             'public_count': len(cls.ID_USER_PUBLIC)
         }
     
-    TELEGRAM_WEBHOOK_MODE = os.getenv('TELEGRAM_WEBHOOK_MODE', 'false').lower() == 'true'
-    WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
+    # Koyeb deployment detection - auto-enable webhook mode
+    KOYEB_PUBLIC_DOMAIN = os.getenv('KOYEB_PUBLIC_DOMAIN', '')
+    KOYEB_REGION = os.getenv('KOYEB_REGION', '')
+    KOYEB_SERVICE_NAME = os.getenv('KOYEB_SERVICE_NAME', '')
+    IS_KOYEB = bool(KOYEB_PUBLIC_DOMAIN or KOYEB_REGION or KOYEB_SERVICE_NAME or os.getenv('KOYEB_APP_NAME', ''))
+    
+    # Auto-enable webhook mode for Koyeb deployment
+    _telegram_webhook_mode_env = os.getenv('TELEGRAM_WEBHOOK_MODE', '')
+    if _telegram_webhook_mode_env:
+        TELEGRAM_WEBHOOK_MODE = _telegram_webhook_mode_env.lower() == 'true'
+    else:
+        # Auto-detect: enable webhook mode if running on Koyeb
+        TELEGRAM_WEBHOOK_MODE = IS_KOYEB
+    
+    # Auto-generate webhook URL for Koyeb if not explicitly set
+    _webhook_url_env = os.getenv('WEBHOOK_URL', '')
+    if _webhook_url_env:
+        WEBHOOK_URL = _webhook_url_env
+    elif KOYEB_PUBLIC_DOMAIN:
+        WEBHOOK_URL = f"https://{KOYEB_PUBLIC_DOMAIN}/webhook"
+    else:
+        WEBHOOK_URL = ''
     FREE_TIER_MODE = os.getenv('FREE_TIER_MODE', 'true').lower() == 'true'
     TICK_LOG_SAMPLE_RATE = _get_int_env('TICK_LOG_SAMPLE_RATE', '30')
     EMA_PERIODS = _parse_int_list(os.getenv('EMA_PERIODS', '5,20,50'), [5, 20, 50])

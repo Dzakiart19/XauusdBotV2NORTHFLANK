@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import pickle
+import re
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 from collections import deque
@@ -13,6 +14,37 @@ from bot.resilience import RateLimiter, CircuitBreaker
 from bot.message_templates import MessageFormatter
 
 logger = setup_logger('AlertSystem')
+
+
+def escape_markdown(text: str) -> str:
+    """
+    Escape special Markdown characters untuk Telegram.
+    Ini mencegah error parsing saat mengirim pesan dengan konten dinamis.
+    """
+    if not text:
+        return text
+    
+    escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    result = str(text)
+    for char in escape_chars:
+        result = result.replace(char, f'\\{char}')
+    return result
+
+
+def escape_markdown_v1(text: str) -> str:
+    """
+    Escape basic Markdown v1 characters untuk Telegram.
+    Hanya escape karakter yang bermasalah di Markdown v1: _ * ` [
+    """
+    if not text:
+        return text
+    
+    result = str(text)
+    result = result.replace('_', '\\_')
+    result = result.replace('*', '\\*')
+    result = result.replace('`', '\\`')
+    result = result.replace('[', '\\[')
+    return result
 
 MAX_QUEUE_SIZE = 100
 MAX_HISTORY_SIZE = 100
@@ -640,18 +672,24 @@ class AlertSystem:
         
         suggestion_text = suggestion or "Gunakan /close untuk menutup posisi aktif dan menerima signal baru."
         
+        safe_signal_type = escape_markdown_v1(str(signal_type))
+        safe_rule_name = escape_markdown_v1(str(rule_name))
+        safe_grade = escape_markdown_v1(str(grade))
+        safe_blocking_reason = escape_markdown_v1(str(blocking_reason))
+        safe_suggestion = escape_markdown_v1(str(suggestion_text))
+        
         message = (
             f"🚫 *Signal Bagus Diblokir*\n\n"
             f"📊 *Detail Signal:*\n"
-            f"• Type: {signal_type}\n"
-            f"• Rule: {rule_name}\n"
-            f"• Grade: {grade}\n"
+            f"• Type: {safe_signal_type}\n"
+            f"• Rule: {safe_rule_name}\n"
+            f"• Grade: {safe_grade}\n"
             f"• Confidence: {confidence*100:.0f}%\n"
             f"• Entry: ${entry_price:.2f}\n\n"
             f"❌ *Alasan Blocking:*\n"
-            f"{blocking_reason}\n\n"
+            f"{safe_blocking_reason}\n\n"
             f"💡 *Saran:*\n"
-            f"{suggestion_text}"
+            f"{safe_suggestion}"
         )
         
         alert = Alert(

@@ -1673,9 +1673,21 @@ class TradingBotOrchestrator:
             
             webhook_path = None
             if self.config_valid and self.config.TELEGRAM_BOT_TOKEN:
+                # Register both /webhook (simple) and /bot{token} (standard Telegram format)
                 webhook_path = f"/bot{self.config.TELEGRAM_BOT_TOKEN}"
                 app.router.add_post(webhook_path, telegram_webhook)
-                logger.info(f"Webhook route registered: {webhook_path}")
+                app.router.add_post('/webhook', telegram_webhook)
+                logger.info(f"Webhook routes registered: /webhook and {webhook_path[:20]}...")
+                
+                # Also register GET for webhook status check (Koyeb health check)
+                async def webhook_status(request):
+                    return web.json_response({
+                        'ok': True,
+                        'webhook_mode': self.config.TELEGRAM_WEBHOOK_MODE,
+                        'is_koyeb': self.config.IS_KOYEB,
+                        'bot_initialized': self.telegram_bot is not None and self.telegram_bot.app is not None
+                    })
+                app.router.add_get('/webhook', webhook_status)
             else:
                 logger.info("Webhook route not registered - limited mode or missing bot token")
             
