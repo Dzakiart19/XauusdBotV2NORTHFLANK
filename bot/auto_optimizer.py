@@ -295,6 +295,9 @@ class AutoOptimizer:
     FAST_TUNE_THRESHOLD = 0.40
     AGGRESSIVE_BOOST_THRESHOLD = 0.65
     
+    BLOCKING_RATE_THRESHOLD = 0.70  # 70%
+    BLOCKING_RATE_WINDOW_HOURS = 1
+    
     def __init__(self, 
                  signal_quality_tracker: Optional[SignalQualityTracker] = None,
                  config = None,
@@ -439,6 +442,9 @@ class AutoOptimizer:
         adjustments.extend(self._check_three_confluence_win_rate(data))
         adjustments.extend(self._check_hourly_accuracy(data))
         adjustments.extend(self._check_performance_improvement(data))
+        
+        # Check blocking rate
+        adjustments.extend(self._check_signal_blocking_rate(data))
         
         return adjustments
     
@@ -650,6 +656,64 @@ class AutoOptimizer:
         if current_accuracy > 0.60 and current_accuracy > last_snapshot.overall_accuracy + 0.10:
             if self._current_parameters != self._default_parameters:
                 logger.info(f"🔧 Performance improved significantly ({current_accuracy*100:.1f}%), considering reset to defaults")
+        
+        return adjustments
+    
+    def _check_signal_blocking_rate(self, data: Dict[str, Any]) -> List[Adjustment]:
+        """
+        Check signal blocking rate dan generate adjustments jika terlalu tinggi.
+        
+        Jika blocking rate > 70% dalam 1 jam:
+        - Recommend enabling AUTO_SIGNAL_REPLACEMENT_ALLOWED
+        - Recommend reducing cooldowns
+        
+        Args:
+            data: Signal quality data termasuk blocking stats
+        
+        Returns:
+            List of Adjustments untuk mengurangi blocking
+        """
+        adjustments = []
+        
+        blocking_stats = data.get('blocking_stats', {})
+        total_blocked = blocking_stats.get('total_blocked', 0)
+        window_hours = blocking_stats.get('window_hours', 1)
+        
+        estimated_total_signals = 50 * window_hours
+        
+        if total_blocked > 0 and estimated_total_signals > 0:
+            blocking_rate = total_blocked / (total_blocked + estimated_total_signals)
+            
+            if blocking_rate >= self.BLOCKING_RATE_THRESHOLD:
+                logger.warning(
+                    f"⚠️ High signal blocking rate detected: {blocking_rate*100:.1f}% "
+                    f"({total_blocked} blocked in {window_hours}h)"
+                )
+                
+                current_cooldown = self._current_parameters.signal_cooldown
+                if current_cooldown > 0:
+                    adjustments.append(Adjustment(
+                        adjustment_type='reduce_blocking_cooldown',
+                        parameter_name='signal_cooldown',
+                        old_value=current_cooldown,
+                        new_value=0,
+                        reason=f"Blocking rate {blocking_rate*100:.1f}% > {self.BLOCKING_RATE_THRESHOLD*100}% threshold"
+                    ))
+                
+                if data.get('auto_replacement_disabled', False):
+                    adjustments.append(Adjustment(
+                        adjustment_type='enable_auto_replacement',
+                        parameter_name='auto_signal_replacement',
+                        old_value=False,
+                        new_value=True,
+                        reason=f"Enable auto replacement due to high blocking rate {blocking_rate*100:.1f}%"
+                    ))
+                
+                if adjustments:
+                    logger.info(
+                        f"🔧 Auto-optimizer recommends: Enable AUTO_SIGNAL_REPLACEMENT_ALLOWED "
+                        f"and set TICK_COOLDOWN_FOR_SAME_SIGNAL=0 to reduce blocking rate"
+                    )
         
         return adjustments
     

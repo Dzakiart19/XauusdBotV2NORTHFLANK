@@ -154,6 +154,12 @@ class SignalQualityTracker:
         self._alert_cooldown = timedelta(minutes=30)
         self._last_alerts_sent: Dict[str, datetime] = {}
         
+        self._blocked_signals: Dict[int, List[Dict]] = {}
+        self._blocked_signals_lock = threading.RLock()
+        self._last_blocking_rate_check: Dict[int, datetime] = {}
+        self.BLOCKING_RATE_ALERT_THRESHOLD = 0.80
+        self.BLOCKING_RATE_WINDOW_MINUTES = 5
+        
         self._ensure_table_exists()
         
         logger.info("SignalQualityTracker initialized")
@@ -877,3 +883,134 @@ class SignalQualityTracker:
             return True, "; ".join(reasons)
         
         return False, ""
+    
+    def track_blocked_signal(self, user_id: int, signal_data: Dict[str, Any], 
+                             blocking_reason: str) -> None:
+        """
+        Track signal yang di-block untuk analisis.
+        
+        Args:
+            user_id: ID user
+            signal_data: Data signal (type, confidence, grade, rule_name, etc)
+            blocking_reason: Alasan blocking (session_active, cooldown, etc)
+        """
+        with self._blocked_signals_lock:
+            if user_id not in self._blocked_signals:
+                self._blocked_signals[user_id] = []
+            
+            blocked_entry = {
+                'timestamp': datetime.now(pytz.UTC),
+                'signal_type': signal_data.get('signal_type', 'UNKNOWN'),
+                'rule_name': signal_data.get('rule_name', 'UNKNOWN'),
+                'confidence': signal_data.get('confidence', 0),
+                'grade': signal_data.get('grade', 'N/A'),
+                'blocking_reason': blocking_reason
+            }
+            
+            self._blocked_signals[user_id].append(blocked_entry)
+            
+            if len(self._blocked_signals[user_id]) > 100:
+                self._blocked_signals[user_id] = self._blocked_signals[user_id][-100:]
+            
+            logger.info(
+                f"📊 Blocked signal tracked - User:{user_id} "
+                f"Type:{signal_data.get('signal_type')} "
+                f"Reason:{blocking_reason}"
+            )
+            
+            self._check_blocking_rate_alert(user_id)
+    
+    def _check_blocking_rate_alert(self, user_id: int) -> None:
+        """Check if blocking rate exceeds threshold and generate alert."""
+        now = datetime.now(pytz.UTC)
+        window_start = now - timedelta(minutes=self.BLOCKING_RATE_WINDOW_MINUTES)
+        
+        last_check = self._last_blocking_rate_check.get(user_id)
+        if last_check and (now - last_check).total_seconds() < 60:
+            return
+        
+        with self._blocked_signals_lock:
+            user_blocked = self._blocked_signals.get(user_id, [])
+            recent_blocked = [s for s in user_blocked if s['timestamp'] >= window_start]
+        
+        if len(recent_blocked) < 5:
+            return
+        
+        blocking_count = len(recent_blocked)
+        
+        if blocking_count >= 10:
+            self._last_blocking_rate_check[user_id] = now
+            
+            alert = QualityAlert(
+                alert_type="HIGH_BLOCKING_RATE",
+                message=(
+                    f"⚠️ Tingkat blocking signal tinggi!\n"
+                    f"User {user_id} memiliki {blocking_count} signal di-block "
+                    f"dalam {self.BLOCKING_RATE_WINDOW_MINUTES} menit terakhir.\n"
+                    f"Pertimbangkan untuk menutup posisi aktif."
+                ),
+                severity="WARNING",
+                data={
+                    'user_id': user_id,
+                    'blocked_count': blocking_count,
+                    'window_minutes': self.BLOCKING_RATE_WINDOW_MINUTES
+                }
+            )
+            self._pending_alerts.append(alert)
+            logger.warning(f"⚠️ High blocking rate alert for user {user_id}: {blocking_count} blocked")
+    
+    def get_blocking_stats(self, user_id: int, minutes: int = 60) -> Dict[str, Any]:
+        """
+        Get blocking statistics untuk user.
+        
+        Args:
+            user_id: ID user
+            minutes: Window waktu untuk analisis
+        
+        Returns:
+            Dict dengan statistik blocking
+        """
+        now = datetime.now(pytz.UTC)
+        window_start = now - timedelta(minutes=minutes)
+        
+        with self._blocked_signals_lock:
+            user_blocked = self._blocked_signals.get(user_id, [])
+            recent_blocked = [s for s in user_blocked if s['timestamp'] >= window_start]
+        
+        if not recent_blocked:
+            return {
+                'total_blocked': 0,
+                'by_reason': {},
+                'by_type': {},
+                'window_minutes': minutes
+            }
+        
+        by_reason = {}
+        for s in recent_blocked:
+            reason = s.get('blocking_reason', 'unknown')
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+        
+        by_type = {}
+        for s in recent_blocked:
+            sig_type = s.get('signal_type', 'unknown')
+            by_type[sig_type] = by_type.get(sig_type, 0) + 1
+        
+        return {
+            'total_blocked': len(recent_blocked),
+            'by_reason': by_reason,
+            'by_type': by_type,
+            'window_minutes': minutes,
+            'high_quality_blocked': sum(1 for s in recent_blocked 
+                                        if s.get('grade') in ['A', 'Grade A'] or 
+                                        s.get('confidence', 0) >= 0.9)
+        }
+    
+    def clear_blocked_signals(self, user_id: int) -> int:
+        """Clear blocked signals history untuk user. Returns count cleared."""
+        with self._blocked_signals_lock:
+            if user_id in self._blocked_signals:
+                count = len(self._blocked_signals[user_id])
+                del self._blocked_signals[user_id]
+                logger.info(f"Cleared {count} blocked signals for user {user_id}")
+                return count
+            return 0

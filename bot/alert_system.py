@@ -59,6 +59,7 @@ class AlertType:
     SYSTEM_ERROR = "SYSTEM_ERROR"
     MARKET_CLOSE = "MARKET_CLOSE"
     HIGH_VOLATILITY = "HIGH_VOLATILITY"
+    SIGNAL_BLOCKED = "SIGNAL_BLOCKED"
 
 
 class Alert:
@@ -612,6 +613,86 @@ class AlertSystem:
         )
         
         await self.send_alert(alert)
+    
+    async def send_signal_blocked_alert(self, user_id: int, signal_data: Dict[str, Any], 
+                                        blocking_reason: str, suggestion: Optional[str] = None) -> bool:
+        """
+        Kirim alert ketika signal bagus di-block.
+        
+        Args:
+            user_id: ID user yang akan menerima alert
+            signal_data: Data signal yang di-block (type, confidence, grade, etc)
+            blocking_reason: Alasan mengapa signal di-block
+            suggestion: Saran action untuk user (opsional)
+        
+        Returns:
+            True jika alert berhasil dikirim
+        """
+        signal_type = signal_data.get('signal_type', 'UNKNOWN')
+        confidence = signal_data.get('confidence', 0)
+        grade = signal_data.get('grade', 'N/A')
+        rule_name = signal_data.get('rule_name', 'UNKNOWN')
+        entry_price = signal_data.get('entry_price', 0)
+        
+        if grade not in ['A', 'Grade A'] and confidence < 0.9:
+            logger.debug(f"Skipping blocked signal alert - not high quality: Grade={grade}, Conf={confidence}")
+            return False
+        
+        suggestion_text = suggestion or "Gunakan /close untuk menutup posisi aktif dan menerima signal baru."
+        
+        message = (
+            f"🚫 *Signal Bagus Diblokir*\n\n"
+            f"📊 *Detail Signal:*\n"
+            f"• Type: {signal_type}\n"
+            f"• Rule: {rule_name}\n"
+            f"• Grade: {grade}\n"
+            f"• Confidence: {confidence*100:.0f}%\n"
+            f"• Entry: ${entry_price:.2f}\n\n"
+            f"❌ *Alasan Blocking:*\n"
+            f"{blocking_reason}\n\n"
+            f"💡 *Saran:*\n"
+            f"{suggestion_text}"
+        )
+        
+        alert = Alert(
+            alert_type="SIGNAL_BLOCKED",
+            message=message,
+            priority='HIGH',
+            data={
+                'user_id': user_id,
+                'signal_type': signal_type,
+                'confidence': confidence,
+                'grade': grade,
+                'rule_name': rule_name,
+                'blocking_reason': blocking_reason
+            }
+        )
+        
+        self.track_user_alert(user_id, alert)
+        
+        if self.telegram_app and self.telegram_app.bot:
+            try:
+                formatted_msg = self._format_alert_message(alert)
+                await asyncio.wait_for(
+                    self.telegram_app.bot.send_message(
+                        chat_id=user_id,
+                        text=formatted_msg,
+                        parse_mode='Markdown'
+                    ),
+                    timeout=SEND_TIMEOUT_SECONDS
+                )
+                alert.sent = True
+                self.alert_history.append(alert)
+                logger.info(f"🚫 Signal blocked alert sent to user {user_id}: {signal_type} Grade {grade}")
+                return True
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout sending signal blocked alert to user {user_id}")
+                return False
+            except Exception as e:
+                logger.error(f"Failed to send signal blocked alert: {e}")
+                return False
+        
+        return False
     
     def get_alert_history(self, limit: int = 10) -> List[Dict]:
         recent_alerts = list(self.alert_history)[-limit:]

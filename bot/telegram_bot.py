@@ -3273,11 +3273,57 @@ class TradingBot:
             can_proceed = await self._check_and_set_pending(user_id, signal['signal'], signal['entry_price'])
             if not can_proceed:
                 logger.warning(f"🚫 Duplicate signal blocked for user {mask_user_id(user_id)}: {signal['signal']} @${signal['entry_price']:.2f}")
+                
+                signal_data_for_tracking = {
+                    'signal_type': signal.get('signal', 'UNKNOWN'),
+                    'confidence': signal.get('confidence', 0),
+                    'grade': signal.get('grade', 'N/A'),
+                    'rule_name': signal.get('rule_type', 'STRATEGY'),
+                    'entry_price': signal.get('entry_price', 0)
+                }
+                
+                if hasattr(self, 'signal_quality_tracker') and self.signal_quality_tracker:
+                    self.signal_quality_tracker.track_blocked_signal(
+                        user_id=user_id,
+                        signal_data=signal_data_for_tracking,
+                        blocking_reason='DUPLICATE_SIGNAL'
+                    )
+                
+                if hasattr(self, 'alert_system') and self.alert_system:
+                    await self.alert_system.send_signal_blocked_alert(
+                        user_id=user_id,
+                        signal_data=signal_data_for_tracking,
+                        blocking_reason="Signal duplikat terdeteksi. Signal dengan tipe dan harga yang sama baru saja dikirim."
+                    )
+                
                 return
 
             if await self.position_tracker.has_active_position_async(user_id):
                 logger.warning(f"🚫 Signal blocked - user {mask_user_id(user_id)} already has active position (position_tracker)")
                 await self._rollback_signal_cache(user_id, signal['signal'], signal['entry_price'])
+                
+                signal_data_for_tracking = {
+                    'signal_type': signal.get('signal', 'UNKNOWN'),
+                    'confidence': signal.get('confidence', 0),
+                    'grade': signal.get('grade', 'N/A'),
+                    'rule_name': signal.get('rule_type', 'STRATEGY'),
+                    'entry_price': signal.get('entry_price', 0)
+                }
+                
+                if hasattr(self, 'signal_quality_tracker') and self.signal_quality_tracker:
+                    self.signal_quality_tracker.track_blocked_signal(
+                        user_id=user_id,
+                        signal_data=signal_data_for_tracking,
+                        blocking_reason='ACTIVE_POSITION'
+                    )
+                
+                if hasattr(self, 'alert_system') and self.alert_system:
+                    await self.alert_system.send_signal_blocked_alert(
+                        user_id=user_id,
+                        signal_data=signal_data_for_tracking,
+                        blocking_reason="Anda sudah memiliki posisi aktif. Signal baru tidak dapat dikirim sampai posisi ditutup."
+                    )
+                
                 return
             
             signal_sent_successfully = False

@@ -25,6 +25,8 @@ TASK_AUTO_CANCEL_THRESHOLD = 300.0
 SLOW_TASK_ALERT_COUNT = 3
 TASK_MONITOR_INTERVAL = 30.0
 MAX_EXCEPTION_HISTORY = 100
+STALE_POSITION_TIMEOUT = 600  # 10 minutes
+STALE_CLEANUP_INTERVAL = 60   # Check every 60 seconds
 
 
 @dataclass
@@ -1653,6 +1655,94 @@ class PositionTracker:
         except (asyncio.CancelledError, ConnectionError, ValueError, TypeError, KeyError, AttributeError) as e:
             logger.debug(f"Error in monitor_active_positions: {e}")
             return []
+    
+    async def check_stale_positions(self) -> List[Dict]:
+        """Check dan auto-close posisi yang open >10 menit tanpa update.
+        
+        Method ini dipanggil oleh scheduler setiap 60 detik.
+        Returns list posisi yang di-close.
+        """
+        closed_positions = []
+        now = datetime.now(pytz.UTC)
+        
+        async with self._position_lock:
+            users_to_check = list(self.active_positions.keys())
+        
+        for user_id in users_to_check:
+            async with self._position_lock:
+                if user_id not in self.active_positions:
+                    continue
+                positions_to_check = list(self.active_positions[user_id].items())
+            
+            for position_id, pos in positions_to_check:
+                opened_at = pos.get('opened_at')
+                last_update = pos.get('last_price_update')
+                
+                check_time = last_update or opened_at
+                if check_time:
+                    if isinstance(check_time, str):
+                        try:
+                            check_time = datetime.fromisoformat(check_time.replace('Z', '+00:00'))
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Failed to parse check_time for position {position_id}: {e}")
+                            continue
+                    if check_time.tzinfo is None:
+                        check_time = pytz.UTC.localize(check_time)
+                    
+                    elapsed = (now - check_time).total_seconds()
+                    
+                    if elapsed >= STALE_POSITION_TIMEOUT:
+                        logger.warning(
+                            f"⏰ STALE POSITION detected - User:{user_id} Position:{position_id} "
+                            f"No update for {elapsed:.0f}s (>{STALE_POSITION_TIMEOUT}s). Auto-closing..."
+                        )
+                        
+                        current_price = pos.get('current_price') or pos.get('entry_price')
+                        
+                        try:
+                            await self.close_position(user_id, position_id, current_price, 'STALE_TIMEOUT')
+                        except (asyncio.CancelledError, asyncio.TimeoutError, ValueError, TypeError, KeyError) as e:
+                            logger.error(f"Failed to close stale position {position_id}: {e}")
+                            continue
+                        
+                        closed_positions.append({
+                            'user_id': user_id,
+                            'position_id': position_id,
+                            'elapsed_seconds': elapsed,
+                            'reason': 'STALE_TIMEOUT'
+                        })
+                        
+                        if self.alert_system and self.telegram_app:
+                            try:
+                                msg = (
+                                    f"⏰ *Posisi Auto-Close: STALE_TIMEOUT*\n\n"
+                                    f"Position ID: {position_id}\n"
+                                    f"Type: {pos.get('signal_type', 'UNKNOWN')}\n"
+                                    f"Alasan: Tidak ada update selama {elapsed/60:.1f} menit\n"
+                                    f"Entry: ${pos.get('entry_price', 0):.2f}\n"
+                                    f"Exit: ${current_price:.2f}\n\n"
+                                    f"💡 Posisi ditutup otomatis karena tidak aktif."
+                                )
+                                await self.telegram_app.bot.send_message(
+                                    chat_id=user_id,
+                                    text=msg,
+                                    parse_mode='Markdown'
+                                )
+                            except (RetryAfter, TimedOut, BadRequest, Forbidden, NetworkError, TelegramError) as e:
+                                logger.error(f"Failed to send stale position alert: {e}")
+                            except Exception as e:
+                                logger.error(f"Failed to send stale position alert (unexpected): {e}")
+                        
+                        if self.signal_session_manager:
+                            try:
+                                await self.signal_session_manager.end_session(user_id, 'STALE_TIMEOUT')
+                            except (asyncio.CancelledError, asyncio.TimeoutError, ValueError, TypeError, AttributeError) as e:
+                                logger.error(f"Failed to end session for stale position: {e}")
+        
+        if closed_positions:
+            logger.info(f"🧹 Stale position cleanup: {len(closed_positions)} positions closed")
+        
+        return closed_positions
     
     async def monitor_positions(self, market_data_client):
         """Monitor positions with tick data stream

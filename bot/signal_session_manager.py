@@ -32,6 +32,7 @@ class SignalSession:
     started_at: datetime
     chart_path: Optional[str] = None
     photo_sent: bool = False
+    force_opposite_override: bool = False
 
 class SignalSessionManager:
     """
@@ -49,10 +50,11 @@ class SignalSessionManager:
         self._event_handlers: Dict[str, List[Callable]] = {
             'on_session_start': [],
             'on_session_end': [],
-            'on_session_update': []
+            'on_session_update': [],
+            'on_session_force_closed': []
         }
         self._pending_events: List[tuple] = []
-        logger.info("Signal Session Manager diinisialisasi dengan proteksi spam sinyal")
+        logger.info("Signal Session Manager diinisialisasi dengan proteksi spam sinyal dan force close stale sessions")
     
     def register_event_handler(self, event: str, handler: Callable):
         """Daftarkan event handler untuk lifecycle events"""
@@ -78,6 +80,24 @@ class SignalSessionManager:
             except (SessionError, Exception) as e:
                 logger.error(f"Error pada event handler untuk {event}: {e}")
     
+    async def _emit_force_closed_event(self, session: SignalSession, reason: str):
+        """
+        Emit event khusus untuk force closed sessions.
+        PENTING: Method ini harus dipanggil DILUAR session_lock untuk mencegah deadlock.
+        """
+        handlers = []
+        async with self._event_lock:
+            handlers = list(self._event_handlers.get('on_session_force_closed', []))
+        
+        for handler in handlers:
+            try:
+                if asyncio.iscoroutinefunction(handler):
+                    await handler(session, reason)
+                else:
+                    handler(session, reason)
+            except (SessionError, Exception) as e:
+                logger.error(f"Error pada event handler untuk on_session_force_closed: {e}")
+    
     def _get_last_signal_info(self, user_id: int) -> Optional[dict]:
         """Ambil info sinyal terakhir untuk user"""
         return self._last_signal_info.get(user_id)
@@ -90,6 +110,30 @@ class SignalSessionManager:
             'timestamp': datetime.now(pytz.UTC)
         }
         logger.debug(f"Info sinyal terakhir diperbarui - User:{user_id} Tipe:{signal_type} Harga:{entry_price}")
+    
+    async def _force_close_session_internal(self, user_id: int, reason: str) -> Optional[SignalSession]:
+        """
+        Internal method untuk force close session.
+        HARUS dipanggil dengan session_lock sudah di-hold.
+        Returns session yang di-close untuk emit event nanti.
+        """
+        if user_id not in self.active_sessions:
+            return None
+        
+        session = self.active_sessions[user_id]
+        chart_path = session.chart_path
+        
+        del self.active_sessions[user_id]
+        
+        duration = (datetime.now(pytz.UTC) - session.started_at).total_seconds()
+        icon = "🤖" if session.signal_source == "auto" else "👤"
+        
+        logger.info(
+            f"⚡ FORCE CLOSE sesi - User:{user_id} {icon} {session.signal_source.upper()} "
+            f"Tipe:{session.signal_type} | Alasan:{reason} | Durasi:{duration:.1f}s"
+        )
+        
+        return session
     
     async def can_create_signal(self, user_id: int, signal_source: str, 
                                 signal_type: Optional[str] = None,
@@ -108,9 +152,48 @@ class SignalSessionManager:
         Returns:
             (can_create, rejection_reason)
         """
+        force_closed_session = None
+        force_close_reason = None
+        chart_to_cleanup = None
+        
         async with self._session_lock:
             active_session = self.active_sessions.get(user_id)
             last_info = self._last_signal_info.get(user_id)
+            
+            if active_session:
+                elapsed = (datetime.now(pytz.UTC) - active_session.started_at).total_seconds()
+                
+                is_opposite_direction = signal_type and active_session.signal_type != signal_type
+                
+                if elapsed >= 600:
+                    force_close_reason = (
+                        f"Sesi stale (>{600}s) - Durasi:{elapsed:.0f}s | "
+                        f"Arah:{active_session.signal_type} | Force close untuk sinyal baru"
+                    )
+                    logger.warning(
+                        f"⏰ FORCE CLOSE (stale >600s) - User:{user_id} "
+                        f"Sesi:{active_session.signal_type} Durasi:{elapsed:.0f}s | "
+                        f"Memaksa close untuk membuat ruang sinyal baru"
+                    )
+                    chart_to_cleanup = active_session.chart_path
+                    force_closed_session = await self._force_close_session_internal(user_id, force_close_reason)
+                    active_session = None
+                    
+                elif is_opposite_direction and elapsed >= 300:
+                    old_direction = active_session.signal_type
+                    new_direction = signal_type
+                    force_close_reason = (
+                        f"Opposite direction setelah >{300}s - "
+                        f"{old_direction} -> {new_direction} | Durasi:{elapsed:.0f}s"
+                    )
+                    logger.warning(
+                        f"🔄 FORCE CLOSE (opposite direction >300s) - User:{user_id} "
+                        f"Arah lama:{old_direction} -> Arah baru:{new_direction} | "
+                        f"Durasi sesi:{elapsed:.0f}s | Force close untuk opposite signal"
+                    )
+                    chart_to_cleanup = active_session.chart_path
+                    force_closed_session = await self._force_close_session_internal(user_id, force_close_reason)
+                    active_session = None
             
             if active_session and not Config.AUTO_SIGNAL_REPLACEMENT_ALLOWED:
                 has_real_position = True
@@ -194,6 +277,13 @@ class SignalSessionManager:
                             self._update_last_signal_info(user_id, signal_type, current_price)
                             return False, reason
         
+        if chart_to_cleanup:
+            await self._cleanup_chart_file(chart_to_cleanup)
+        
+        if force_closed_session and force_close_reason:
+            await self._emit_force_closed_event(force_closed_session, force_close_reason)
+            await self._emit_event_outside_lock('on_session_end', force_closed_session)
+        
         return True, None
     
     async def create_session(self, user_id: int, signal_id: str, signal_source: str,
@@ -205,12 +295,35 @@ class SignalSessionManager:
         Returns:
             SignalSession jika berhasil, None jika ditolak
         """
+        force_closed_session = None
+        force_close_reason = None
+        chart_to_cleanup = None
+        is_force_opposite_override = False
+        
         async with self._session_lock:
             if user_id in self.active_sessions:
                 old_session = self.active_sessions[user_id]
                 elapsed = (datetime.now(pytz.UTC) - old_session.started_at).total_seconds()
                 
-                if not Config.AUTO_SIGNAL_REPLACEMENT_ALLOWED:
+                is_opposite_direction = old_session.signal_type != signal_type
+                
+                if is_opposite_direction:
+                    old_direction = old_session.signal_type
+                    new_direction = signal_type
+                    force_close_reason = (
+                        f"Opposite signal override: {old_direction} -> {new_direction}"
+                    )
+                    logger.info(
+                        f"🔄 Force override: {old_direction} -> {new_direction} | "
+                        f"User:{user_id} | Sesi lama durasi:{elapsed:.1f}s | "
+                        f"Auto close untuk opposite direction signal"
+                    )
+                    chart_to_cleanup = old_session.chart_path
+                    force_closed_session = old_session
+                    del self.active_sessions[user_id]
+                    is_force_opposite_override = True
+                    
+                elif not Config.AUTO_SIGNAL_REPLACEMENT_ALLOWED:
                     logger.warning(
                         f"⛔ Sesi TIDAK di-overwrite - User:{user_id} "
                         f"Posisi aktif:{old_session.signal_type} -> Baru:{signal_type} | "
@@ -235,7 +348,8 @@ class SignalSessionManager:
                 take_profit=take_profit,
                 position_id=None,
                 trade_id=None,
-                started_at=datetime.now(pytz.UTC)
+                started_at=datetime.now(pytz.UTC),
+                force_opposite_override=is_force_opposite_override
             )
             
             self.active_sessions[user_id] = session
@@ -247,11 +361,19 @@ class SignalSessionManager:
             }
             
             icon = "🤖" if signal_source == "auto" else "👤"
+            override_label = " [FORCE_OVERRIDE]" if is_force_opposite_override else ""
             logger.info(
-                f"✅ Sesi sinyal dibuat - User:{user_id} {icon} {signal_source.upper()} "
+                f"✅ Sesi sinyal dibuat{override_label} - User:{user_id} {icon} {signal_source.upper()} "
                 f"Tipe:{signal_type} Harga:{entry_price}"
             )
-            
+        
+        if chart_to_cleanup:
+            await self._cleanup_chart_file(chart_to_cleanup)
+        
+        if force_closed_session and force_close_reason:
+            await self._emit_force_closed_event(force_closed_session, force_close_reason)
+            await self._emit_event_outside_lock('on_session_end', force_closed_session)
+        
         await self._emit_event_outside_lock('on_session_start', session)
         
         return session
@@ -413,10 +535,12 @@ class SignalSessionManager:
         """Dapatkan statistik sesi"""
         auto_count = sum(1 for s in self.active_sessions.values() if s.signal_source == 'auto')
         manual_count = sum(1 for s in self.active_sessions.values() if s.signal_source == 'manual')
+        force_override_count = sum(1 for s in self.active_sessions.values() if s.force_opposite_override)
         
         return {
             'total_sessions': len(self.active_sessions),
             'auto_sessions': auto_count,
             'manual_sessions': manual_count,
+            'force_override_sessions': force_override_count,
             'tracked_last_signals': len(self._last_signal_info)
         }
