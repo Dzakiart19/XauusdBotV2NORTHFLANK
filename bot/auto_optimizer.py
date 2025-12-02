@@ -390,6 +390,37 @@ class AutoOptimizer:
                 
                 self._save_performance_snapshot(signal_quality_data)
                 
+                # TASK 2: Get blocking stats dari signal_quality_tracker
+                # dan inject ke data sebelum analisis
+                if self.signal_quality_tracker and hasattr(self.signal_quality_tracker, '_blocked_signals'):
+                    try:
+                        # Aggregate blocking stats dari semua users
+                        total_blocked = 0
+                        by_reason = {}
+                        by_type = {}
+                        
+                        for user_id in list(self.signal_quality_tracker._blocked_signals.keys()):
+                            stats = self.signal_quality_tracker.get_blocking_stats(user_id, minutes=60)
+                            total_blocked += stats.get('total_blocked', 0)
+                            
+                            for reason, count in stats.get('by_reason', {}).items():
+                                by_reason[reason] = by_reason.get(reason, 0) + count
+                            
+                            for sig_type, count in stats.get('by_type', {}).items():
+                                by_type[sig_type] = by_type.get(sig_type, 0) + count
+                        
+                        signal_quality_data['blocking_stats'] = {
+                            'total_blocked': total_blocked,
+                            'window_hours': 1,
+                            'by_reason': by_reason,
+                            'by_type': by_type
+                        }
+                        
+                        if total_blocked > 0:
+                            logger.info(f"📊 Blocking stats injected: {total_blocked} blocked signals in 1h")
+                    except (KeyError, TypeError, AttributeError) as e:
+                        logger.debug(f"Could not get blocking stats: {e}")
+                
                 adjustments = self._analyze_and_generate_adjustments(signal_quality_data)
                 
                 if not adjustments:

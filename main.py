@@ -164,6 +164,12 @@ class TradingBotOrchestrator:
         initialize_sentry(sentry_dsn, environment)
         logger.info(f"Sentry error tracking initialized (environment: {environment})")
         
+        # Refresh secrets dari environment (penting untuk Koyeb deployment)
+        # Secrets mungkin di-inject setelah module import
+        logger.info("Refreshing secrets dari environment...")
+        refresh_result = Config._refresh_secrets()
+        logger.info(f"Secrets refresh: token_set={refresh_result['token_set']}, users={refresh_result['users_count']}")
+        
         logger.info("Validating configuration...")
         try:
             self.config.validate()

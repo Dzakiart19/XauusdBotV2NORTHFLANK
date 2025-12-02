@@ -217,13 +217,42 @@ def _parse_int_list(env_value: str, default_list: list) -> list:
 
 
 class Config:
+    # Critical secrets - di-set sebagai class attributes
+    # Akan di-refresh oleh _refresh_secrets() untuk Koyeb compatibility
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+    AUTHORIZED_USER_IDS = _parse_user_ids(os.getenv('AUTHORIZED_USER_IDS', ''))
+    ID_USER_PUBLIC = _parse_user_ids(os.getenv('ID_USER_PUBLIC', ''))
+    
+    @classmethod
+    def _refresh_secrets(cls):
+        """
+        Refresh secrets dari environment variables.
+        Dipanggil saat bot startup untuk memastikan secrets terbaca dengan benar.
+        Penting untuk deployment Koyeb dimana secrets mungkin di-inject setelah module import.
+        """
+        # Re-read dari environment
+        new_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
+        new_users = _parse_user_ids(os.getenv('AUTHORIZED_USER_IDS', ''))
+        new_public = _parse_user_ids(os.getenv('ID_USER_PUBLIC', ''))
+        
+        # Update jika ada nilai baru
+        if new_token:
+            cls.TELEGRAM_BOT_TOKEN = new_token
+        if new_users:
+            cls.AUTHORIZED_USER_IDS = new_users
+        if new_public:
+            cls.ID_USER_PUBLIC = new_public
+        
+        return {
+            'token_set': bool(cls.TELEGRAM_BOT_TOKEN),
+            'users_count': len(cls.AUTHORIZED_USER_IDS),
+            'public_count': len(cls.ID_USER_PUBLIC)
+        }
+    
     TELEGRAM_WEBHOOK_MODE = os.getenv('TELEGRAM_WEBHOOK_MODE', 'false').lower() == 'true'
     WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
     FREE_TIER_MODE = os.getenv('FREE_TIER_MODE', 'true').lower() == 'true'
     TICK_LOG_SAMPLE_RATE = _get_int_env('TICK_LOG_SAMPLE_RATE', '30')
-    AUTHORIZED_USER_IDS = _parse_user_ids(os.getenv('AUTHORIZED_USER_IDS', ''))
-    ID_USER_PUBLIC = _parse_user_ids(os.getenv('ID_USER_PUBLIC', ''))
     EMA_PERIODS = _parse_int_list(os.getenv('EMA_PERIODS', '5,20,50'), [5, 20, 50])
     
     MEMORY_WARNING_THRESHOLD_MB = _get_int_env('MEMORY_WARNING_THRESHOLD_MB', '400')

@@ -2971,4 +2971,32 @@ def setup_default_tasks(scheduler: TaskScheduler, bot_components: Dict):
         interval_seconds=60
     )
     
+    # TASK 1: Register stale_position_cleanup - check dan auto-close posisi stale
+    async def stale_position_cleanup():
+        """Check dan auto-close posisi yang tidak aktif > 10 menit."""
+        position_tracker = bot_components.get('position_tracker')
+        if not position_tracker:
+            logger.debug("Stale cleanup: Skip - position_tracker tidak tersedia")
+            return
+        
+        try:
+            closed = await position_tracker.check_stale_positions()
+            if closed:
+                logger.info(f"🧹 Stale cleanup: {len(closed)} positions closed")
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError as e:
+            logger.error(f"Stale cleanup timeout: {e}")
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Stale cleanup validation error: {e}")
+        except Exception as e:
+            logger.error(f"Stale cleanup error: {e}")
+    
+    scheduler.add_interval_task(
+        'stale_position_cleanup',
+        stale_position_cleanup,
+        interval_seconds=60  # Check every 60 seconds
+    )
+    logger.info("Stale position cleanup task registered (interval: 60s)")
+    
     logger.info(f"Configured {len(scheduler.tasks)} default scheduled tasks")
