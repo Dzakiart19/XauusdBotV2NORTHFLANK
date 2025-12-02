@@ -3701,15 +3701,25 @@ class TradingBot:
                             logger.info(f"Position {position_id} tidak ditemukan di DB, menghentikan dashboard")
                             break
                         
-                        if position_db.status != 'ACTIVE':
-                            logger.info(f"Position {position_id} status {position_db.status}, mengirim pesan EXPIRED")
+                        # Ekstrak data position SEGERA untuk mencegah DetachedInstanceError
+                        # (sebelum await apapun yang bisa menyebabkan session expire)
+                        pos_status = position_db.status
+                        pos_signal_type = position_db.signal_type
+                        pos_entry_price = position_db.entry_price
+                        pos_stop_loss = position_db.stop_loss
+                        pos_take_profit = position_db.take_profit
+                        pos_sl_adjustment_count = getattr(position_db, 'sl_adjustment_count', 0) or 0
+                        pos_max_profit_reached = getattr(position_db, 'max_profit_reached', 0) or 0
+                        
+                        if pos_status != 'ACTIVE':
+                            logger.info(f"Position {position_id} status {pos_status}, mengirim pesan EXPIRED")
                             
                             try:
                                 expired_msg = (
                                     f"⏱️ *DASHBOARD EXPIRED*\n"
                                     f"{'━' * 32}\n\n"
                                     f"✅ Posisi sudah ditutup\n"
-                                    f"📊 Status: {position_db.status}\n\n"
+                                    f"📊 Status: {pos_status}\n\n"
                                     f"💡 Cek hasil:\n"
                                     f"  • /riwayat - Riwayat trading\n"
                                     f"  • /performa - Statistik lengkap\n"
@@ -3753,12 +3763,13 @@ class TradingBot:
                             logger.warning("Gagal mendapatkan harga saat ini, melewatkan update")
                             continue
                         
-                        signal_type = position_db.signal_type
-                        entry_price = position_db.entry_price
-                        stop_loss = position_db.stop_loss
-                        take_profit = position_db.take_profit
-                        sl_adjustment_count = getattr(position_db, 'sl_adjustment_count', 0) or 0
-                        max_profit_reached = getattr(position_db, 'max_profit_reached', 0) or 0
+                        # Gunakan variabel lokal yang sudah diekstrak
+                        signal_type = pos_signal_type
+                        entry_price = pos_entry_price
+                        stop_loss = pos_stop_loss
+                        take_profit = pos_take_profit
+                        sl_adjustment_count = pos_sl_adjustment_count
+                        max_profit_reached = pos_max_profit_reached
                         
                         unrealized_pl = self.risk_manager.calculate_pl(entry_price, current_price, signal_type)
                         
