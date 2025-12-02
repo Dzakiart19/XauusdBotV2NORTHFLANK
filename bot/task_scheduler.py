@@ -714,6 +714,10 @@ class TaskScheduler:
             'auto_disabled_tasks': 0,
             'last_cleanup_time': None
         }
+        self._stop_complete: bool = False
+        self._stop_in_progress: bool = False
+        self._has_initialized: bool = False
+        self._lifecycle_lock = asyncio.Lock()
         logger.info(f"Task scheduler initialized with alert system (cleanup interval: {cleanup_interval}s)")
     
     def _on_task_done(self, task: asyncio.Task, task_name: str) -> None:
@@ -1597,12 +1601,33 @@ class TaskScheduler:
     async def start(self):
         """
         Mulai task scheduler dengan scheduler loop dan cleanup loop.
+        
+        Menggunakan lifecycle lock untuk serialize start/stop transitions
+        dan mencegah race condition dengan concurrent stop.
+        
+        Start conditions:
+        - First start: _has_initialized == False
+        - Restart: _has_initialized == True AND _stop_complete == True
         """
-        if self.running:
-            logger.warning("Scheduler sudah berjalan")
+        lock_acquired = await _acquire_lock_with_timeout(self._lifecycle_lock, LOCK_ACQUIRE_TIMEOUT)
+        if not lock_acquired:
+            logger.warning("Gagal acquire lifecycle lock untuk start scheduler")
             return
         
         try:
+            if self._stop_in_progress:
+                logger.warning("Stop sedang dalam proses, tidak bisa start scheduler sekarang")
+                return
+            
+            if self.running:
+                logger.warning("Scheduler sudah berjalan")
+                return
+            
+            if self._has_initialized and not self._stop_complete:
+                logger.warning("Stop sebelumnya tidak sukses, tidak bisa restart scheduler")
+                return
+            
+            self._has_initialized = True
             self._shutdown_flag.clear()
             self._completion_event.clear()
             self.running = True
@@ -1613,72 +1638,100 @@ class TaskScheduler:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             self._cleanup_task.set_name("cleanup_loop")
             
+            self._stop_complete = False
             logger.info("Task scheduler dimulai dengan cleanup loop")
         except Exception as e:
             logger.error(f"Error saat memulai scheduler: {e}")
             self.running = False
             raise
+        finally:
+            self._lifecycle_lock.release()
     
     async def stop(self, graceful_timeout: float = SCHEDULER_STOP_TIMEOUT):
         """
         Stop scheduler dengan graceful shutdown dan robust exception handling.
         
+        Menggunakan lifecycle lock untuk serialize start/stop transitions.
         Semua operasi cleanup dibungkus dengan try-except-finally untuk memastikan
         cleanup selalu complete meskipun ada exception.
         
         Args:
             graceful_timeout: Waktu maksimum untuk menunggu graceful shutdown
         """
-        logger.info("=" * 50)
-        logger.info("MENGHENTIKAN TASK SCHEDULER")
-        logger.info(f"Active task executions: {len(self._active_task_executions)}")
-        logger.info(f"Total tracked tasks: {len(self._all_created_tasks)}")
-        logger.info("=" * 50)
-        
-        if not self.running:
-            logger.warning("Scheduler tidak berjalan")
+        lock_acquired = await _acquire_lock_with_timeout(self._lifecycle_lock, LOCK_ACQUIRE_TIMEOUT)
+        if not lock_acquired:
+            logger.warning("Gagal acquire lifecycle lock untuk stop scheduler")
             return
         
-        # Set shutdown flag terlebih dahulu
-        self._shutdown_flag.set()
-        self.running = False
-        
-        logger.info("Shutdown flag di-set, menunggu scheduler loop berhenti...")
-        
-        # 1. Hentikan cleanup loop dengan timeout dan fallback
         try:
-            await self._stop_cleanup_loop()
-        except Exception as e:
-            logger.error(f"Error saat menghentikan cleanup loop: {e}")
-        
-        # 2. Hentikan scheduler loop dengan timeout dan fallback
-        try:
-            await self._stop_scheduler_loop()
-        except Exception as e:
-            logger.error(f"Error saat menghentikan scheduler loop: {e}")
-        
-        # 3. Cancel individual task executions dengan proper error handling
-        try:
-            await self._cancel_individual_tasks()
-        except Exception as e:
-            logger.error(f"Error saat cancel individual tasks: {e}")
-        
-        # 4. Cancel active task executions dengan timeout
-        try:
-            await self._cancel_active_executions(graceful_timeout)
-        except Exception as e:
-            logger.error(f"Error saat cancel active executions: {e}")
-        
-        # 5. Final cleanup dengan fallback
-        try:
-            await self._final_cleanup()
-        except Exception as e:
-            logger.error(f"Error saat final cleanup: {e}")
-            # Emergency cleanup jika final cleanup gagal
-            await self._emergency_stop_cleanup()
-        
-        # Log hasil akhir
-        self._log_stop_summary()
+            if self._stop_complete:
+                logger.debug("Stop sudah selesai sebelumnya, melewati panggilan berulang")
+                return
+            if self._stop_in_progress:
+                logger.debug("Stop sudah dalam proses, melewati panggilan berulang")
+                return
+            
+            self._stop_in_progress = True
+            stop_success = False
+            logger.info("=" * 50)
+            logger.info("MENGHENTIKAN TASK SCHEDULER")
+            logger.info(f"Active task executions: {len(self._active_task_executions)}")
+            logger.info(f"Total tracked tasks: {len(self._all_created_tasks)}")
+            logger.info("=" * 50)
+            
+            if not self.running:
+                logger.warning("Scheduler tidak berjalan")
+                return
+            
+            # Set shutdown flag terlebih dahulu
+            self._shutdown_flag.set()
+            self.running = False
+            
+            logger.info("Shutdown flag di-set, menunggu scheduler loop berhenti...")
+            
+            # 1. Hentikan cleanup loop dengan timeout dan fallback
+            try:
+                await self._stop_cleanup_loop()
+            except Exception as e:
+                logger.error(f"Error saat menghentikan cleanup loop: {e}")
+            
+            # 2. Hentikan scheduler loop dengan timeout dan fallback
+            try:
+                await self._stop_scheduler_loop()
+            except Exception as e:
+                logger.error(f"Error saat menghentikan scheduler loop: {e}")
+            
+            # 3. Cancel individual task executions dengan proper error handling
+            try:
+                await self._cancel_individual_tasks()
+            except Exception as e:
+                logger.error(f"Error saat cancel individual tasks: {e}")
+            
+            # 4. Cancel active task executions dengan timeout
+            try:
+                await self._cancel_active_executions(graceful_timeout)
+            except Exception as e:
+                logger.error(f"Error saat cancel active executions: {e}")
+            
+            # 5. Final cleanup dengan fallback
+            try:
+                await self._final_cleanup()
+            except Exception as e:
+                logger.error(f"Error saat final cleanup: {e}")
+                # Emergency cleanup jika final cleanup gagal
+                await self._emergency_stop_cleanup()
+            
+            # Log hasil akhir
+            self._log_stop_summary()
+            stop_success = True
+        finally:
+            if stop_success:
+                self._stop_complete = True
+                self._stop_in_progress = False
+                logger.debug("Stop complete flag diset ke True, _stop_in_progress cleared")
+            else:
+                logger.warning("Stop gagal, _stop_in_progress tetap True - restart memerlukan process restart")
+            self._lifecycle_lock.release()
     
     async def _stop_cleanup_loop(self) -> None:
         """Hentikan cleanup loop dengan timeout protection."""

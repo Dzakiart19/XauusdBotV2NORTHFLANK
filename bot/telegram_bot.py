@@ -81,6 +81,28 @@ class MonitoringContext:
         if price is not None:
             self.last_sent_signal_price = price
         self.last_sent_signal_time = timestamp
+    
+    def copy(self) -> 'MonitoringContext':
+        """Create defensive copy untuk per-chat isolation"""
+        return MonitoringContext(
+            chat_id=self.chat_id,
+            last_signal_check=self.last_signal_check,
+            last_tick_process_time=self.last_tick_process_time,
+            last_sent_signal=self.last_sent_signal,
+            last_sent_signal_price=self.last_sent_signal_price,
+            last_sent_signal_time=self.last_sent_signal_time,
+            retry_delay=self.retry_delay,
+            max_retry_delay=self.max_retry_delay,
+            last_candle_timestamp=self.last_candle_timestamp,
+            consecutive_timeouts=self.consecutive_timeouts,
+            max_consecutive_timeouts=self.max_consecutive_timeouts,
+            daily_summary_skip_count=self.daily_summary_skip_count,
+            last_daily_summary_log_time=self.last_daily_summary_log_time
+        )
+    
+    def validate(self, expected_chat_id: int) -> bool:
+        """Validate bahwa context adalah untuk chat yang benar"""
+        return self.chat_id == expected_chat_id
 
 class TelegramBotError(Exception):
     """Base exception for Telegram bot errors"""
@@ -2666,6 +2688,7 @@ class TradingBot:
         logger.debug(f"Monitoring dimulai untuk user {mask_user_id(chat_id)}")
         
         ctx = MonitoringContext(chat_id=chat_id)
+        logger.debug(f"Created new MonitoringContext for chat {mask_user_id(chat_id)}")
         ctx.last_signal_check = datetime.now() - timedelta(seconds=self.config.SIGNAL_COOLDOWN_SECONDS)
         
         try:

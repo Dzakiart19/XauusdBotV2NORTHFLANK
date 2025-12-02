@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -132,6 +133,7 @@ class PositionTracker:
         
         self._position_lock = asyncio.Lock()
         self._pending_tasks: Set[asyncio.Task] = set()
+        self._pending_tasks_lock = threading.RLock()
         self._shutdown_event = asyncio.Event()
         self._completion_event = asyncio.Event()
         self._monitoring_task: Optional[asyncio.Task] = None
@@ -165,7 +167,8 @@ class PositionTracker:
         effective_name = task_name or task.get_name()
         
         try:
-            self._pending_tasks.discard(task)
+            with self._pending_tasks_lock:
+                self._pending_tasks.discard(task)
             
             if effective_name in self._task_start_times:
                 start_time = self._task_start_times.pop(effective_name)
@@ -243,8 +246,9 @@ class PositionTracker:
         
         self._cleanup_task_state(effective_name)
         
-        if len(self._pending_tasks) == 0:
-            self._completion_event.set()
+        with self._pending_tasks_lock:
+            if len(self._pending_tasks) == 0:
+                self._completion_event.set()
     
     def _record_exception(self, task_name: str, exception: BaseException) -> None:
         """Record exception in history for debugging"""
@@ -305,8 +309,9 @@ class PositionTracker:
         else:
             task = asyncio.create_task(coro, name=effective_name)
         
-        self._pending_tasks.add(task)
-        self._completion_event.clear()
+        with self._pending_tasks_lock:
+            self._pending_tasks.add(task)
+            self._completion_event.clear()
         
         self._task_start_times[effective_name] = datetime.now(pytz.UTC)
         
@@ -363,19 +368,20 @@ class PositionTracker:
             TaskCompletionResult: Detailed result with completion status and task information
         """
         start_time = datetime.now(pytz.UTC)
-        initial_count = len(self._pending_tasks)
+        with self._pending_tasks_lock:
+            initial_count = len(self._pending_tasks)
         
-        if not self._pending_tasks:
-            return TaskCompletionResult(
-                completed=True,
-                total_tasks=0,
-                completed_tasks=0,
-                pending_tasks=[],
-                timed_out_tasks=[],
-                cancelled_tasks=[],
-                error_tasks=[],
-                elapsed_time=0.0
-            )
+            if not self._pending_tasks:
+                return TaskCompletionResult(
+                    completed=True,
+                    total_tasks=0,
+                    completed_tasks=0,
+                    pending_tasks=[],
+                    timed_out_tasks=[],
+                    cancelled_tasks=[],
+                    error_tasks=[],
+                    elapsed_time=0.0
+                )
         
         logger.info(f"📊 Waiting for {initial_count} pending tasks to complete...")
         pending_names_initial = self.get_pending_task_names()
@@ -385,13 +391,15 @@ class PositionTracker:
             last_count = initial_count
             while True:
                 await asyncio.sleep(progress_interval)
-                current_count = len(self._pending_tasks)
+                with self._pending_tasks_lock:
+                    current_count = len(self._pending_tasks)
                 if current_count != last_count:
                     completed = initial_count - current_count
                     logger.info(f"📊 Progress: {completed}/{initial_count} tasks completed, {current_count} remaining")
                     if current_count > 0:
                         remaining = self.get_pending_task_names()[:5]
-                        logger.debug(f"   Remaining tasks: {remaining}{'...' if len(self._pending_tasks) > 5 else ''}")
+                        with self._pending_tasks_lock:
+                            logger.debug(f"   Remaining tasks: {remaining}{'...' if len(self._pending_tasks) > 5 else ''}")
                     last_count = current_count
         
         progress_task = asyncio.create_task(progress_reporter())
@@ -407,9 +415,11 @@ class PositionTracker:
                     completed_ok = True
                 except asyncio.TimeoutError:
                     timed_out_tasks = self.get_pending_task_names()
+                    with self._pending_tasks_lock:
+                        pending_count = len(self._pending_tasks)
                     logger.warning(
                         f"⏰ Timeout after {timeout}s waiting for task completion. "
-                        f"{len(self._pending_tasks)} tasks still pending: {timed_out_tasks[:10]}{'...' if len(timed_out_tasks) > 10 else ''}"
+                        f"{pending_count} tasks still pending: {timed_out_tasks[:10]}{'...' if len(timed_out_tasks) > 10 else ''}"
                     )
             else:
                 await self._completion_event.wait()
@@ -453,11 +463,13 @@ class PositionTracker:
     
     def get_pending_task_count(self) -> int:
         """Get the number of pending tasks."""
-        return len(self._pending_tasks)
+        with self._pending_tasks_lock:
+            return len(self._pending_tasks)
     
     def get_pending_task_names(self) -> list:
         """Get names of all pending tasks."""
-        return [t.get_name() for t in self._pending_tasks]
+        with self._pending_tasks_lock:
+            return [t.get_name() for t in self._pending_tasks]
     
     def get_task_ages(self) -> Dict[str, float]:
         """Get age in seconds for each running task"""
@@ -487,13 +499,16 @@ class PositionTracker:
                 except asyncio.TimeoutError:
                     pass
                 
-                if not self._pending_tasks:
-                    continue
+                with self._pending_tasks_lock:
+                    if not self._pending_tasks:
+                        continue
                 
                 now = datetime.now(pytz.UTC)
                 tasks_to_cancel = []
                 
-                for task in list(self._pending_tasks):
+                with self._pending_tasks_lock:
+                    pending_tasks_copy = list(self._pending_tasks)
+                for task in pending_tasks_copy:
                     if task.done():
                         continue
                     
@@ -620,8 +635,11 @@ class PositionTracker:
         """
         ages = self.get_task_ages()
         
+        with self._pending_tasks_lock:
+            pending_count = len(self._pending_tasks)
+        
         return {
-            "pending_count": len(self._pending_tasks),
+            "pending_count": pending_count,
             "pending_tasks": self.get_pending_task_names(),
             "task_ages": ages,
             "slow_task_counts": dict(self._slow_task_counts),
@@ -654,14 +672,15 @@ class PositionTracker:
         """
         cancellation_results: Dict[str, str] = {}
         
-        if not self._pending_tasks:
-            logger.info("No pending tasks to cancel")
-            return cancellation_results
+        with self._pending_tasks_lock:
+            if not self._pending_tasks:
+                logger.info("No pending tasks to cancel")
+                return cancellation_results
         
-        task_count = len(self._pending_tasks)
-        logger.info(f"🛑 Initiating cancellation of {task_count} pending tasks (timeout: {timeout}s)...")
+            task_count = len(self._pending_tasks)
+            logger.info(f"🛑 Initiating cancellation of {task_count} pending tasks (timeout: {timeout}s)...")
         
-        tasks_to_cancel = list(self._pending_tasks)
+            tasks_to_cancel = list(self._pending_tasks)
         task_names = {task: task.get_name() for task in tasks_to_cancel}
         
         uncancellable_tasks: List[str] = []
@@ -746,7 +765,8 @@ class PositionTracker:
             except (asyncio.CancelledError, asyncio.TimeoutError, RuntimeError) as e:
                 logger.error(f"❌ Error during task cancellation phase: {e}")
         
-        self._pending_tasks.clear()
+        with self._pending_tasks_lock:
+            self._pending_tasks.clear()
         self._task_callbacks.clear()
         self._task_results.clear()
         self._task_start_times.clear()
