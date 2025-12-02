@@ -2744,9 +2744,9 @@ class TradingStrategy:
     def check_rsi_level_filter(self, indicators: Dict, signal_type: str) -> Tuple[bool, str, float]:
         """Check RSI level filter - BLOCKING extreme levels + divergence check
         
-        RSI Extreme Level Blocking:
-        - Block BUY saat RSI > 75 (overbought extreme)
-        - Block SELL saat RSI < 25 (oversold extreme)
+        RSI Extreme Level Blocking (dapat di-disable via RSI_EXTREME_FILTER_ENABLED):
+        - Block BUY saat RSI > RSI_EXTREME_OVERBOUGHT (default 85)
+        - Block SELL saat RSI < RSI_EXTREME_OVERSOLD (default 15)
         
         RSI Divergence Detection:
         - Bullish divergence: Price lower low, RSI higher low
@@ -2773,14 +2773,18 @@ class TradingStrategy:
             rsi_val = safe_float(rsi, 50.0)
             confidence_boost = 0.0
             
-            rsi_extreme_overbought = 75
-            rsi_extreme_oversold = 25
+            rsi_extreme_filter_enabled = getattr(self.config, 'RSI_EXTREME_FILTER_ENABLED', False)
+            rsi_extreme_overbought = getattr(self.config, 'RSI_EXTREME_OVERBOUGHT', 85)
+            rsi_extreme_oversold = getattr(self.config, 'RSI_EXTREME_OVERSOLD', 15)
             
             if signal_type == 'BUY':
-                if rsi_val > rsi_extreme_overbought:
+                if rsi_extreme_filter_enabled and rsi_val > rsi_extreme_overbought:
                     reason = f"❌ RSI EXTREME OVERBOUGHT: RSI({rsi_val:.1f}) > {rsi_extreme_overbought} - BUY BLOCKED"
                     logger.info(reason)
                     return False, reason, 0.0
+                elif rsi_val > 75:
+                    reason = f"⚠️ RSI HIGH: RSI({rsi_val:.1f}) > 75 - Cautious BUY (extreme filter disabled)"
+                    confidence_boost = -0.05
                 elif rsi_val > 70:
                     reason = f"⚠️ RSI OVERBOUGHT: RSI({rsi_val:.1f}) > 70 - Cautious BUY"
                     confidence_boost = 0.0
@@ -2795,10 +2799,13 @@ class TradingStrategy:
                     confidence_boost = 0.15
                     
             elif signal_type == 'SELL':
-                if rsi_val < rsi_extreme_oversold:
+                if rsi_extreme_filter_enabled and rsi_val < rsi_extreme_oversold:
                     reason = f"❌ RSI EXTREME OVERSOLD: RSI({rsi_val:.1f}) < {rsi_extreme_oversold} - SELL BLOCKED"
                     logger.info(reason)
                     return False, reason, 0.0
+                elif rsi_val < 25:
+                    reason = f"⚠️ RSI LOW: RSI({rsi_val:.1f}) < 25 - Cautious SELL (extreme filter disabled)"
+                    confidence_boost = -0.05
                 elif rsi_val < 30:
                     reason = f"⚠️ RSI OVERSOLD: RSI({rsi_val:.1f}) < 30 - Cautious SELL"
                     confidence_boost = 0.0

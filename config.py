@@ -540,6 +540,10 @@ class Config:
     RSI_SELL_MIN_LEVEL = _get_int_env('RSI_SELL_MIN_LEVEL', '20')
     RSI_LEVEL_FILTER_ENABLED = os.getenv('RSI_LEVEL_FILTER_ENABLED', 'false').lower() == 'true'
     
+    RSI_EXTREME_FILTER_ENABLED = os.getenv('RSI_EXTREME_FILTER_ENABLED', 'false').lower() == 'true'
+    RSI_EXTREME_OVERBOUGHT = _get_int_env('RSI_EXTREME_OVERBOUGHT', '85')
+    RSI_EXTREME_OVERSOLD = _get_int_env('RSI_EXTREME_OVERSOLD', '15')
+    
     EMA_SLOPE_FILTER_ENABLED = os.getenv('EMA_SLOPE_FILTER_ENABLED', 'false').lower() == 'true'
     EMA_SLOPE_MIN_THRESHOLD = _get_float_env('EMA_SLOPE_MIN_THRESHOLD', '0.0001')
     
