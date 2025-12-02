@@ -4,6 +4,11 @@
 This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision.
 
 ## Recent Changes (December 2025)
+- **Koyeb Deployment Fix & Task Scheduler Updates (Dec 02)**:
+  - Config secrets refresh: Added `_refresh_secrets()` method to re-read environment variables at startup (fixes Koyeb delayed secret injection)
+  - Stale position cleanup: Registered `check_stale_positions()` in task scheduler (60s interval) for auto-closing inactive positions >10 minutes
+  - Auto-optimizer blocking stats: Connected `SignalQualityTracker` blocking statistics to `AutoOptimizer` for data-driven parameter adjustments
+  - Dashboard session fix: Fixed `DetachedInstanceError` by extracting SQLAlchemy data before async operations
 - **Per-User Data Filtering Complete (Dec 02)**: 
   - Dashboard API `/api/candles` now filters active_position per user_id
   - Frontend sends user_id to all API endpoints (dashboard, candles, trade-history)

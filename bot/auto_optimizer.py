@@ -418,6 +418,10 @@ class AutoOptimizer:
                         
                         if total_blocked > 0:
                             logger.info(f"📊 Blocking stats injected: {total_blocked} blocked signals in 1h")
+                            logger.info(f"   └─ By reason: {by_reason}")
+                            logger.info(f"   └─ By type: {by_type}")
+                        else:
+                            logger.debug("No blocked signals in last 1h - blocking_stats empty")
                     except (KeyError, TypeError, AttributeError) as e:
                         logger.debug(f"Could not get blocking stats: {e}")
                 
