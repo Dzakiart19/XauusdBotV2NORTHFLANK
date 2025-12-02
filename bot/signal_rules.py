@@ -178,10 +178,10 @@ class AggressiveSignalRules:
         RegimeType.UNKNOWN.value: 0.6,
     }
     
-    MIN_WEIGHTED_CONFLUENCE_SCORE = 6.0
+    MIN_WEIGHTED_CONFLUENCE_SCORE = 5.0
     
-    MIN_CONFIDENCE_THRESHOLD = 0.80
-    QUALITY_GRADE_FILTER = ['A', 'B']
+    MIN_CONFIDENCE_THRESHOLD = 0.75
+    QUALITY_GRADE_FILTER = ['A', 'B', 'C']
     
     LOW_LIQUIDITY_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5]
     HIGH_LIQUIDITY_HOURS = [8, 9, 10, 13, 14, 15, 16]
@@ -437,6 +437,9 @@ class AggressiveSignalRules:
         """
         Check if current regime is favorable for a specific rule type.
         
+        NOTE: Untuk mode UNLIMITED SIGNAL, fungsi ini TIDAK MEMBLOKIR signal,
+        hanya memberikan warning. Signal tetap diizinkan di semua kondisi regime.
+        
         Args:
             rule_type: The signal rule type
         
@@ -450,36 +453,37 @@ class AggressiveSignalRules:
         
         if rule_type == RuleType.M1_SCALP:
             if regime == RegimeType.RANGE_BOUND.value:
-                return False, f"M1_SCALP blocked in range_bound market - choppy conditions"
+                return True, f"⚠️ M1_SCALP in range_bound market - proceed with caution"
             if regime == RegimeType.HIGH_VOLATILITY.value:
-                return False, f"M1_SCALP blocked in high_volatility market - too risky"
+                return True, f"⚠️ M1_SCALP in high_volatility market - proceed with caution"
             if regime == RegimeType.UNKNOWN.value:
-                return False, f"M1_SCALP blocked - unknown market conditions"
+                return True, f"⚠️ M1_SCALP in unknown market - proceed with caution"
         
         if rule_type == RuleType.M5_SWING:
             if regime == RegimeType.RANGE_BOUND.value:
-                return False, f"M5_SWING blocked in range_bound market"
+                return True, f"⚠️ M5_SWING in range_bound market - proceed with caution"
             if regime == RegimeType.UNKNOWN.value:
-                return False, f"M5_SWING blocked - unknown market conditions"
+                return True, f"⚠️ M5_SWING in unknown market - proceed with caution"
         
         if rule_type == RuleType.BREAKOUT:
             if regime == RegimeType.RANGE_BOUND.value:
-                return False, f"BREAKOUT blocked in range_bound market"
+                return True, f"⚠️ BREAKOUT in range_bound market - proceed with caution"
             if regime == RegimeType.WEAK_TREND.value:
-                return False, f"BREAKOUT blocked in weak_trend - insufficient momentum"
+                return True, f"⚠️ BREAKOUT in weak_trend - proceed with caution"
         
         if rule_type == RuleType.SR_REVERSION:
             if regime in [RegimeType.STRONG_TREND.value, RegimeType.BREAKOUT.value]:
-                return False, f"SR_REVERSION not recommended in {regime} market"
+                return True, f"⚠️ SR_REVERSION in {regime} market - proceed with caution"
         
-        return True, f"Regime {regime} is compatible with {rule_type.value}"
+        return True, f"✅ Regime {regime} is compatible with {rule_type.value}"
     
     def _check_regime_alignment(self, signal_type: str, rule_type: RuleType) -> Tuple[bool, str]:
         """
         Check if signal direction aligns with market regime bias.
         
-        IMPORTANT: Only BLOCKS signals with HIGH CONFIDENCE conflicting bias.
-        Allows signals when regime uncertain or data unavailable (with warning).
+        Mode AGGRESSIVE UNLIMITED dengan minimal safety:
+        - Hanya blocking pada kondisi EXTREME (confidence >= 0.95 dengan opposing bias)
+        - Semua kondisi lain = warning only + signal diizinkan
         
         Args:
             signal_type: 'BUY' or 'SELL'
@@ -489,7 +493,7 @@ class AggressiveSignalRules:
             Tuple of (is_aligned, reason)
         """
         if self._current_regime is None:
-            logger.warning(f"Regime unavailable - allowing {signal_type} with caution")
+            logger.debug(f"Regime unavailable - allowing {signal_type}")
             return True, f"⚠️ Regime unavailable - {signal_type} allowed"
         
         bias = self._current_regime.bias
@@ -497,29 +501,34 @@ class AggressiveSignalRules:
         confidence = self._current_regime.confidence
         
         if confidence < 0.6:
-            return True, f"⚠️ Low confidence ({confidence:.2f}) - {signal_type} allowed with caution"
+            return True, f"⚠️ Low confidence ({confidence:.2f}) - {signal_type} allowed"
         
         if rule_type in [RuleType.M1_SCALP, RuleType.M5_SWING, RuleType.BREAKOUT]:
-            if signal_type == 'BUY' and bias == 'SELL' and confidence >= 0.80:
-                return False, f"🚫 BLOCKED: BUY conflicts with strong SELL bias (conf: {confidence:.2f})"
-            if signal_type == 'SELL' and bias == 'BUY' and confidence >= 0.80:
-                return False, f"🚫 BLOCKED: SELL conflicts with strong BUY bias (conf: {confidence:.2f})"
+            if signal_type == 'BUY' and bias == 'SELL' and confidence >= 0.95:
+                return False, f"🚫 SAFETY: BUY blocked - extreme SELL bias (conf: {confidence:.2f})"
+            if signal_type == 'SELL' and bias == 'BUY' and confidence >= 0.95:
+                return False, f"🚫 SAFETY: SELL blocked - extreme BUY bias (conf: {confidence:.2f})"
+            if signal_type == 'BUY' and bias == 'SELL':
+                return True, f"⚠️ BUY in SELL bias (conf: {confidence:.2f}) - allowed with caution"
+            if signal_type == 'SELL' and bias == 'BUY':
+                return True, f"⚠️ SELL in BUY bias (conf: {confidence:.2f}) - allowed with caution"
         
         if rule_type == RuleType.SR_REVERSION:
             if regime in [RegimeType.STRONG_TREND.value, RegimeType.MODERATE_TREND.value]:
-                if signal_type == 'BUY' and bias == 'SELL' and confidence >= 0.85:
-                    return False, f"🚫 BLOCKED: Reversion BUY in strong SELL trend"
-                if signal_type == 'SELL' and bias == 'BUY' and confidence >= 0.85:
-                    return False, f"🚫 BLOCKED: Reversion SELL in strong BUY trend"
+                if signal_type == 'BUY' and bias == 'SELL' and confidence >= 0.95:
+                    return False, f"🚫 SAFETY: Reversion BUY blocked in extreme SELL trend"
+                if signal_type == 'SELL' and bias == 'BUY' and confidence >= 0.95:
+                    return False, f"🚫 SAFETY: Reversion SELL blocked in extreme BUY trend"
+                return True, f"⚠️ Reversion in trend market - allowed with caution"
         
         if signal_type == 'BUY' and bias == 'BUY':
             return True, f"✅ BUY aligned with BUY bias (regime: {regime})"
         elif signal_type == 'SELL' and bias == 'SELL':
             return True, f"✅ SELL aligned with SELL bias (regime: {regime})"
         elif bias == 'NEUTRAL':
-            return True, f"⚠️ Neutral bias - {signal_type} allowed with caution"
+            return True, f"✅ Neutral bias - {signal_type} allowed"
         
-        return True, f"Signal validated (regime: {regime}, bias: {bias})"
+        return True, f"✅ Signal validated (regime: {regime}, bias: {bias})"
     
     def _validate_signal_quality(self, result: SignalResult) -> Tuple[bool, str]:
         """
@@ -536,18 +545,18 @@ class AggressiveSignalRules:
         """
         warnings = []
         
-        if result.confidence < 0.70:
-            return False, f"Very low confidence {result.confidence:.2f} - blocked"
+        if result.confidence < 0.50:
+            return False, f"Critical low confidence {result.confidence:.2f} - blocked for safety"
         elif result.confidence < self.MIN_CONFIDENCE_THRESHOLD:
             warnings.append(f"Low confidence {result.confidence:.2f}")
         
         if result.quality_grade == 'D':
-            return False, f"Grade D signal blocked - too risky"
+            warnings.append(f"Grade {result.quality_grade} - proceed with caution")
         elif result.quality_grade not in self.QUALITY_GRADE_FILTER:
             warnings.append(f"Grade {result.quality_grade} (below ideal)")
         
-        if result.weighted_confluence_score < 4.0:
-            return False, f"Confluence score {result.weighted_confluence_score:.1f} too low"
+        if result.weighted_confluence_score < 2.0:
+            return False, f"Critical low confluence {result.weighted_confluence_score:.1f} - blocked for safety"
         elif result.weighted_confluence_score < self.MIN_WEIGHTED_CONFLUENCE_SCORE:
             warnings.append(f"Confluence {result.weighted_confluence_score:.1f} below ideal")
         

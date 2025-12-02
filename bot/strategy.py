@@ -8,12 +8,6 @@ from dataclasses import dataclass, field
 
 logger = setup_logger('Strategy')
 
-BUY_COOLDOWN_SECONDS = 60
-SELL_COOLDOWN_SECONDS = 60
-PATTERN_COOLDOWN_SECONDS = 45
-GLOBAL_MIN_COOLDOWN_SECONDS = 10
-OPPOSITE_SIGNAL_COOLDOWN_SECONDS = 45
-
 class StrategyError(Exception):
     """Base exception for strategy errors"""
     pass
@@ -490,13 +484,13 @@ class TradingStrategy:
                                 pattern_type: Optional[str] = None) -> Tuple[bool, str]:
         """Cek apakah boleh generate signal baru berdasarkan per-signal-type cooldown
         
-        Smart Signal Cooldown System:
-        1. Global minimum cooldown (10 sec between any signals)
-        2. Per-signal-type cooldown (BUY: 60s, SELL: 60s)
-        3. Opposite signal reduced cooldown (45s instead of 60s)
-        4. Per-pattern cooldown (45s per pattern type)
+        Smart Signal Cooldown System (semua cooldown bisa dikonfigurasi via config, default 0 = unlimited):
+        1. Global minimum cooldown (GLOBAL_MIN_COOLDOWN_SECONDS, default 0)
+        2. Per-signal-type cooldown (BUY_COOLDOWN_SECONDS, SELL_COOLDOWN_SECONDS, default 0)
+        3. Opposite signal cooldown (OPPOSITE_SIGNAL_COOLDOWN_SECONDS, default 0)
+        4. Per-pattern cooldown (PATTERN_COOLDOWN_SECONDS, default 0)
         5. Candle timestamp check (no duplicate signals per candle)
-        6. Minimum price movement check
+        6. Minimum price movement check (SIGNAL_MINIMUM_PRICE_MOVEMENT, default 0)
         
         Args:
             candle_timestamp: Timestamp candle saat ini
@@ -509,64 +503,70 @@ class TradingStrategy:
         """
         current_time = datetime.now(pytz.UTC)
         
+        global_min_cooldown = getattr(self.config, 'GLOBAL_MIN_COOLDOWN_SECONDS', 0)
+        buy_cooldown = getattr(self.config, 'BUY_COOLDOWN_SECONDS', 0)
+        sell_cooldown = getattr(self.config, 'SELL_COOLDOWN_SECONDS', 0)
+        opposite_cooldown = getattr(self.config, 'OPPOSITE_SIGNAL_COOLDOWN_SECONDS', 0)
+        pattern_cooldown = getattr(self.config, 'PATTERN_COOLDOWN_SECONDS', 0)
+        
         if candle_timestamp is not None and self.last_signal_candle_timestamp is not None:
             if candle_timestamp == self.last_signal_candle_timestamp:
                 reason = f"🚫 Signal di-skip: Masih dalam candle yang sama (timestamp: {candle_timestamp})"
                 logger.info(reason)
                 return False, reason
         
-        if self.last_signal_time is not None:
+        if global_min_cooldown > 0 and self.last_signal_time is not None:
             time_since_last = (current_time - self.last_signal_time).total_seconds()
-            if time_since_last < GLOBAL_MIN_COOLDOWN_SECONDS:
-                remaining = GLOBAL_MIN_COOLDOWN_SECONDS - time_since_last
-                reason = f"🚫 Signal di-skip: Global minimum cooldown ({remaining:.0f}s sisa dari {GLOBAL_MIN_COOLDOWN_SECONDS}s)"
+            if time_since_last < global_min_cooldown:
+                remaining = global_min_cooldown - time_since_last
+                reason = f"🚫 Signal di-skip: Global minimum cooldown ({remaining:.0f}s sisa dari {global_min_cooldown}s)"
                 logger.info(reason)
                 return False, reason
         
         if signal_type == 'BUY':
-            if self.last_buy_time is not None:
+            if buy_cooldown > 0 and self.last_buy_time is not None:
                 time_since_last_buy = (current_time - self.last_buy_time).total_seconds()
-                if time_since_last_buy < BUY_COOLDOWN_SECONDS:
-                    remaining = BUY_COOLDOWN_SECONDS - time_since_last_buy
-                    reason = f"🚫 Signal di-skip: BUY cooldown aktif (sisa {remaining:.0f}s dari {BUY_COOLDOWN_SECONDS}s)"
+                if time_since_last_buy < buy_cooldown:
+                    remaining = buy_cooldown - time_since_last_buy
+                    reason = f"🚫 Signal di-skip: BUY cooldown aktif (sisa {remaining:.0f}s dari {buy_cooldown}s)"
                     logger.info(reason)
                     return False, reason
             
-            if self.last_signal_type == 'SELL' and self.last_sell_time is not None:
+            if opposite_cooldown > 0 and self.last_signal_type == 'SELL' and self.last_sell_time is not None:
                 time_since_last_sell = (current_time - self.last_sell_time).total_seconds()
-                if time_since_last_sell < OPPOSITE_SIGNAL_COOLDOWN_SECONDS:
-                    remaining = OPPOSITE_SIGNAL_COOLDOWN_SECONDS - time_since_last_sell
-                    reason = f"🚫 Signal di-skip: Opposite signal cooldown (BUY after SELL, sisa {remaining:.0f}s dari {OPPOSITE_SIGNAL_COOLDOWN_SECONDS}s)"
+                if time_since_last_sell < opposite_cooldown:
+                    remaining = opposite_cooldown - time_since_last_sell
+                    reason = f"🚫 Signal di-skip: Opposite signal cooldown (BUY after SELL, sisa {remaining:.0f}s dari {opposite_cooldown}s)"
                     logger.info(reason)
                     return False, reason
         
         elif signal_type == 'SELL':
-            if self.last_sell_time is not None:
+            if sell_cooldown > 0 and self.last_sell_time is not None:
                 time_since_last_sell = (current_time - self.last_sell_time).total_seconds()
-                if time_since_last_sell < SELL_COOLDOWN_SECONDS:
-                    remaining = SELL_COOLDOWN_SECONDS - time_since_last_sell
-                    reason = f"🚫 Signal di-skip: SELL cooldown aktif (sisa {remaining:.0f}s dari {SELL_COOLDOWN_SECONDS}s)"
+                if time_since_last_sell < sell_cooldown:
+                    remaining = sell_cooldown - time_since_last_sell
+                    reason = f"🚫 Signal di-skip: SELL cooldown aktif (sisa {remaining:.0f}s dari {sell_cooldown}s)"
                     logger.info(reason)
                     return False, reason
             
-            if self.last_signal_type == 'BUY' and self.last_buy_time is not None:
+            if opposite_cooldown > 0 and self.last_signal_type == 'BUY' and self.last_buy_time is not None:
                 time_since_last_buy = (current_time - self.last_buy_time).total_seconds()
-                if time_since_last_buy < OPPOSITE_SIGNAL_COOLDOWN_SECONDS:
-                    remaining = OPPOSITE_SIGNAL_COOLDOWN_SECONDS - time_since_last_buy
-                    reason = f"🚫 Signal di-skip: Opposite signal cooldown (SELL after BUY, sisa {remaining:.0f}s dari {OPPOSITE_SIGNAL_COOLDOWN_SECONDS}s)"
+                if time_since_last_buy < opposite_cooldown:
+                    remaining = opposite_cooldown - time_since_last_buy
+                    reason = f"🚫 Signal di-skip: Opposite signal cooldown (SELL after BUY, sisa {remaining:.0f}s dari {opposite_cooldown}s)"
                     logger.info(reason)
                     return False, reason
         
-        if pattern_type and pattern_type in self.last_pattern_cooldowns:
+        if pattern_cooldown > 0 and pattern_type and pattern_type in self.last_pattern_cooldowns:
             last_pattern_time = self.last_pattern_cooldowns[pattern_type]
             time_since_pattern = (current_time - last_pattern_time).total_seconds()
-            if time_since_pattern < PATTERN_COOLDOWN_SECONDS:
-                remaining = PATTERN_COOLDOWN_SECONDS - time_since_pattern
-                reason = f"🚫 Signal di-skip: Pattern {pattern_type} cooldown (sisa {remaining:.0f}s dari {PATTERN_COOLDOWN_SECONDS}s)"
+            if time_since_pattern < pattern_cooldown:
+                remaining = pattern_cooldown - time_since_pattern
+                reason = f"🚫 Signal di-skip: Pattern {pattern_type} cooldown (sisa {remaining:.0f}s dari {pattern_cooldown}s)"
                 logger.info(reason)
                 return False, reason
         
-        min_price_movement = getattr(self.config, 'SIGNAL_MINIMUM_PRICE_MOVEMENT', 0.50)
+        min_price_movement = getattr(self.config, 'SIGNAL_MINIMUM_PRICE_MOVEMENT', 0.0)
         if self.last_signal_price is not None and min_price_movement > 0:
             price_diff = abs(current_price - self.last_signal_price)
             if price_diff < min_price_movement:
@@ -2784,7 +2784,7 @@ class TradingStrategy:
                     return False, reason, 0.0
                 elif rsi_val > 75:
                     reason = f"⚠️ RSI HIGH: RSI({rsi_val:.1f}) > 75 - Cautious BUY (extreme filter disabled)"
-                    confidence_boost = -0.05
+                    confidence_boost = 0.0
                 elif rsi_val > 70:
                     reason = f"⚠️ RSI OVERBOUGHT: RSI({rsi_val:.1f}) > 70 - Cautious BUY"
                     confidence_boost = 0.0
@@ -2805,7 +2805,7 @@ class TradingStrategy:
                     return False, reason, 0.0
                 elif rsi_val < 25:
                     reason = f"⚠️ RSI LOW: RSI({rsi_val:.1f}) < 25 - Cautious SELL (extreme filter disabled)"
-                    confidence_boost = -0.05
+                    confidence_boost = 0.0
                 elif rsi_val < 30:
                     reason = f"⚠️ RSI OVERSOLD: RSI({rsi_val:.1f}) < 30 - Cautious SELL"
                     confidence_boost = 0.0
