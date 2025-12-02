@@ -2542,6 +2542,7 @@ class TradingStrategy:
             is_strong = volume_ratio >= 1.2
             is_normal = volume_ratio >= 1.0
             is_weak = volume_ratio >= 0.7
+            is_very_low = volume_ratio >= 0.3
             
             if is_spike and volume_increasing:
                 reason = f"✅ VOLUME SPIKE + INCREASING: {volume_ratio:.1%} dengan momentum building"
@@ -2567,10 +2568,14 @@ class TradingStrategy:
                 reason = f"⚠️ VOLUME WEAK: {volume_ratio:.1%} - reduced confidence"
                 logger.info(reason)
                 return True, reason, 0.8
-            else:
-                reason = f"❌ VOLUME TOO LOW: {volume_ratio:.1%} < 70% average - SKIP"
+            elif is_very_low:
+                reason = f"⚠️ VOLUME LOW: {volume_ratio:.1%} - lanjut dengan caution"
                 logger.info(reason)
-                return False, reason, 0.0
+                return True, reason, 0.65
+            else:
+                reason = f"⚠️ VOLUME MINIMAL: {volume_ratio:.1%} - sinyal tetap lanjut (Deriv volume data terbatas)"
+                logger.info(reason)
+                return True, reason, 0.5
                 
         except (StrategyError, Exception) as e:
             logger.error(f"Error in check_enhanced_volume_confirmation: {e}")
