@@ -96,7 +96,15 @@ class CircuitBreaker:
             return result
         except CircuitBreakerOpenException:
             raise
-        except (ResilienceError, Exception) as e:
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except (ConnectionError, TimeoutError, OSError) as e:
+            logger.warning(f"CircuitBreaker '{self.name}': Network error: {e}")
+            if isinstance(e, self.expected_exception):
+                self._on_failure()
+            raise
+        except Exception as e:
+            logger.error(f"CircuitBreaker '{self.name}': Unexpected error type {type(e).__name__}: {e}")
             if isinstance(e, self.expected_exception):
                 self._on_failure()
             raise

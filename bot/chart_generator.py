@@ -92,6 +92,7 @@ class ChartGenerator:
         max_workers = 1 if self.config.FREE_TIER_MODE else 2
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="chart_gen")
         self._shutdown_requested = False
+        self._shutdown_in_progress = False
         self._pending_charts: set = set()
         self._pending_tasks: set = set()
         self._active_futures: dict = {}
@@ -99,8 +100,10 @@ class ChartGenerator:
         self._task_lock = asyncio.Lock()
         self._future_lock = asyncio.Lock()
         self._file_lock = asyncio.Lock()
+        self._shutdown_lock = asyncio.Lock()
         self._sync_file_lock = threading.Lock()
         self._sync_chart_lock = threading.Lock()
+        self._sync_shutdown_lock = threading.Lock()
         self._timed_out_tasks: set = set()
         
         self.chart_timeout = getattr(config, 'DEFAULT_CHART_TIMEOUT', None)
@@ -587,6 +590,12 @@ class ChartGenerator:
     
     def shutdown(self, timeout: Optional[float] = None):
         """Graceful synchronous shutdown dengan cleanup semua pending charts"""
+        with self._sync_shutdown_lock:
+            if self._shutdown_in_progress:
+                logger.debug("Shutdown sudah dalam proses, melewati panggilan berulang")
+                return
+            self._shutdown_in_progress = True
+        
         effective_timeout = timeout if timeout is not None else self.shutdown_timeout
         
         try:
@@ -643,6 +652,12 @@ class ChartGenerator:
     
     async def shutdown_async(self, timeout: Optional[float] = None):
         """Graceful async shutdown dengan timeout dan cleanup semua pending charts"""
+        async with self._shutdown_lock:
+            if self._shutdown_in_progress:
+                logger.debug("Shutdown sudah dalam proses, melewati panggilan berulang (async)")
+                return
+            self._shutdown_in_progress = True
+        
         effective_timeout = timeout if timeout is not None else self.shutdown_timeout
         
         try:

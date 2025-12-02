@@ -173,7 +173,11 @@ class OHLCBuilder:
         logger.debug(f"OHLCBuilder diinisialisasi untuk M{timeframe_minutes} dengan hybrid threading/asyncio locks")
     
     def _scrub_nan_prices(self, prices: Dict) -> Tuple[bool, Dict]:
-        """Scrub NaN values from price dictionary at builder boundary
+        """Scrub NaN values from price dictionary at builder boundary.
+        
+        THREAD-SAFETY NOTE: This method modifies self.nan_scrub_count and MUST
+        only be called while holding self._tick_lock. All current callers
+        (add_tick, get_dataframe) properly acquire the lock before calling.
         
         Args:
             prices: Dictionary with open, high, low, close values
@@ -347,6 +351,13 @@ class OHLCBuilder:
         
     def get_dataframe(self, limit: int = 100) -> Optional[pd.DataFrame]:
         """Mendapatkan DataFrame dengan validasi, NaN filtering, OHLC integrity check.
+        
+        THREAD-SAFETY PATTERN:
+        - Uses self._tick_lock to protect access to self.candles and self.current_candle
+        - _scrub_nan_prices() is called WITHIN lock context (required for nan_scrub_count)
+        - Data is copied to local 'all_candles' list while holding lock
+        - Lock is released before expensive DataFrame operations (uses local copy only)
+        - This pattern ensures thread-safety while minimizing lock contention
         
         Hybrid Pattern Note:
         - Method ini sync dan menggunakan threading.Lock (_tick_lock)
