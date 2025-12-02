@@ -1362,7 +1362,17 @@ class TradingBotOrchestrator:
                 ws = web.WebSocketResponse()
                 await ws.prepare(request)
                 
-                logger.info("🔌 WebSocket client connected to /ws/dashboard")
+                user_id_str = request.query.get('user_id', None)
+                user_id = None
+                if user_id_str:
+                    try:
+                        user_id = int(user_id_str)
+                        if self.config_valid and user_id not in self.config.AUTHORIZED_USER_IDS:
+                            user_id = None
+                    except (ValueError, TypeError):
+                        user_id = None
+                
+                logger.info(f"🔌 WebSocket client connected to /ws/dashboard (user_id: {user_id})")
                 
                 try:
                     while not ws.closed and self.running:
@@ -1408,11 +1418,13 @@ class TradingBotOrchestrator:
                                     logger.debug(f"WebSocket: Error getting price data: {e}")
                             
                             active_position = {'active': False}
-                            if self.config_valid and self.position_tracker:
+                            if user_id is not None and self.config_valid and self.position_tracker:
                                 try:
                                     positions = self.position_tracker.get_active_positions()
                                     if positions:
-                                        for user_id, user_positions in positions.items():
+                                        for pos_user_id, user_positions in positions.items():
+                                            if pos_user_id != user_id:
+                                                continue
                                             if isinstance(user_positions, dict):
                                                 for pos_id, pos in user_positions.items():
                                                     if isinstance(pos, dict):
@@ -1481,12 +1493,20 @@ class TradingBotOrchestrator:
                                     if session:
                                         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
                                         
-                                        result = session.execute(text(
-                                            "SELECT COUNT(*) as total, "
-                                            "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
-                                            "SUM(COALESCE(actual_pl, 0)) as total_pnl "
-                                            "FROM trades WHERE status = 'CLOSED'"
-                                        ))
+                                        if user_id is not None:
+                                            result = session.execute(text(
+                                                "SELECT COUNT(*) as total, "
+                                                "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
+                                                "SUM(COALESCE(actual_pl, 0)) as total_pnl "
+                                                "FROM trades WHERE status = 'CLOSED' AND user_id = :user_id"
+                                            ), {'user_id': user_id})
+                                        else:
+                                            result = session.execute(text(
+                                                "SELECT COUNT(*) as total, "
+                                                "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
+                                                "SUM(COALESCE(actual_pl, 0)) as total_pnl "
+                                                "FROM trades WHERE status = 'CLOSED'"
+                                            ))
                                         row = result.fetchone()
                                         if row:
                                             total = int(row[0] or 0)
@@ -1495,9 +1515,14 @@ class TradingBotOrchestrator:
                                             stats['total_pnl'] = float(row[2] or 0)
                                             stats['win_rate'] = float(wins / total * 100) if total > 0 else 0.0
                                         
-                                        today_result = session.execute(text(
-                                            "SELECT COUNT(*) FROM trades WHERE signal_time >= :today"
-                                        ), {'today': today_start})
+                                        if user_id is not None:
+                                            today_result = session.execute(text(
+                                                "SELECT COUNT(*) FROM trades WHERE signal_time >= :today AND user_id = :user_id"
+                                            ), {'today': today_start, 'user_id': user_id})
+                                        else:
+                                            today_result = session.execute(text(
+                                                "SELECT COUNT(*) FROM trades WHERE signal_time >= :today"
+                                            ), {'today': today_start})
                                         signals_today = today_result.scalar()
                                         stats['signals_today'] = int(signals_today or 0)
                                         

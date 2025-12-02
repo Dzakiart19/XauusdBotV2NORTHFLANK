@@ -7,6 +7,7 @@ from collections import defaultdict
 from functools import wraps
 import time
 import threading
+import inspect
 from sqlalchemy.orm import Session
 from bot.logger import setup_logger
 from bot.database import Trade, Position
@@ -52,22 +53,45 @@ class AnalyticsCache:
             self._timestamps.clear()
             logger.info("Analytics cache cleared")
 
-def cached(cache_instance: AnalyticsCache):
-    """Decorator to cache function results"""
+_analytics_cache = AnalyticsCache(ttl_seconds=300)
+
+def cached(cache_instance: Optional[AnalyticsCache] = None):
+    """Decorator to cache function results with proper user_id and days handling.
+    
+    Uses a shared module-level cache by default for consistent caching across all methods.
+    Cache key format: f"{func_name}:user_{user_id}:days_{days}" for analytics methods.
+    
+    Args:
+        cache_instance: Optional cache instance (uses shared _analytics_cache if None)
+    """
+    actual_cache = cache_instance if cache_instance is not None else _analytics_cache
+    
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            cache_key = f"{func.__name__}:{args}:{kwargs}"
+            sig = inspect.signature(func)
+            bound_args = sig.bind(*args, **kwargs)
+            bound_args.apply_defaults()
+            all_args = bound_args.arguments
             
-            cached_result = cache_instance.get(cache_key)
+            user_id = all_args.get('user_id', None)
+            days = all_args.get('days', 30)
+            
+            cache_key = f"{func.__name__}:user_{user_id}:days_{days}"
+            
+            cached_result = actual_cache.get(cache_key)
             if cached_result is not None:
                 return cached_result
             
             result = func(*args, **kwargs)
-            cache_instance.set(cache_key, result)
+            actual_cache.set(cache_key, result)
             return result
         return wrapper
     return decorator
+
+def get_shared_analytics_cache() -> AnalyticsCache:
+    """Get the shared analytics cache instance for external access."""
+    return _analytics_cache
 
 class TradingAnalytics:
     """Comprehensive trading analytics and performance tracking"""
@@ -75,14 +99,14 @@ class TradingAnalytics:
     def __init__(self, db_manager, config=None):
         self.db = db_manager
         self.config = config
-        self.cache = AnalyticsCache(ttl_seconds=300)
-        logger.info("TradingAnalytics initialized with 5-minute cache")
+        self.cache = _analytics_cache
+        logger.info("TradingAnalytics initialized with shared 5-minute cache")
     
     def clear_cache(self):
-        """Clear analytics cache"""
-        self.cache.clear()
+        """Clear analytics cache (clears shared module cache)"""
+        _analytics_cache.clear()
     
-    @cached(cache_instance=AnalyticsCache(ttl_seconds=300))
+    @cached()
     def get_trading_performance(self, user_id: Optional[int] = None, days: int = 30) -> Dict[str, Any]:
         """Get overall trading performance metrics
         
@@ -172,7 +196,7 @@ class TradingAnalytics:
             if session:
                 session.close()
     
-    @cached(cache_instance=AnalyticsCache(ttl_seconds=300))
+    @cached()
     def get_hourly_stats(self, user_id: Optional[int] = None, days: int = 30) -> Dict[str, Any]:
         """Get performance breakdown by hour of day
         
@@ -252,7 +276,7 @@ class TradingAnalytics:
             if session:
                 session.close()
     
-    @cached(cache_instance=AnalyticsCache(ttl_seconds=300))
+    @cached()
     def get_signal_source_performance(self, user_id: Optional[int] = None, days: int = 30) -> Dict[str, Any]:
         """Compare performance between auto and manual signals
         
@@ -334,7 +358,7 @@ class TradingAnalytics:
             if session:
                 session.close()
     
-    @cached(cache_instance=AnalyticsCache(ttl_seconds=300))
+    @cached()
     def get_position_tracking_stats(self, user_id: Optional[int] = None, days: int = 30) -> Dict[str, Any]:
         """Get position tracking statistics
         
@@ -421,7 +445,7 @@ class TradingAnalytics:
             if session:
                 session.close()
     
-    @cached(cache_instance=AnalyticsCache(ttl_seconds=300))
+    @cached()
     def get_risk_metrics(self, user_id: Optional[int] = None, days: int = 30) -> Dict[str, Any]:
         """Get risk management effectiveness metrics
         
