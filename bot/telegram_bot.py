@@ -5877,6 +5877,19 @@ class TradingBot:
             import os
             import fcntl
             
+            if self.config.IS_KOYEB:
+                logger.error("=" * 60)
+                logger.error("❌ KOYEB DETECTED BUT WEBHOOK MODE IS DISABLED!")
+                logger.error("=" * 60)
+                logger.error("Polling TIDAK BISA digunakan di Koyeb!")
+                logger.error("Bot akan tetap jalan tapi TIDAK BISA menerima command!")
+                logger.error("")
+                logger.error("SOLUSI: Set environment variable di Koyeb:")
+                logger.error("  TELEGRAM_WEBHOOK_MODE=true")
+                logger.error("  KOYEB_PUBLIC_DOMAIN=nama-app.koyeb.app")
+                logger.error("=" * 60)
+                return
+            
             if os.path.exists(self.instance_lock_file):
                 try:
                     with open(self.instance_lock_file, 'r') as f:

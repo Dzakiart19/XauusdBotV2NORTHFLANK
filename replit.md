@@ -4,6 +4,14 @@
 This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision.
 
 ## Recent Changes (December 2025)
+- **H1 Candle Bootstrap & Koyeb Webhook Fix (Dec 03)**:
+  - H1 Bootstrap Complete: Now fetches 60+ H1 candles at startup (was 49-50/60)
+  - Smart H1 Check: Detects if H1 < 60 candles and auto-fetches from Deriv API
+  - Retry Logic: If first fetch insufficient, retries with extended count (200)
+  - Webhook Timeout Fix: Added 25s timeout for webhook processing
+  - Background Processing: Long-running commands continue async after timeout
+  - Koyeb Docs: Created `KOYEB_ENV.md` with required environment variables
+  - Startup Logging: Clear diagnostic logs for webhook URL detection and H1 status
 - **Signal Quality Fix & Optimization (Dec 03)**:
   - M5 RSI Threshold Relaxed: BUY threshold 45→40, SELL threshold 55→60 (neutral zone 40-60)
   - Market Regime DataFrame Warning Fixed: check_regime_alignment() now skips gracefully when no DataFrame provided
