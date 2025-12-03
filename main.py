@@ -528,6 +528,32 @@ class TradingBotOrchestrator:
             
             elif task_name == "telegram_bot" and self.telegram_bot:
                 logger.warning(f"🔄 Restarting telegram_bot (attempt {task_info.restart_count}/{task_info.max_restarts})")
+                try:
+                    await asyncio.wait_for(self.telegram_bot.stop(), timeout=10.0)
+                    logger.info("✅ telegram_bot stopped successfully before restart")
+                except asyncio.TimeoutError:
+                    logger.warning("⚠️ telegram_bot stop timed out, forcing restart anyway")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error stopping telegram_bot: {e}, forcing restart anyway")
+                
+                await asyncio.sleep(1.0)
+                
+                try:
+                    init_success = await asyncio.wait_for(self.telegram_bot.initialize(), timeout=30.0)
+                    if init_success:
+                        logger.info("✅ telegram_bot re-initialized successfully")
+                        await self.telegram_bot.start_background_cleanup_tasks()
+                        logger.info("✅ telegram_bot background tasks started")
+                    else:
+                        logger.error("❌ telegram_bot re-initialization failed")
+                        return False
+                except asyncio.TimeoutError:
+                    logger.error("❌ telegram_bot re-initialization timed out")
+                    return False
+                except Exception as e:
+                    logger.error(f"❌ telegram_bot re-initialization error: {e}")
+                    return False
+                
                 new_task = asyncio.create_task(self.telegram_bot.run())
                 task_info.task = new_task
                 task_info.created_at = datetime.now()

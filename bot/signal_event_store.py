@@ -8,6 +8,7 @@ Menyediakan:
 """
 
 import asyncio
+import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
@@ -79,7 +80,9 @@ class SignalEventStore:
             'total_signals_recorded': 0,
             'signals_cleaned_up': 0,
             'last_signal_time': None,
-            'active_users': 0
+            'active_users': 0,
+            'cleanup_runs': 0,
+            'average_signals_per_user': 0.0
         }
         
         logger.info(f"✅ SignalEventStore diinisialisasi - TTL: {ttl_seconds}s, Max sinyal per user: {max_signals_per_user}")
@@ -134,11 +137,20 @@ class SignalEventStore:
                 if not self._signals[user_id]:
                     del self._signals[user_id]
             
+            self._telemetry['cleanup_runs'] += 1
+            
             if cleaned_count > 0:
                 self._telemetry['signals_cleaned_up'] += cleaned_count
                 logger.info(f"🧹 Auto-cleanup: {cleaned_count} sinyal expired dihapus")
+                memory_stats = self.get_memory_stats()
+                logger.info(f"📊 Memory stats setelah cleanup: {memory_stats['total_signals']} sinyal, ~{memory_stats['estimated_memory_mb']}MB")
             
             self._telemetry['active_users'] = len(self._signals)
+            total_signals = sum(len(signals) for signals in self._signals.values())
+            if self._telemetry['active_users'] > 0:
+                self._telemetry['average_signals_per_user'] = round(total_signals / self._telemetry['active_users'], 2)
+            else:
+                self._telemetry['average_signals_per_user'] = 0.0
             self._last_cleanup = now
     
     async def record_signal(self, user_id: int, signal_data: Dict[str, Any]) -> bool:
@@ -339,6 +351,28 @@ class SignalEventStore:
             self._telemetry['active_users'] = len(self._signals)
             logger.info(f"🧹 Menghapus {count} sinyal untuk user {mask_user_id(user_id)}")
             return count
+    
+    def get_memory_stats(self) -> Dict[str, Any]:
+        """
+        Ambil statistik penggunaan memory SignalEventStore.
+        
+        Returns:
+            Dictionary dengan statistik memory
+        """
+        total_signals = sum(len(signals) for signals in self._signals.values())
+        
+        estimated_memory_bytes = total_signals * 500
+        
+        return {
+            'total_signals': total_signals,
+            'active_users': len(self._signals),
+            'estimated_memory_bytes': estimated_memory_bytes,
+            'estimated_memory_mb': round(estimated_memory_bytes / (1024 * 1024), 2),
+            'max_signals_per_user': self._max_signals_per_user,
+            'cleanup_running': self._is_running,
+            'last_cleanup': self._last_cleanup.isoformat() if self._last_cleanup else None,
+            'signals_cleaned_up': self._telemetry.get('signals_cleaned_up', 0)
+        }
     
     def get_telemetry(self) -> Dict[str, Any]:
         """
