@@ -1,89 +1,7 @@
 # XAUUSD Trading Bot Pro V2
 
 ## Overview
-This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision.
-
-## Recent Changes (December 2025)
-- **Koyeb Webhook Fix & Environment Refresh (Dec 03)**:
-  - Fixed: Bot tidak merespon di Koyeb karena WEBHOOK_URL kosong saat startup
-  - Config._refresh_secrets() sekarang juga me-refresh KOYEB_PUBLIC_DOMAIN, IS_KOYEB, WEBHOOK_URL
-  - Auto-generate WEBHOOK_URL dari KOYEB_PUBLIC_DOMAIN jika tersedia
-  - Startup logging lebih informatif dengan status Koyeb/webhook
-  - Script fix_webhook.py untuk troubleshooting manual (--status, --delete, atau URL argument)
-  - Documentation DEPLOYMENT_KOYEB.md diupdate dengan fix webhook manual section
-- **Signal Filter Relaxation & Blocking Rate Optimization (Dec 03)**:
-  - Threshold scoring relaxed: AUTO 60→50%, MANUAL 40→35%
-  - H1 Confirmation relaxed: 1/3 criteria pass (bukan 2/3), weak score 0.90 (bukan 0.75)
-  - Volume threshold relaxed untuk SCALP: <30% hanya 5% penalty (multiplier 0.95)
-  - MTF bonus: M1+M5 aligned (2/3) = +5%, M1+M5+H1 aligned (3/3) = +10%
-  - Confluence boost: 3/6=+5pt, 4/6=+10pt, 5/6=+15pt dengan multiplier 1.10-1.30x
-  - Extended MTF: M1+M5 aligned = +10% bonus (MEDIUM confidence), 3/3 = +20%
-  - Log clarity: VolMult (volume) terpisah dari ATR-Vol (volatility)
-  - H1 weak tidak dihitung aligned (hanya accepted tanpa penalty)
-  - Enhanced volume confirmation: Relaxed thresholds (SPIKE >= 1.0x, STRONG >= 0.50x, ACCEPTABLE >= 0.30x)
-  - Extended MTF RSI relaxed: BUY > 35 (was 45), SELL < 65 (was 55) untuk lebih banyak alignment
-- **H1 Candle Bootstrap & Koyeb Webhook Fix (Dec 03)**:
-  - H1 Bootstrap Complete: Now fetches 60+ H1 candles at startup (was 49-50/60)
-  - Smart H1 Check: Detects if H1 < 60 candles and auto-fetches from Deriv API
-  - Retry Logic: If first fetch insufficient, retries with extended count (200)
-  - Webhook Timeout Fix: Added 25s timeout for webhook processing
-  - Background Processing: Long-running commands continue async after timeout
-  - Koyeb Docs: Created `KOYEB_ENV.md` with required environment variables
-  - Startup Logging: Clear diagnostic logs for webhook URL detection and H1 status
-- **Signal Quality Fix & Optimization (Dec 03)**:
-  - M5 RSI Threshold Relaxed: BUY threshold 45→40, SELL threshold 55→60 (neutral zone 40-60)
-  - Market Regime DataFrame Warning Fixed: check_regime_alignment() now skips gracefully when no DataFrame provided
-  - High-frequency logs demoted to DEBUG level (signal_rules.py, market_regime.py) for Koyeb I/O optimization
-  - Grade-based auto-close: C=20min, B=30min, A=60min timeout for stale positions
-  - Position reload fix: signal_grade and confidence_score fields now included in reload_active_positions()
-- **Koyeb Deployment Full Optimization (Dec 02)**:
-  - Webhook mode support: Auto-detect Koyeb domain from KOYEB_PUBLIC_DOMAIN env var
-  - Dockerfile optimized: apt cache cleanup, healthcheck 30s interval, FREE_TIER_MODE env vars
-  - Markdown escape fix: Added `escape_markdown_v1()` function to prevent "Can't parse entities" errors
-  - Requirements.txt: Cleaned up duplicate dependencies
-  - Created `.env.example` with full documentation for Koyeb deployment
-  - Self-ping enabled for Koyeb free tier (prevents idle timeout)
-  - Memory optimization settings for 512MB constraint
-- **Koyeb Deployment Fix & Task Scheduler Updates (Dec 02)**:
-  - Config secrets refresh: Added `_refresh_secrets()` method to re-read environment variables at startup (fixes Koyeb delayed secret injection)
-  - Stale position cleanup: Registered `check_stale_positions()` in task scheduler (60s interval) for auto-closing inactive positions >10 minutes
-  - Auto-optimizer blocking stats: Connected `SignalQualityTracker` blocking statistics to `AutoOptimizer` for data-driven parameter adjustments
-  - Dashboard session fix: Fixed `DetachedInstanceError` by extracting SQLAlchemy data before async operations
-- **Per-User Data Filtering Complete (Dec 02)**: 
-  - Dashboard API `/api/candles` now filters active_position per user_id
-  - Frontend sends user_id to all API endpoints (dashboard, candles, trade-history)
-  - Telegram WebApp user authentication with fallback to URL parameter and localStorage
-  - Each user only sees their own positions and trading data
-- **Real-Time Dashboard v5.1**: Major dashboard enhancement with 7 key improvements:
-  - Virtual Scrolling: Trade history with pagination (20 trades per page, max 50), "Load More" button
-  - EMA Overlay Chart: EMA 9/21 overlay on candlestick chart with optimized series management (no memory leaks)
-  - Chart Caching: 2-second candle data cache to reduce API calls
-  - Market Regime Live Tags: 5s timeout for stuck state, fade animations, confidence color-coding (80%+ green, 50-80% yellow, <50% gray)
-  - Position Monitoring: P/L in pips + USD, TP/SL progress bars (0-100%), audio alerts at 95% proximity, trailing SL indicator
-  - Signal Card Enhancements: TTL countdown, win rate display, confidence badge (A/B/C/D grades), entry accuracy
-  - Toast Notifications: Signal received, position closed, error toasts with 3s auto-hide (max 3 concurrent)
-  - Performance Monitoring: FPS counter (?fps=1), memory usage, API response time display (debug mode)
-- **Adaptive Volume Filter**: Dynamic volume threshold based on volatility zone (LOW: 0.3-0.5, NORMAL: 0.5-0.6, HIGH: 0.6-0.7) and session strength, replacing rigid 1.1x check
-- **Dynamic ADX Threshold**: ADX threshold adapts to market conditions (8-20 range vs fixed 22), with session and volatility modifiers
-- **Parallel Timeframe Signal Generation**: M1, M5, H1 signals generated concurrently with asyncio.gather and 15s timeout per check, with voting system for direction alignment
-- **Smart Signal Cooldown**: Per-signal-type cooldown (BUY/SELL tracked separately) instead of global cooldown, allowing alternating signals
-- **Health Monitor Fix**: Parallel quick checks (200ms timeout), removed max_restarts limit for unlimited auto-restart capability
-- **Per-User Web Dashboard**: Telegram user authentication for web app with isolated data views per user
-- **Auto-Pin /help**: The /start command now automatically sends and pins the /help message for easy access
-- **Enhanced Inside Bar Pattern Detection**: New `detect_inside_bar_pattern()` method with consolidation levels (1-3), breakout potential analysis, mother bar tracking, squeeze ratio calculation, and confidence modifiers
-- **Breakout Confirmation System**: New `check_breakout_confirmation()` method validating ATR expansion, volume, RSI/MACD momentum alignment, and M5 breakout confirmation with non-blocking confidence scoring (0.7-1.0)
-- **Session TP/SL Optimization**: New `get_session_tp_sl_multiplier()` method for session-based TP/SL adjustment (STRONGEST: 1.15x TP, STRONG: 1.05-1.10x, MEDIUM: 0.95x, WEAK: 0.80x)
-- **Enhanced Win Rate Tracking**: New `get_enhanced_win_stats()` method with breakdown per signal type, session, pattern, consecutive wins/losses tracking, and R:R calculation
-- **New /winstats Command**: Display comprehensive win rate statistics with breakdown per signal type, session, pattern, streak info, and best performing metrics
-- **Database**: Migrated to PostgreSQL with BIGINT support for Telegram user IDs
-- **API Dashboard Stats Query Fix**: Fixed SQL query to use correct column names (`actual_pl` instead of `pnl`, `signal_time` instead of `created_at`, and `status = 'CLOSED'` uppercase)
-- **Trade History Sync**: Verified - trades properly save with `exit_price`, `actual_pl`, `close_time`, and `result` when positions are closed
-- **Web Dashboard**: Real-time sync confirmed working with live price data, active positions, and market regime display
-- **Position Tracking**: Full lifecycle working - open, monitor with dynamic SL/trailing stop, and close with P/L calculation
-- **Trial System Auto-Start**: Fixed - new users now automatically get 3-day trial when using `/start` command
-- **User Status Display**: Updated `/start` and `/help` to show correct user status (Admin, User Terdaftar, Trial User)
-- **Telegram Commands**: Updated `/help` to display all 25 commands organized by category (added /winstats)
-- **Regime Command Fix**: Fixed Markdown parsing error by sanitizing underscore characters in dynamic content
+This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision. It includes a real-time web dashboard for monitoring positions, trade history, and market regimes, with strict per-user data isolation.
 
 ## User Preferences
 - Bahasa komunikasi: **Bahasa Indonesia** (100% tidak ada bahasa Inggris)
@@ -102,31 +20,28 @@ The bot features a modular architecture for scalability and maintainability, des
 **Core Components & System Design:**
 - **Orchestrator:** Manages overall bot operations.
 - **Market Data:** Handles Deriv WebSocket connection, OHLC candle construction, and persistence.
-- **Strategy:** Implements dual-mode signal detection using indicators like Twin Range Filter, Market Bias CEREBR, EMA 50, and RSI, with a weighted scoring system and an aggressive scalping system featuring a Market Regime Detector and Confluence Scoring System.
-- **Position Tracker:** Monitors real-time trade positions per user, including dynamic SL settings and trailing stops.
+- **Strategy:** Implements dual-mode signal detection using indicators like Twin Range Filter, Market Bias CEREBR, EMA 50, and RSI, with a weighted scoring system, Market Regime Detector, and Confluence Scoring System. Features adaptive volume filters, dynamic ADX thresholds, parallel timeframe signal generation, and smart signal cooldown.
+- **Position Tracker:** Monitors real-time trade positions per user, including dynamic SL settings and trailing stops, with grade-based auto-closure for stale positions.
 - **Telegram Bot:** Manages command handling, notifications, and features a real-time dashboard with auto-updates.
-- **Chart Generator:** Creates professional charts with integrated technical indicators (EMA, RSI, Stochastic, TRF, CEREBR).
-- **Risk Manager:** Calculates lot sizes, P/L, and enforces per-user risk limits (fixed SL, dynamic TP, signal cooldown).
-- **Database:** SQLite (with PostgreSQL support) for persistent data, featuring auto-migration, connection pooling, and robust transaction management.
+- **Chart Generator:** Creates professional charts with integrated technical indicators using `mplfinance` and `matplotlib`.
+- **Risk Manager:** Calculates lot sizes, P/L, enforces per-user risk limits, and optimizes TP/SL based on session strength.
+- **Database:** PostgreSQL (with SQLite support) for persistent data, featuring auto-migration, connection pooling, and robust transaction management, with BIGINT support for Telegram user IDs.
 - **User Manager:** Handles user authentication, access control, and a 3-day trial system with auto-expiration.
 - **Resilience:** Incorporates CircuitBreaker for WebSocket, global rate limiting for Telegram API, retry mechanisms, and advanced WebSocket recovery.
 - **System Health:** Includes port conflict detection, bot instance locking, Sentry integration, health checks, and OOM graceful degradation.
-- **Thread Safety:** Utilizes `asyncio.Lock` for critical operations.
+- **Web Dashboard:** A real-time, per-user web dashboard with virtual scrolling, EMA overlay charts, candle data caching, live market regime tags, detailed position monitoring (P/L, TP/SL progress), signal card enhancements (TTL, win rate, confidence), and toast notifications.
+- **Enhanced Signal Features:** Includes enhanced inside bar pattern detection and a breakout confirmation system.
+- **Win Rate Tracking:** Provides enhanced win rate statistics per signal type, session, pattern, and streak information.
+- **Deployment:** Optimized for Koyeb and Replit, supporting webhook mode, memory optimization, and self-ping for free-tier services.
 
 **Technical Implementations & Feature Specifications:**
-- **Indicators:** EMA (5, 10, 20, 50), RSI (14), Stochastic (K=14, D=3), ATR (14), MACD (12,26,9), Volume, Twin Range Filter, Market Bias CEREBR. Features include RSI Divergence Detection, ATR Volatility Zones, Adaptive Smoothed RSI, and Hull Moving Average Smoothing.
-- **Risk Management:** Fixed SL ($1 per trade), dynamic TP (1.45x-2.50x R:R), max spread (5 pips), risk per trade (0.5%). Lot size fixed at 0.01.
-- **Access Control:** Private bot with dual-tier access and a trial system.
-- **Telegram Commands:** Comprehensive set of admin and user commands for status, analytics, signal retrieval, performance tracking, and dashboard interaction.
-- **Anti-Duplicate Protection:** Two-phase cache pattern with hash-based tracking and thread-safe locking for signal deduplication.
-- **Candle Data Persistence:** Stores M1, M5, and H1 candles in the database with immediate H1 save on candle close and partial restore capabilities.
-- **Bot Stability:** Includes hang detection, health monitors, optimized Telegram polling, and a global error handler for prolonged stability.
-- **Chart Generation:** Uses `mplfinance` and `matplotlib` for multi-panel charts, configured for headless operation.
-- **Multi-User Support:** Implemented for per-user position tracking and risk management.
-- **Deployment:** Optimized for Koyeb and Replit, featuring an HTTP server for health checks and a Telegram Web App Dashboard for real-time data display.
-- **Performance Optimization:** Unlimited mode features no global signal cooldown, no tick throttling, and optimized notifications.
-- **Logging & Error Handling:** Rate-limited logging, log rotation, type-safe indicator computations, and comprehensive exception handling.
-- **Task Management:** Centralized task registry with shielded cancellation for graceful shutdown.
+- **Indicators:** EMA (5, 10, 20, 50), RSI (14), Stochastic (K=14, D=3), ATR (14), MACD (12,26,9), Volume, Twin Range Filter, Market Bias CEREBR. Includes advanced features like RSI Divergence, ATR Volatility Zones, and Adaptive Smoothed RSI.
+- **Risk Management:** Fixed SL ($1 per trade), dynamic TP (1.45x-2.50x R:R), max spread (5 pips), risk per trade (0.5%), and fixed lot size at 0.01.
+- **Access Control:** Private bot with dual-tier access and a trial system, with strict per-user data isolation across all endpoints.
+- **Telegram Commands:** Comprehensive admin and user commands, including `/winstats`.
+- **Anti-Duplicate Protection:** Two-phase cache pattern with hash-based tracking for signal deduplication.
+- **Candle Data Persistence:** Stores M1, M5, and H1 candles, including a smart H1 candle bootstrap.
+- **Bot Stability:** Hang detection, health monitors, optimized Telegram polling, and a global error handler.
 
 ## External Dependencies
 - **Deriv WebSocket API:** For real-time XAUUSD market data.
