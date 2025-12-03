@@ -4,6 +4,12 @@
 This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision.
 
 ## Recent Changes (December 2025)
+- **Signal Quality Fix & Optimization (Dec 03)**:
+  - M5 RSI Threshold Relaxed: BUY threshold 45→40, SELL threshold 55→60 (neutral zone 40-60)
+  - Market Regime DataFrame Warning Fixed: check_regime_alignment() now skips gracefully when no DataFrame provided
+  - High-frequency logs demoted to DEBUG level (signal_rules.py, market_regime.py) for Koyeb I/O optimization
+  - Grade-based auto-close: C=20min, B=30min, A=60min timeout for stale positions
+  - Position reload fix: signal_grade and confidence_score fields now included in reload_active_positions()
 - **Koyeb Deployment Full Optimization (Dec 02)**:
   - Webhook mode support: Auto-detect Koyeb domain from KOYEB_PUBLIC_DOMAIN env var
   - Dockerfile optimized: apt cache cleanup, healthcheck 30s interval, FREE_TIER_MODE env vars
