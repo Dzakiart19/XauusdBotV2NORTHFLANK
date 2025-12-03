@@ -2143,12 +2143,25 @@ class TradingBotOrchestrator:
         logger.info(f"DYNAMIC_SL_THRESHOLD: ${self.config.DYNAMIC_SL_LOSS_THRESHOLD} | FIXED_RISK: ${self.config.FIXED_RISK_AMOUNT}")
         
         if self.config.TELEGRAM_WEBHOOK_MODE:
+            logger.info("=" * 60)
+            logger.info("🔗 WEBHOOK MODE CONFIGURATION")
+            logger.info("=" * 60)
+            logger.info(f"Is Koyeb: {self.config.IS_KOYEB}")
+            logger.info(f"KOYEB_PUBLIC_DOMAIN: {os.getenv('KOYEB_PUBLIC_DOMAIN', 'NOT SET')}")
+            logger.info(f"WEBHOOK_URL env: {os.getenv('WEBHOOK_URL', 'NOT SET')[:50] if os.getenv('WEBHOOK_URL') else 'NOT SET'}")
+            logger.info(f"PORT: {self.config.HEALTH_CHECK_PORT}")
+            
             webhook_url = self._auto_detect_webhook_url()
             if webhook_url:
                 self.config.WEBHOOK_URL = webhook_url
-                logger.info(f"Webhook URL auto-detected: {webhook_url}")
+                logger.info(f"✅ Webhook URL auto-detected: {webhook_url[:60]}...")
+            elif self.config.WEBHOOK_URL:
+                logger.info(f"✅ Webhook URL from config: {self.config.WEBHOOK_URL[:60]}...")
             else:
-                logger.info(f"Webhook mode enabled with URL: {self.config.WEBHOOK_URL}")
+                logger.error("❌ WEBHOOK_URL tidak ter-set!")
+                logger.error("Bot akan jalan tapi TIDAK BISA menerima command!")
+                logger.error("Set KOYEB_PUBLIC_DOMAIN atau WEBHOOK_URL di Koyeb!")
+            logger.info("=" * 60)
         
         logger.info("=" * 60)
         

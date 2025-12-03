@@ -5850,14 +5850,27 @@ class TradingBot:
         
         if self.config.TELEGRAM_WEBHOOK_MODE:
             if not self.config.WEBHOOK_URL:
-                logger.error("WEBHOOK_URL not configured! Cannot use webhook mode.")
-                logger.error("Please set WEBHOOK_URL environment variable or disable webhook mode.")
+                logger.error("=" * 60)
+                logger.error("❌ KOYEB WEBHOOK ERROR: WEBHOOK_URL tidak ter-set!")
+                logger.error("=" * 60)
+                logger.error("Bot tidak bisa menerima command di Koyeb tanpa webhook URL.")
+                logger.error("")
+                logger.error("SOLUSI - Set salah satu environment variable di Koyeb:")
+                logger.error("  1. WEBHOOK_URL=https://nama-app.koyeb.app/webhook")
+                logger.error("  2. KOYEB_PUBLIC_DOMAIN=nama-app.koyeb.app")
+                logger.error("")
+                logger.error("Contoh nilai KOYEB_PUBLIC_DOMAIN:")
+                logger.error("  - trading-bot-xyz123.koyeb.app")
+                logger.error("=" * 60)
                 return
             
-            webhook_set = await self.setup_webhook(self.config.WEBHOOK_URL)
-            if not webhook_set:
-                logger.error("Failed to setup webhook! Bot cannot start in webhook mode.")
-                return
+            logger.info("=" * 60)
+            logger.info("🔗 WEBHOOK MODE AKTIF")
+            logger.info("=" * 60)
+            logger.info(f"Webhook URL: {self.config.WEBHOOK_URL[:50]}...")
+            logger.info(f"Port: {self.config.HEALTH_CHECK_PORT}")
+            logger.info(f"Is Koyeb: {self.config.IS_KOYEB}")
+            logger.info("=" * 60)
             
             await self.run_webhook()
         else:
