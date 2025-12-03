@@ -2321,23 +2321,23 @@ class AggressiveSignalRules:
                 m1_signal = self.check_m1_scalp_signal(df_m1, df_m5, df_h1)
                 if m1_signal.is_valid():
                     results.append(m1_signal)
-                    logger.info(f"M1 Scalp signal generated: {m1_signal.signal_type}, Grade={m1_signal.quality_grade}, Confidence={m1_signal.confidence:.2f}")
+                    logger.debug(f"M1 Scalp signal generated: {m1_signal.signal_type}, Grade={m1_signal.quality_grade}, Confidence={m1_signal.confidence:.2f}")
             
             if df_m5 is not None and len(df_m5) >= 50:
                 m5_signal = self.check_m5_swing_signal(df_m5, df_h1)
                 if m5_signal.is_valid():
                     results.append(m5_signal)
-                    logger.info(f"M5 Swing signal generated: {m5_signal.signal_type}, Grade={m5_signal.quality_grade}, Confidence={m5_signal.confidence:.2f}")
+                    logger.debug(f"M5 Swing signal generated: {m5_signal.signal_type}, Grade={m5_signal.quality_grade}, Confidence={m5_signal.confidence:.2f}")
                 
                 sr_signal = self.check_sr_reversion_signal(df_m5, df_h1)
                 if sr_signal.is_valid():
                     results.append(sr_signal)
-                    logger.info(f"S/R Reversion signal generated: {sr_signal.signal_type}, Grade={sr_signal.quality_grade}, Confidence={sr_signal.confidence:.2f}")
+                    logger.debug(f"S/R Reversion signal generated: {sr_signal.signal_type}, Grade={sr_signal.quality_grade}, Confidence={sr_signal.confidence:.2f}")
                 
                 bo_signal = self.check_breakout_signal(df_m5, df_h1)
                 if bo_signal.is_valid():
                     results.append(bo_signal)
-                    logger.info(f"Breakout signal generated: {bo_signal.signal_type}, Grade={bo_signal.quality_grade}, Confidence={bo_signal.confidence:.2f}")
+                    logger.debug(f"Breakout signal generated: {bo_signal.signal_type}, Grade={bo_signal.quality_grade}, Confidence={bo_signal.confidence:.2f}")
             
             if results:
                 results.sort(key=lambda x: (
@@ -2346,7 +2346,7 @@ class AggressiveSignalRules:
                     -x.confidence
                 ))
                 
-                logger.info(f"Generated {len(results)} valid signals. Quality stats: {self._quality_stats}")
+                logger.debug(f"Generated {len(results)} valid signals. Quality stats: {self._quality_stats}")
             
         except Exception as e:
             logger.error(f"Error in check_all_signals: {str(e)}")

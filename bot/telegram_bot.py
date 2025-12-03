@@ -2836,14 +2836,14 @@ class TradingBot:
             if df_m5 is not None and len(df_m5) >= 60:
                 m5_indicators = indicator_engine.get_indicators(df_m5)
                 if m5_indicators:
-                    logger.info(f"✅ M5 MTF: {len(df_m5)} candles -> indicators calculated")
+                    logger.debug(f"✅ M5 MTF: {len(df_m5)} candles -> indicators calculated")
                     return m5_indicators
                 else:
-                    logger.info(f"⚠️ M5 MTF: {len(df_m5)} candles but get_indicators returned None")
+                    logger.debug(f"⚠️ M5 MTF: {len(df_m5)} candles but get_indicators returned None")
                     return None
             else:
                 candle_count = len(df_m5) if df_m5 is not None else 0
-                logger.info(f"⚠️ M5 MTF: Hanya {candle_count}/60 candles tersedia - lanjut tanpa M5")
+                logger.debug(f"⚠️ M5 MTF: Hanya {candle_count}/60 candles tersedia - lanjut tanpa M5")
                 return None
         except Exception as m5_error:
             logger.warning(f"⚠️ M5 MTF Error: {m5_error} - lanjut tanpa M5")
@@ -2861,14 +2861,14 @@ class TradingBot:
             if df_h1 is not None and len(df_h1) >= 60:
                 h1_indicators = indicator_engine.get_indicators(df_h1)
                 if h1_indicators:
-                    logger.info(f"✅ H1 MTF: {len(df_h1)} candles -> indicators calculated")
+                    logger.debug(f"✅ H1 MTF: {len(df_h1)} candles -> indicators calculated")
                     return h1_indicators
                 else:
-                    logger.info(f"⚠️ H1 MTF: {len(df_h1)} candles but get_indicators returned None")
+                    logger.debug(f"⚠️ H1 MTF: {len(df_h1)} candles but get_indicators returned None")
                     return None
             else:
                 candle_count = len(df_h1) if df_h1 is not None else 0
-                logger.info(f"⚠️ H1 MTF: Hanya {candle_count}/60 candles tersedia - lanjut tanpa H1")
+                logger.debug(f"⚠️ H1 MTF: Hanya {candle_count}/60 candles tersedia - lanjut tanpa H1")
                 return None
         except Exception as h1_error:
             logger.warning(f"⚠️ H1 MTF Error: {h1_error} - lanjut tanpa H1")
@@ -2976,7 +2976,7 @@ class TradingBot:
                         'timeframe': 'M1'
                     }
                     signal_rule_type = signal_dict.get('rule_name', 'UNKNOWN')
-                    logger.info(f"📡 Signal dari AggressiveSignalRules: {signal_rule_type} - {signal.get('signal')} (confidence: {signal_dict.get('confidence', 0):.2f})")
+                    logger.debug(f"📡 Signal dari AggressiveSignalRules: {signal_rule_type} - {signal.get('signal')} (confidence: {signal_dict.get('confidence', 0):.2f})")
             except (ValueError, TypeError, KeyError, AttributeError) as e:
                 logger.debug(f"AggressiveSignalRules evaluation error: {e}")
         

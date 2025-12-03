@@ -4,6 +4,17 @@
 This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision.
 
 ## Recent Changes (December 2025)
+- **Signal Filter Relaxation & Blocking Rate Optimization (Dec 03)**:
+  - Threshold scoring relaxed: AUTO 60→50%, MANUAL 40→35%
+  - H1 Confirmation relaxed: 1/3 criteria pass (bukan 2/3), weak score 0.90 (bukan 0.75)
+  - Volume threshold relaxed untuk SCALP: <30% hanya 5% penalty (multiplier 0.95)
+  - MTF bonus: M1+M5 aligned (2/3) = +5%, M1+M5+H1 aligned (3/3) = +10%
+  - Confluence boost: 3/6=+5pt, 4/6=+10pt, 5/6=+15pt dengan multiplier 1.10-1.30x
+  - Extended MTF: M1+M5 aligned = +10% bonus (MEDIUM confidence), 3/3 = +20%
+  - Log clarity: VolMult (volume) terpisah dari ATR-Vol (volatility)
+  - H1 weak tidak dihitung aligned (hanya accepted tanpa penalty)
+  - Enhanced volume confirmation: Relaxed thresholds (SPIKE >= 1.0x, STRONG >= 0.50x, ACCEPTABLE >= 0.30x)
+  - Extended MTF RSI relaxed: BUY > 35 (was 45), SELL < 65 (was 55) untuk lebih banyak alignment
 - **H1 Candle Bootstrap & Koyeb Webhook Fix (Dec 03)**:
   - H1 Bootstrap Complete: Now fetches 60+ H1 candles at startup (was 49-50/60)
   - Smart H1 Check: Detects if H1 < 60 candles and auto-fetches from Deriv API

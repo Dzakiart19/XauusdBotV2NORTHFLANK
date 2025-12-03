@@ -2104,13 +2104,13 @@ class TradingStrategy:
                 total_checks += 1
                 
                 if signal_type == 'BUY':
-                    if rsi_val > 45:
+                    if rsi_val > 35:
                         aligned_count += 1
                         alignment_checks.append(f"RSI({rsi_val:.0f})✅")
                     else:
                         alignment_checks.append(f"RSI({rsi_val:.0f})❌")
                 else:
-                    if rsi_val < 55:
+                    if rsi_val < 65:
                         aligned_count += 1
                         alignment_checks.append(f"RSI({rsi_val:.0f})✅")
                     else:
@@ -2641,20 +2641,19 @@ class TradingStrategy:
                             increasing_count += 1
                     volume_increasing = increasing_count >= 2
             
-            is_spike = volume_ratio >= 1.5
-            is_strong = volume_ratio >= 1.2
-            is_normal = volume_ratio >= 1.0
-            is_weak = volume_ratio >= 0.7
-            is_very_low = volume_ratio >= 0.3
+            is_spike = volume_ratio >= 1.0
+            is_strong = volume_ratio >= 0.50
+            is_normal = volume_ratio >= 0.30
+            is_low = volume_ratio >= 0.10
             
             if is_spike and volume_increasing:
                 reason = f"✅ VOLUME SPIKE + INCREASING: {volume_ratio:.1%} dengan momentum building"
                 logger.info(reason)
-                return True, reason, 1.15
+                return True, reason, 1.10
             elif is_spike:
                 reason = f"✅ VOLUME SPIKE: {volume_ratio:.1%} - Strong confirmation"
                 logger.info(reason)
-                return True, reason, 1.1
+                return True, reason, 1.05
             elif is_strong and volume_increasing:
                 reason = f"✅ VOLUME STRONG + INCREASING: {volume_ratio:.1%}"
                 logger.info(reason)
@@ -2664,21 +2663,17 @@ class TradingStrategy:
                 logger.info(reason)
                 return True, reason, 1.0
             elif is_normal:
-                reason = f"✅ VOLUME NORMAL: {volume_ratio:.1%}"
+                reason = f"✅ VOLUME ACCEPTABLE: {volume_ratio:.1%} - Deriv data terbatas"
                 logger.info(reason)
                 return True, reason, 0.95
-            elif is_weak:
-                reason = f"⚠️ VOLUME WEAK: {volume_ratio:.1%} - reduced confidence"
+            elif is_low:
+                reason = f"⚠️ VOLUME RENDAH: {volume_ratio:.1%} - lanjut dengan caution (Deriv)"
                 logger.info(reason)
-                return True, reason, 0.8
-            elif is_very_low:
-                reason = f"⚠️ VOLUME LOW: {volume_ratio:.1%} - lanjut dengan caution"
-                logger.info(reason)
-                return True, reason, 0.65
+                return True, reason, 0.90
             else:
                 reason = f"⚠️ VOLUME MINIMAL: {volume_ratio:.1%} - sinyal tetap lanjut (Deriv volume data terbatas)"
                 logger.info(reason)
-                return True, reason, 0.5
+                return True, reason, 0.85
                 
         except (StrategyError, Exception) as e:
             logger.error(f"Error in check_enhanced_volume_confirmation: {e}")
