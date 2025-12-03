@@ -1414,20 +1414,17 @@ class TradingStrategy:
             return True, f"✅ M5 Confirmation: Error - {str(e)} (lanjut dengan M1)", 1.0
     
     def check_h1_confirmation(self, h1_indicators: Optional[Dict], signal_type: str) -> Tuple[bool, str, float]:
-        """Memeriksa konfirmasi trend dari timeframe H1 untuk meningkatkan akurasi signal.
+        """Memeriksa konfirmasi trend dari timeframe H1 - RELAXED VERSION untuk scalping.
         
-        H1 Confirmation memeriksa trend alignment di higher timeframe (H1) untuk memastikan
-        signal M1/M5 searah dengan trend H1. Ini adalah level tertinggi dari multi-timeframe confirmation.
+        OPTIMASI: H1 adalah higher timeframe, tidak harus strict untuk scalping M1.
+        - Jika H1 data incomplete/unavailable: SKIP tanpa penalty (score 1.0)
+        - Jika H1 hanya 1/3 aligned: PASS dengan score 0.90 (bukan 0.75)
+        - Threshold pass: 1 dari 3 (bukan 2 dari 3)
         
-        Kriteria H1 Confirmation:
-        1. EMA Alignment di H1 (EMA5 vs EMA20 vs EMA50) searah dengan signal
-        2. RSI H1 mendukung arah signal (> 50 untuk BUY, < 50 untuk SELL)
-        3. Overall trend structure confirmation
-        
-        Incomplete Data Handling:
-        - Data H1 tidak tersedia: lanjut dengan M1+M5
-        - Data H1 partial/incomplete: lanjut dengan data yang tersedia
-        - Kalkulasi indicator membutuhkan minimal data, jika tidak cukup = skip indicator
+        Kriteria H1 Confirmation (RELAXED):
+        1. EMA Alignment di H1 (EMA5 vs EMA20) - optional untuk scalping
+        2. RSI H1 mendukung arah signal - optional untuk scalping
+        3. MACD H1 direction confirmation - optional untuk scalping
         
         Args:
             h1_indicators: Dictionary indicator dari timeframe H1 (bisa None)
@@ -1438,13 +1435,13 @@ class TradingStrategy:
         """
         try:
             if not h1_indicators or not isinstance(h1_indicators, dict):
-                reason = "✅ H1 Confirmation: Data H1 tidak tersedia - lanjut dengan M1+M5"
+                reason = "✅ H1 Confirmation SKIPPED: Data H1 tidak tersedia - lanjut tanpa penalty"
                 logger.debug(reason)
                 return True, reason, 1.0
             
             available_indicators = [k for k, v in h1_indicators.items() if is_valid_number(v)]
             if len(available_indicators) < 2:
-                reason = f"✅ H1 Confirmation: Data H1 incomplete ({len(available_indicators)} indicators) - lanjut dengan M1+M5"
+                reason = f"✅ H1 Confirmation SKIPPED: Data H1 incomplete ({len(available_indicators)} indicators) - lanjut tanpa penalty"
                 logger.debug(reason)
                 return True, reason, 1.0
             
@@ -1479,8 +1476,8 @@ class TradingStrategy:
                         else:
                             confirmation_details.append(f"✅ EMA H1 bullish (EMA5={ema5:.2f} > EMA20={ema20:.2f})")
                     else:
-                        confirmation_details.append(f"⚠️ EMA H1 TIDAK bullish - 25% REDUCTION")
-                        score_multiplier = 0.75
+                        confirmation_details.append(f"⚠️ EMA H1 TIDAK bullish - 10% REDUCTION (relaxed)")
+                        score_multiplier = 0.90
                 elif signal_type == 'SELL':
                     if ema5 < ema20:
                         ema_aligned = True
@@ -1490,10 +1487,10 @@ class TradingStrategy:
                         else:
                             confirmation_details.append(f"✅ EMA H1 bearish (EMA5={ema5:.2f} < EMA20={ema20:.2f})")
                     else:
-                        confirmation_details.append(f"⚠️ EMA H1 TIDAK bearish - 25% REDUCTION")
-                        score_multiplier = 0.75
+                        confirmation_details.append(f"⚠️ EMA H1 TIDAK bearish - 10% REDUCTION (relaxed)")
+                        score_multiplier = 0.90
             else:
-                confirmation_details.append("EMA H1: data incomplete - skipped")
+                confirmation_details.append("EMA H1: data incomplete - skipped tanpa penalty")
             
             rsi_h1 = h1_indicators.get('rsi')
             if is_valid_number(rsi_h1):
@@ -1532,11 +1529,11 @@ class TradingStrategy:
                     confirmation_details.append(f"MACD H1 tidak mendukung {signal_type}")
             
             if confirmations_possible == 0:
-                reason = f"✅ H1 Confirmation: Semua indicator incomplete - lanjut dengan M1+M5"
+                reason = f"✅ H1 Confirmation SKIPPED: Semua indicator incomplete - lanjut tanpa penalty"
                 logger.debug(reason)
                 return True, reason, 1.0
             
-            confirmations_needed = max(1, confirmations_possible // 2 + 1)
+            confirmations_needed = 1
             
             if confirmations_passed >= confirmations_needed:
                 score_info = "" if score_multiplier == 1.0 else f" [Score: {score_multiplier:.0%}]"
@@ -1544,14 +1541,13 @@ class TradingStrategy:
                 logger.info(reason)
                 return True, reason, score_multiplier
             else:
-                score_info = "" if score_multiplier == 1.0 else f" [Score: {score_multiplier:.0%}]"
-                reason = f"⚠️ H1 Confirmation WEAK: {confirmations_passed}/{confirmations_possible} (need {confirmations_needed}){score_info} ({', '.join(confirmation_details)})"
+                reason = f"⚠️ H1 Confirmation WEAK ACCEPTED: {confirmations_passed}/{confirmations_possible} (need {confirmations_needed}) [Score: 90%] ({', '.join(confirmation_details)})"
                 logger.info(reason)
-                return True, reason, score_multiplier * 0.85
+                return True, reason, 0.90
                 
         except (StrategyError, Exception) as e:
             logger.error(f"Error in check_h1_confirmation: {e}")
-            return True, f"✅ H1 Confirmation: Error - {str(e)}", 1.0
+            return True, f"✅ H1 Confirmation SKIPPED: Error - lanjut tanpa penalty", 1.0
     
     def check_multi_timeframe_confirmation(self, m1_indicators: Dict, m5_indicators: Optional[Dict], 
                                            h1_indicators: Optional[Dict], signal_type: str) -> Tuple[bool, str, float, Dict]:
@@ -1663,10 +1659,12 @@ class TradingStrategy:
                 mtf_data['h1_available'] = True
                 mtf_data['timeframes_available'] += 1
                 h1_passed, h1_reason, h1_score = self.check_h1_confirmation(h1_indicators, signal_type)
-                if h1_passed and h1_score >= 0.75:
+                if h1_passed and h1_score >= 1.0:
                     mtf_data['h1_aligned'] = True
                     mtf_data['timeframes_aligned'] += 1
                     mtf_data['details'].append("H1: ✅ Aligned")
+                elif h1_passed and h1_score >= 0.90:
+                    mtf_data['details'].append("H1: ⚠️ Weak (accepted tapi tidak aligned)")
                 else:
                     mtf_data['details'].append("H1: ⚠️ Tidak aligned")
             else:
@@ -1698,21 +1696,21 @@ class TradingStrategy:
                     return True, reason, mtf_data['total_score'], mtf_data
                 else:
                     if aligned_count >= 3:
-                        mtf_data['total_score'] = 1.0
-                        reason = f"✅ MTF STRONG: Semua timeframe aligned (3/3) - {details_str}"
+                        mtf_data['total_score'] = 1.10
+                        reason = f"✅ MTF STRONG: Semua timeframe aligned (3/3) - BONUS +10% - {details_str}"
                     elif aligned_count >= 2:
                         if mtf_data['m5_aligned']:
-                            mtf_data['total_score'] = 0.90
-                            reason = f"✅ MTF GOOD: M1+M5 aligned ({aligned_count}/3) - {details_str}"
+                            mtf_data['total_score'] = 1.05
+                            reason = f"✅ MTF GOOD: M1+M5 aligned ({aligned_count}/3) - BONUS +5% - {details_str}"
                         elif mtf_data['h1_aligned']:
-                            mtf_data['total_score'] = 0.85
+                            mtf_data['total_score'] = 1.0
                             reason = f"✅ MTF OK: M1+H1 aligned ({aligned_count}/3) - {details_str}"
                         else:
-                            mtf_data['total_score'] = 0.80
+                            mtf_data['total_score'] = 0.95
                             reason = f"⚠️ MTF PARTIAL: {aligned_count}/3 aligned - {details_str}"
                     else:
-                        mtf_data['total_score'] = 0.65
-                        reason = f"⚠️ MTF WEAK: Hanya M1 aligned ({aligned_count}/3) - {details_str}"
+                        mtf_data['total_score'] = 0.90
+                        reason = f"⚠️ MTF WEAK: Hanya M1 aligned ({aligned_count}/3) - minimal penalty - {details_str}"
                     logger.info(reason)
                     return True, reason, mtf_data['total_score'], mtf_data
             else:
@@ -1971,6 +1969,10 @@ class TradingStrategy:
             
             alignment_ratio = aligned_count / available_count if available_count > 0 else 0
             
+            m1_aligned = result['timeframe_status'].get('M1', {}).get('aligned', False)
+            m5_aligned = result['timeframe_status'].get('M5', {}).get('aligned', False)
+            h1_aligned = result['timeframe_status'].get('H1', {}).get('aligned', False)
+            
             if aligned_count >= 5 or (available_count >= 4 and aligned_count == available_count):
                 result['confidence_level'] = 'VERY HIGH'
                 result['mtf_correlation_score'] = 0.40
@@ -1986,6 +1988,16 @@ class TradingStrategy:
                 result['mtf_correlation_score'] = 0.20
                 result['confidence_multiplier'] = 1.2
                 result['is_strongly_aligned'] = alignment_ratio >= 0.6
+            elif aligned_count >= 2 and m1_aligned and m5_aligned:
+                result['confidence_level'] = 'MEDIUM'
+                result['mtf_correlation_score'] = 0.10
+                result['confidence_multiplier'] = 1.05
+                result['is_strongly_aligned'] = True
+            elif aligned_count >= 2:
+                result['confidence_level'] = 'LOW'
+                result['mtf_correlation_score'] = 0.05
+                result['confidence_multiplier'] = 1.0
+                result['is_strongly_aligned'] = False
             else:
                 result['confidence_level'] = 'LOW'
                 result['mtf_correlation_score'] = 0.0
@@ -3233,18 +3245,15 @@ class TradingStrategy:
                     return False, reason, 0.0
             
             else:
-                if volume_ratio >= 1.0:
-                    reason = f"✅ Volume SCALP STRONG: [{volume_ratio:.1%}]{vwap_info}{increasing_info}"
+                if volume_ratio >= 0.50:
+                    reason = f"✅ Volume SCALP STRONG: [{volume_ratio:.1%}] - bonus +5%{vwap_info}{increasing_info}"
+                    confidence_multiplier = 1.05
+                elif volume_ratio >= 0.30:
+                    reason = f"✅ Volume SCALP NORMAL: [{volume_ratio:.1%}] - accepted{vwap_info}{increasing_info}"
                     confidence_multiplier = 1.0
-                elif volume_ratio >= 0.8:
-                    reason = f"✅ Volume SCALP OK: [{volume_ratio:.1%}]{vwap_info}{increasing_info}"
-                    confidence_multiplier = 0.9
-                elif volume_ratio >= 0.5:
-                    reason = f"⚠️ Volume SCALP RENDAH: [{volume_ratio:.1%}] - reduced confidence{vwap_info}{increasing_info}"
-                    confidence_multiplier = 0.7
                 else:
-                    reason = f"⚠️ Volume SCALP VERY LOW: [{volume_ratio:.1%}] - LANJUT dengan caution{vwap_info}{increasing_info}"
-                    confidence_multiplier = 0.5
+                    reason = f"⚠️ Volume SCALP VERY LOW: [{volume_ratio:.1%}] - hanya 5% reduction (Deriv data terbatas){vwap_info}{increasing_info}"
+                    confidence_multiplier = 0.95
                 
                 logger.info(reason)
                 return True, reason, confidence_multiplier
@@ -4036,21 +4045,28 @@ class TradingStrategy:
             result['confidence_reasons'].append(result['spread_filter']['reason'])
             
             confluence_count = result['confluence_count']
+            confluence_bonus = 0.0
             if confluence_count >= 5:
-                confluence_multiplier = 1.25
+                confluence_multiplier = 1.30
+                confluence_bonus = 15.0
             elif confluence_count >= 4:
-                confluence_multiplier = 1.15
+                confluence_multiplier = 1.20
+                confluence_bonus = 10.0
             elif confluence_count >= 3:
-                confluence_multiplier = 1.0
+                confluence_multiplier = 1.10
+                confluence_bonus = 5.0
             elif confluence_count >= 2:
-                confluence_multiplier = 0.85
+                confluence_multiplier = 1.0
+                confluence_bonus = 0.0
             else:
-                confluence_multiplier = 0.7
+                confluence_multiplier = 0.95
+                confluence_bonus = 0.0
             
             result['confluence_multiplier'] = confluence_multiplier
+            result['confluence_bonus'] = confluence_bonus
             
             final_multiplier = confluence_multiplier * volume_mult * (2.0 - volatility_adj)
-            adjusted_score = result['weighted_score'] * final_multiplier
+            adjusted_score = (result['weighted_score'] * final_multiplier) + confluence_bonus
             
             auto_threshold = safe_float(getattr(self.config, 'SIGNAL_SCORE_THRESHOLD_AUTO', 55), 55.0)
             manual_threshold = safe_float(getattr(self.config, 'SIGNAL_SCORE_THRESHOLD_MANUAL', 30), 30.0)
@@ -4078,13 +4094,15 @@ class TradingStrategy:
             
             volatility_info = ""
             if volatility_adj != 1.0:
-                volatility_info = f" | Vol: {volatility_adj:.2f}x"
+                volatility_info = f" | ATR-Vol: {volatility_adj:.2f}x"
             
-            confluence_info = f" | Confluence: {confluence_count}/6 ({confluence_multiplier:.2f}x)"
+            volume_info = f" | VolMult: {volume_mult:.2f}x"
+            
+            confluence_info = f" | Confluence: {confluence_count}/6 ({confluence_multiplier:.2f}x){'+' + str(int(confluence_bonus)) + 'pt' if confluence_bonus > 0 else ''}"
             adx_blocking_info = " [BLOCKING]" if signal_source == 'auto' else " [info]"
             adx_info = f" | ADX: {adx_value:.1f}{adx_blocking_info}" if adx_value > 0 else ""
             
-            logger.info(f"Multi-Confirmation Score: {result['total_score']}/100 (Adj: {adjusted_score:.0f}%){confluence_info}{adx_info}{volatility_info} | Ready: {result['all_mandatory_passed']} | Mode: {signal_mode}")
+            logger.info(f"Multi-Confirmation Score: {result['total_score']}/100 (Adj: {adjusted_score:.0f}%){confluence_info}{adx_info}{volume_info}{volatility_info} | Ready: {result['all_mandatory_passed']} | Mode: {signal_mode}")
             
             return result
             
