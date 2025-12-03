@@ -561,6 +561,15 @@ class TradingBotOrchestrator:
                 logger.info(f"✅ memory_monitor restarted successfully")
                 return True
             
+            elif task_name == "telegram_bot_health_monitor":
+                logger.warning(f"🔄 Restarting telegram_bot_health_monitor (attempt {task_info.restart_count}/{task_info.max_restarts})")
+                new_task = asyncio.create_task(self._monitor_telegram_bot_health())
+                task_info.task = new_task
+                task_info.created_at = datetime.now()
+                task_info.status = TaskStatus.RUNNING
+                logger.info(f"✅ telegram_bot_health_monitor restarted successfully")
+                return True
+            
             else:
                 logger.warning(f"⚠️ No restart handler for task: {task_name}")
                 return False
@@ -903,6 +912,170 @@ class TradingBotOrchestrator:
             logger.error(f"Error during chart cleanup: {e}")
         
         return deleted_count
+    
+    async def _monitor_telegram_bot_health(self):
+        """Monitor khusus untuk telegram_bot task dengan auto-restart.
+        
+        Coroutine ini:
+        1. Memonitor status telegram_bot task setiap 30 detik
+        2. Auto-restart jika task mati atau completed
+        3. Logging jelas untuk debugging
+        4. Graceful degradation jika restart gagal 3x berturut-turut
+        5. Reset recovery mode saat task kembali healthy
+        """
+        MONITOR_INTERVAL = 30
+        MAX_CONSECUTIVE_FAILURES = 3
+        RECOVERY_MODE_COOLDOWN = 300
+        
+        consecutive_failures = 0
+        in_recovery_mode = False
+        recovery_mode_start = None
+        restart_count = 0
+        last_healthy_status = datetime.now()
+        healthy_check_count = 0
+        
+        logger.info(f"🤖 Starting telegram_bot health monitor (interval: {MONITOR_INTERVAL}s)")
+        
+        try:
+            while self.running and not self._shutdown_in_progress:
+                try:
+                    await asyncio.sleep(MONITOR_INTERVAL)
+                    
+                    if not self.running or self._shutdown_in_progress:
+                        break
+                    
+                    task_info = None
+                    async with self._task_registry_lock:
+                        if "telegram_bot" not in self._task_registry:
+                            logger.warning("⚠️ telegram_bot task tidak ditemukan di registry")
+                            continue
+                        task_info = self._task_registry["telegram_bot"]
+                    
+                    if task_info is None:
+                        continue
+                    
+                    task_is_done = task_info.is_done()
+                    
+                    bot_healthy_flag = False
+                    if self.telegram_bot and hasattr(self.telegram_bot, '_bot_healthy'):
+                        bot_healthy_flag = self.telegram_bot._bot_healthy
+                    
+                    if not task_is_done and bot_healthy_flag:
+                        consecutive_failures = 0
+                        last_healthy_status = datetime.now()
+                        healthy_check_count += 1
+                        
+                        if in_recovery_mode:
+                            logger.info(f"✅ telegram_bot kembali HEALTHY (flag=True) - keluar dari recovery mode")
+                            in_recovery_mode = False
+                            recovery_mode_start = None
+                        
+                        if healthy_check_count % 20 == 0:
+                            logger.info(
+                                f"🤖 telegram_bot healthy | "
+                                f"Checks: {healthy_check_count} | "
+                                f"Restarts: {restart_count} | "
+                                f"Health flag: ✅"
+                            )
+                        continue
+                    
+                    if not task_is_done and not bot_healthy_flag:
+                        logger.warning(f"⚠️ telegram_bot task running tapi health flag FALSE - mungkin belum fully initialized")
+                        continue
+                    
+                    if in_recovery_mode:
+                        if recovery_mode_start:
+                            elapsed = (datetime.now() - recovery_mode_start).total_seconds()
+                            if elapsed >= RECOVERY_MODE_COOLDOWN:
+                                logger.info(f"🔄 Recovery mode cooldown selesai ({elapsed:.0f}s) - mencoba restart lagi")
+                                in_recovery_mode = False
+                                recovery_mode_start = None
+                                consecutive_failures = 0
+                            else:
+                                if int(elapsed) % 60 < 30:
+                                    remaining = RECOVERY_MODE_COOLDOWN - elapsed
+                                    logger.info(f"⏳ Recovery mode: {remaining:.0f}s tersisa sebelum retry")
+                                continue
+                    
+                    try:
+                        exc = task_info.task.exception()
+                        if exc:
+                            logger.error(f"💥 telegram_bot task CRASHED dengan exception: {exc}")
+                        else:
+                            logger.warning("⚠️ telegram_bot task COMPLETED tanpa exception (seharusnya running terus)")
+                    except asyncio.CancelledError:
+                        logger.info("🛑 telegram_bot task was cancelled - tidak auto-restart")
+                        continue
+                    except asyncio.InvalidStateError:
+                        continue
+                    
+                    if not task_info.can_restart():
+                        logger.error(f"❌ telegram_bot sudah mencapai max restart ({task_info.max_restarts})")
+                        if not in_recovery_mode:
+                            logger.error("🔴 Masuk ke recovery mode - telegram_bot tidak akan di-restart")
+                            in_recovery_mode = True
+                            recovery_mode_start = datetime.now()
+                            await self._send_recovery_mode_alert("telegram_bot", task_info.restart_count)
+                        continue
+                    
+                    logger.warning(f"🔄 Auto-restart telegram_bot (attempt {task_info.restart_count + 1})")
+                    
+                    async with self._task_registry_lock:
+                        restart_success = await self._restart_task("telegram_bot", task_info)
+                    
+                    if restart_success:
+                        restart_count += 1
+                        consecutive_failures = 0
+                        last_healthy_status = datetime.now()
+                        logger.info(f"✅ telegram_bot restarted successfully (total restarts: {restart_count})")
+                        
+                        if in_recovery_mode:
+                            logger.info("✅ Keluar dari recovery mode setelah restart berhasil")
+                            in_recovery_mode = False
+                            recovery_mode_start = None
+                    else:
+                        consecutive_failures += 1
+                        logger.error(f"❌ telegram_bot restart FAILED (consecutive failures: {consecutive_failures})")
+                        
+                        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES and not in_recovery_mode:
+                            logger.error(f"🔴 {MAX_CONSECUTIVE_FAILURES}x restart gagal berturut-turut - masuk recovery mode")
+                            in_recovery_mode = True
+                            recovery_mode_start = datetime.now()
+                            await self._send_recovery_mode_alert("telegram_bot", task_info.restart_count)
+                    
+                except asyncio.CancelledError:
+                    logger.info("🛑 telegram_bot health monitor cancelled")
+                    raise
+                except Exception as e:
+                    logger.error(f"❌ Error dalam telegram_bot health monitor: {type(e).__name__}: {e}")
+                    await asyncio.sleep(10)
+            
+            logger.info(f"🤖 telegram_bot health monitor stopped (total restarts: {restart_count})")
+        
+        except asyncio.CancelledError:
+            logger.info("🤖 telegram_bot health monitor task cancelled")
+        except Exception as e:
+            logger.error(f"❌ telegram_bot health monitor fatal error: {e}")
+    
+    async def _send_recovery_mode_alert(self, task_name: str, restart_count: int):
+        """Kirim alert ketika masuk recovery mode.
+        
+        Args:
+            task_name: Nama task yang gagal
+            restart_count: Jumlah restart yang sudah dilakukan
+        """
+        try:
+            if self.alert_system and self.config.AUTHORIZED_USER_IDS:
+                alert_msg = (
+                    f"🔴 *RECOVERY MODE AKTIF*\n\n"
+                    f"Task `{task_name}` gagal setelah {restart_count}x restart.\n"
+                    f"Bot akan mencoba recovery dalam 5 menit.\n\n"
+                    f"Jika masalah berlanjut, restart manual diperlukan."
+                )
+                await self.alert_system.send_system_error(alert_msg)
+                logger.info(f"📧 Recovery mode alert sent for {task_name}")
+        except Exception as e:
+            logger.error(f"Failed to send recovery mode alert: {e}")
     
     def _auto_detect_webhook_url(self) -> Optional[str]:
         if self.config.WEBHOOK_URL and self.config.WEBHOOK_URL.strip():
@@ -2059,6 +2232,15 @@ class TradingBotOrchestrator:
                                     
                                     if task_info.can_restart():
                                         tasks_to_restart.append((task_name, task_info))
+                                else:
+                                    if task_name == "telegram_bot":
+                                        logger.warning(f"⚠️ telegram_bot task COMPLETED tanpa exception (seharusnya running terus)")
+                                        if task_info.can_restart():
+                                            tasks_to_restart.append((task_name, task_info))
+                                    elif task_name == "telegram_bot_health_monitor":
+                                        logger.warning(f"⚠️ telegram_bot_health_monitor task COMPLETED (seharusnya running terus)")
+                                        if task_info.can_restart():
+                                            tasks_to_restart.append((task_name, task_info))
                             except asyncio.CancelledError:
                                 pass
                             except asyncio.InvalidStateError:
@@ -2377,8 +2559,21 @@ class TradingBotOrchestrator:
                 task=bot_task,
                 priority=TaskPriority.HIGH,
                 critical=False,
-                cancel_timeout=8.0
+                cancel_timeout=8.0,
+                max_restarts=-1
             )
+            
+            logger.info("Starting telegram_bot health monitor (auto-restart)...")
+            telegram_bot_monitor_task = asyncio.create_task(self._monitor_telegram_bot_health())
+            await self.register_task(
+                name="telegram_bot_health_monitor",
+                task=telegram_bot_monitor_task,
+                priority=TaskPriority.HIGH,
+                critical=False,
+                cancel_timeout=5.0,
+                max_restarts=-1
+            )
+            logger.info("✅ telegram_bot health monitor started (interval: 30s, auto-restart enabled)")
             
             logger.info("Waiting for candles to build (minimal 30 candles, max 20s)...")
             candle_ready = False

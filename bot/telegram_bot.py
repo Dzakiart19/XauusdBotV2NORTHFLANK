@@ -341,6 +341,10 @@ class TradingBot:
         self._active_monitoring: Dict[int, Dict[str, Any]] = {}
         self._monitoring_drain_complete: Dict[int, asyncio.Event] = {}
         
+        self._bot_healthy: bool = False
+        self._last_health_check: Optional[datetime] = None
+        self._health_check_interval: float = 30.0
+        
         self.dashboard_messages: Dict[int, int] = {}
         self.dashboard_tasks: Dict[int, asyncio.Task] = {}
         self.dashboard_enabled: Dict[int, bool] = {}
@@ -5909,115 +5913,207 @@ class TradingBot:
                 logger.debug(f"Traceback: {tb_str}")
     
     async def run(self):
+        """
+        Main run method dengan keep-alive loop untuk webhook mode.
+        Dilengkapi exception handling robust untuk mencegah task mati tanpa log.
+        """
         if not self.app:
             logger.error("Bot not initialized! Call initialize() first.")
             return
         
-        if self.config.TELEGRAM_WEBHOOK_MODE:
-            if not self.config.WEBHOOK_URL:
-                logger.error("=" * 60)
-                logger.error("❌ KOYEB WEBHOOK ERROR: WEBHOOK_URL tidak ter-set!")
-                logger.error("=" * 60)
-                logger.error("Bot tidak bisa menerima command di Koyeb tanpa webhook URL.")
-                logger.error("")
-                logger.error("SOLUSI - Set salah satu environment variable di Koyeb:")
-                logger.error("  1. WEBHOOK_URL=https://nama-app.koyeb.app/webhook")
-                logger.error("  2. KOYEB_PUBLIC_DOMAIN=nama-app.koyeb.app")
-                logger.error("")
-                logger.error("Contoh nilai KOYEB_PUBLIC_DOMAIN:")
-                logger.error("  - trading-bot-xyz123.koyeb.app")
-                logger.error("=" * 60)
-                return
-            
-            logger.info("=" * 60)
-            logger.info("🔗 WEBHOOK MODE AKTIF")
-            logger.info("=" * 60)
-            logger.info(f"Webhook URL: {self.config.WEBHOOK_URL[:50]}...")
-            logger.info(f"Port: {self.config.HEALTH_CHECK_PORT}")
-            logger.info(f"Is Koyeb: {self.config.IS_KOYEB}")
-            logger.info("=" * 60)
-            
-            await self.run_webhook()
-        else:
-            import os
-            import fcntl
-            
-            if self.config.IS_KOYEB:
-                logger.error("=" * 60)
-                logger.error("❌ KOYEB DETECTED BUT WEBHOOK MODE IS DISABLED!")
-                logger.error("=" * 60)
-                logger.error("Polling TIDAK BISA digunakan di Koyeb!")
-                logger.error("Bot akan tetap jalan tapi TIDAK BISA menerima command!")
-                logger.error("")
-                logger.error("SOLUSI: Set environment variable di Koyeb:")
-                logger.error("  TELEGRAM_WEBHOOK_MODE=true")
-                logger.error("  KOYEB_PUBLIC_DOMAIN=nama-app.koyeb.app")
-                logger.error("=" * 60)
-                return
-            
-            if os.path.exists(self.instance_lock_file):
-                try:
-                    with open(self.instance_lock_file, 'r') as f:
-                        pid_str = f.read().strip()
-                        if pid_str.isdigit():
-                            old_pid = int(pid_str)
-                            
-                            # Check if process is still running
-                            try:
-                                os.kill(old_pid, 0)
-                                # Process exists
-                                logger.error(f"🔴 CRITICAL: Another bot instance is RUNNING (PID: {old_pid})!")
-                                logger.error("Multiple bot instances will cause 'Conflict: terminated by other getUpdates' errors!")
-                                logger.error(f"Solutions:")
-                                logger.error(f"  1. Kill the other instance: kill {old_pid}")
-                                logger.error(f"  2. Use webhook mode instead: TELEGRAM_WEBHOOK_MODE=true")
-                                logger.error(f"  3. Delete lock file if you're sure: rm {self.instance_lock_file}")
-                                logger.error("Bot will continue but may not work properly!")
-                            except OSError:
-                                # Process doesn't exist (stale lock)
-                                logger.warning(f"⚠️ Stale lock file detected (PID {old_pid} not running)")
-                                logger.info(f"Removing stale lock file: {self.instance_lock_file}")
+        try:
+            if self.config.TELEGRAM_WEBHOOK_MODE:
+                if not self.config.WEBHOOK_URL:
+                    logger.error("=" * 60)
+                    logger.error("❌ KOYEB WEBHOOK ERROR: WEBHOOK_URL tidak ter-set!")
+                    logger.error("=" * 60)
+                    logger.error("Bot tidak bisa menerima command di Koyeb tanpa webhook URL.")
+                    logger.error("")
+                    logger.error("SOLUSI - Set salah satu environment variable di Koyeb:")
+                    logger.error("  1. WEBHOOK_URL=https://nama-app.koyeb.app/webhook")
+                    logger.error("  2. KOYEB_PUBLIC_DOMAIN=nama-app.koyeb.app")
+                    logger.error("")
+                    logger.error("Contoh nilai KOYEB_PUBLIC_DOMAIN:")
+                    logger.error("  - trading-bot-xyz123.koyeb.app")
+                    logger.error("=" * 60)
+                    return
+                
+                logger.info("=" * 60)
+                logger.info("🔗 WEBHOOK MODE AKTIF")
+                logger.info("=" * 60)
+                logger.info(f"Webhook URL: {self.config.WEBHOOK_URL[:50]}...")
+                logger.info(f"Port: {self.config.HEALTH_CHECK_PORT}")
+                logger.info(f"Is Koyeb: {self.config.IS_KOYEB}")
+                logger.info("=" * 60)
+                
+                WEBHOOK_RETRY_DELAY = 30
+                MAX_WEBHOOK_RETRIES = 10
+                webhook_retry_count = 0
+                webhook_setup_success = False
+                
+                while not self._is_shutting_down and not webhook_setup_success:
+                    try:
+                        webhook_retry_count += 1
+                        logger.info(f"🔄 Webhook setup attempt {webhook_retry_count}/{MAX_WEBHOOK_RETRIES}...")
+                        
+                        await self.run_webhook()
+                        webhook_setup_success = True
+                        logger.info("✅ Webhook setup berhasil!")
+                        
+                    except asyncio.CancelledError:
+                        logger.info("🛑 Webhook setup cancelled")
+                        raise
+                    except Exception as e:
+                        logger.error(f"❌ Webhook setup gagal: {type(e).__name__}: {e}")
+                        
+                        if webhook_retry_count >= MAX_WEBHOOK_RETRIES:
+                            logger.error(f"❌ Webhook setup gagal setelah {MAX_WEBHOOK_RETRIES} percobaan!")
+                            raise
+                        
+                        logger.info(f"⏳ Retry dalam {WEBHOOK_RETRY_DELAY}s...")
+                        await asyncio.sleep(WEBHOOK_RETRY_DELAY)
+                
+                if not webhook_setup_success:
+                    logger.error("❌ Webhook setup tidak berhasil - keluar dari run()")
+                    self._bot_healthy = False
+                    return
+                
+                self._bot_healthy = True
+                self._last_health_check = datetime.now()
+                logger.info("✅ Bot health flag set to TRUE (webhook mode)")
+                
+                logger.info("🔄 Memulai keep-alive loop untuk webhook mode...")
+                keep_alive_counter = 0
+                consecutive_errors = 0
+                MAX_CONSECUTIVE_ERRORS = 5
+                
+                while not self._is_shutting_down:
+                    try:
+                        await asyncio.sleep(30)
+                        keep_alive_counter += 1
+                        
+                        consecutive_errors = 0
+                        self._bot_healthy = True
+                        self._last_health_check = datetime.now()
+                        
+                        if keep_alive_counter % 60 == 0:
+                            active_chats = len(self.monitoring_chats)
+                            active_dashboards = len(self.active_dashboards)
+                            logger.info(
+                                f"🤖 Telegram bot keep-alive #{keep_alive_counter} | "
+                                f"Monitoring: {active_chats} chats | "
+                                f"Dashboards: {active_dashboards} | "
+                                f"Status: HEALTHY ✅"
+                            )
+                        
+                    except asyncio.CancelledError:
+                        logger.info("🛑 Telegram bot keep-alive loop cancelled")
+                        self._bot_healthy = False
+                        raise
+                    except Exception as e:
+                        consecutive_errors += 1
+                        logger.error(f"❌ Error dalam keep-alive loop ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {type(e).__name__}: {e}")
+                        
+                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                            logger.error(f"❌ Terlalu banyak error berturut-turut - keluar dari keep-alive loop")
+                            self._bot_healthy = False
+                            raise RuntimeError(f"Keep-alive loop failed after {MAX_CONSECUTIVE_ERRORS} consecutive errors")
+                        
+                        await asyncio.sleep(5)
+                
+                self._bot_healthy = False
+                logger.info("🛑 Telegram bot webhook mode dihentikan (shutdown flag set)")
+            else:
+                import os
+                import fcntl
+                
+                if self.config.IS_KOYEB:
+                    logger.error("=" * 60)
+                    logger.error("❌ KOYEB DETECTED BUT WEBHOOK MODE IS DISABLED!")
+                    logger.error("=" * 60)
+                    logger.error("Polling TIDAK BISA digunakan di Koyeb!")
+                    logger.error("Bot akan tetap jalan tapi TIDAK BISA menerima command!")
+                    logger.error("")
+                    logger.error("SOLUSI: Set environment variable di Koyeb:")
+                    logger.error("  TELEGRAM_WEBHOOK_MODE=true")
+                    logger.error("  KOYEB_PUBLIC_DOMAIN=nama-app.koyeb.app")
+                    logger.error("=" * 60)
+                    return
+                
+                if os.path.exists(self.instance_lock_file):
+                    try:
+                        with open(self.instance_lock_file, 'r') as f:
+                            pid_str = f.read().strip()
+                            if pid_str.isdigit():
+                                old_pid = int(pid_str)
+                                
+                                try:
+                                    os.kill(old_pid, 0)
+                                    logger.error(f"🔴 CRITICAL: Another bot instance is RUNNING (PID: {old_pid})!")
+                                    logger.error("Multiple bot instances will cause 'Conflict: terminated by other getUpdates' errors!")
+                                    logger.error(f"Solutions:")
+                                    logger.error(f"  1. Kill the other instance: kill {old_pid}")
+                                    logger.error(f"  2. Use webhook mode instead: TELEGRAM_WEBHOOK_MODE=true")
+                                    logger.error(f"  3. Delete lock file if you're sure: rm {self.instance_lock_file}")
+                                    logger.error("Bot will continue but may not work properly!")
+                                except OSError:
+                                    logger.warning(f"⚠️ Stale lock file detected (PID {old_pid} not running)")
+                                    logger.info(f"Removing stale lock file: {self.instance_lock_file}")
+                                    try:
+                                        os.remove(self.instance_lock_file)
+                                        logger.info("✅ Stale lock file removed successfully")
+                                    except (PermissionError, OSError, IOError) as remove_error:
+                                        logger.error(f"Failed to remove stale lock: {remove_error}")
+                            else:
+                                logger.warning(f"Invalid PID in lock file: {pid_str}")
+                                logger.info("Removing invalid lock file")
                                 try:
                                     os.remove(self.instance_lock_file)
-                                    logger.info("✅ Stale lock file removed successfully")
-                                except (PermissionError, OSError, IOError) as remove_error:
-                                    logger.error(f"Failed to remove stale lock: {remove_error}")
-                        else:
-                            logger.warning(f"Invalid PID in lock file: {pid_str}")
-                            logger.info("Removing invalid lock file")
-                            try:
-                                os.remove(self.instance_lock_file)
-                            except (PermissionError, OSError, IOError):
-                                pass
-                except (FileNotFoundError, PermissionError, OSError, IOError, ValueError) as e:
-                    logger.error(f"Error reading lock file: {e}")
-                    logger.info("Attempting to remove potentially corrupted lock file")
-                    try:
-                        os.remove(self.instance_lock_file)
-                    except (PermissionError, OSError, IOError):
-                        pass
-            
-            try:
-                with open(self.instance_lock_file, 'w') as f:
-                    f.write(str(os.getpid()))
-                logger.info(f"✅ Bot instance lock created: PID {os.getpid()}")
-            except (PermissionError, OSError, IOError) as e:
-                logger.warning(f"Could not create instance lock: {e}")
-            
-            logger.info("Starting Telegram bot polling with optimized timeouts...")
-            if self.app and self.app.updater:
-                await self.app.updater.start_polling(
-                    timeout=120,
-                    read_timeout=60,
-                    write_timeout=60,
-                    connect_timeout=60,
-                    pool_timeout=60,
-                    allowed_updates=['message', 'callback_query'],
-                    drop_pending_updates=False
-                )
-                logger.info("✅ Telegram bot polling started with optimized parameters!")
-            else:
-                logger.error("Bot or updater not initialized, cannot start polling")
+                                except (PermissionError, OSError, IOError):
+                                    pass
+                    except (FileNotFoundError, PermissionError, OSError, IOError, ValueError) as e:
+                        logger.error(f"Error reading lock file: {e}")
+                        logger.info("Attempting to remove potentially corrupted lock file")
+                        try:
+                            os.remove(self.instance_lock_file)
+                        except (PermissionError, OSError, IOError):
+                            pass
+                
+                try:
+                    with open(self.instance_lock_file, 'w') as f:
+                        f.write(str(os.getpid()))
+                    logger.info(f"✅ Bot instance lock created: PID {os.getpid()}")
+                except (PermissionError, OSError, IOError) as e:
+                    logger.warning(f"Could not create instance lock: {e}")
+                
+                logger.info("Starting Telegram bot polling with optimized timeouts...")
+                if self.app and self.app.updater:
+                    await self.app.updater.start_polling(
+                        timeout=120,
+                        read_timeout=60,
+                        write_timeout=60,
+                        connect_timeout=60,
+                        pool_timeout=60,
+                        allowed_updates=['message', 'callback_query'],
+                        drop_pending_updates=False
+                    )
+                    self._bot_healthy = True
+                    self._last_health_check = datetime.now()
+                    logger.info("✅ Telegram bot polling started with optimized parameters!")
+                    logger.info("✅ Bot health flag set to TRUE (polling mode)")
+                else:
+                    self._bot_healthy = False
+                    logger.error("Bot or updater not initialized, cannot start polling")
+        
+        except asyncio.CancelledError:
+            logger.info("🛑 Telegram bot run() task cancelled")
+            self._bot_healthy = False
+            raise
+        except Exception as e:
+            logger.error(f"❌ FATAL ERROR dalam telegram_bot.run(): {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            raise
     
     async def stop(self):
         logger.info("=" * 50)
