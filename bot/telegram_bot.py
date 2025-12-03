@@ -5758,8 +5758,73 @@ class TradingBot:
             logger.error("Bot not initialized! Call initialize() first.")
             return
         
+        logger.info("=" * 60)
+        logger.info("🚀 STARTING TELEGRAM BOT IN WEBHOOK MODE")
+        logger.info("=" * 60)
+        
+        import os
+        from config import Config
+        Config._refresh_secrets()
+        webhook_url = self.config.WEBHOOK_URL
+        koyeb_domain = os.getenv('KOYEB_PUBLIC_DOMAIN', '')
+        
+        logger.info(f"WEBHOOK_URL env: {os.getenv('WEBHOOK_URL', 'NOT SET')}")
+        logger.info(f"KOYEB_PUBLIC_DOMAIN env: {koyeb_domain or 'NOT SET'}")
+        logger.info(f"Config.WEBHOOK_URL: {webhook_url or 'NOT SET'}")
+        logger.info(f"Config.IS_KOYEB: {self.config.IS_KOYEB}")
+        
+        if not webhook_url and koyeb_domain:
+            webhook_url = f"https://{koyeb_domain}/webhook"
+            self.config.WEBHOOK_URL = webhook_url
+            logger.info(f"Auto-generated WEBHOOK_URL from domain: {webhook_url}")
+        
+        if webhook_url:
+            logger.info("=" * 60)
+            logger.info("📡 REGISTERING WEBHOOK TO TELEGRAM API")
+            logger.info("=" * 60)
+            logger.info(f"Webhook URL: {webhook_url}")
+            
+            await asyncio.sleep(2.0)
+            
+            try:
+                success = await self.setup_webhook(webhook_url, max_retries=5)
+                if success:
+                    logger.info("=" * 60)
+                    logger.info("✅ WEBHOOK REGISTERED SUCCESSFULLY!")
+                    logger.info("=" * 60)
+                    logger.info("Bot will now receive commands from Telegram.")
+                    logger.info("Test by sending /start to your bot.")
+                else:
+                    logger.error("=" * 60)
+                    logger.error("❌ WEBHOOK REGISTRATION FAILED!")
+                    logger.error("=" * 60)
+                    logger.error("Bot will NOT receive any commands from Telegram!")
+                    logger.error("")
+                    logger.error("Troubleshooting:")
+                    logger.error(f"1. Verify URL is accessible: {webhook_url}")
+                    logger.error("2. Check SSL certificate is valid")
+                    logger.error("3. Run manually: python fix_webhook.py --status")
+                    logger.error("4. Redeploy with correct WEBHOOK_URL")
+            except Exception as e:
+                logger.error(f"❌ Exception during webhook setup: {e}")
+                if self.error_handler:
+                    self.error_handler.log_exception(e, "run_webhook_setup")
+        else:
+            logger.error("=" * 60)
+            logger.error("❌ NO WEBHOOK URL AVAILABLE!")
+            logger.error("=" * 60)
+            logger.error("Bot CANNOT receive commands without webhook URL!")
+            logger.error("")
+            logger.error("SOLUTION - Set ONE of these in Koyeb Dashboard:")
+            logger.error("  Option 1: WEBHOOK_URL=https://your-app.koyeb.app/webhook")
+            logger.error("  Option 2: KOYEB_PUBLIC_DOMAIN=your-app.koyeb.app")
+            logger.error("")
+            logger.error("Then REDEPLOY the service!")
+            logger.error("=" * 60)
+        
         logger.info("Telegram bot running in webhook mode...")
-        logger.info("Bot is ready to receive webhook updates")
+        logger.info("Waiting for webhook updates via HTTP endpoint /webhook")
+        logger.info("=" * 60)
     
     async def process_update(self, update_data):
         if not self.app:
