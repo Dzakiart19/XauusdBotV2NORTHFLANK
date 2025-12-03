@@ -1465,64 +1465,116 @@ class TradingBotOrchestrator:
                     active_position = {'active': False}
                     if self.config_valid and self.position_tracker:
                         try:
-                            positions = self.position_tracker.get_active_positions()
-                            if positions:
-                                for pos_user_id, user_positions in positions.items():
-                                    if user_id is not None and pos_user_id != user_id:
-                                        continue
-                                    
-                                    if isinstance(user_positions, dict):
-                                        for pos_id, pos in user_positions.items():
-                                            if isinstance(pos, dict):
-                                                entry_price = pos.get('entry_price')
-                                                stop_loss = pos.get('stop_loss')
-                                                take_profit = pos.get('take_profit')
-                                                direction = pos.get('signal_type', 'BUY')
+                            if user_id is None:
+                                logger.debug(f"[DASHBOARD] user_id=None - TIDAK menampilkan posisi (strict isolation)")
+                            elif not is_authorized:
+                                logger.debug(f"[DASHBOARD] user_id={user_id} NOT authorized - TIDAK menampilkan posisi orang lain")
+                                user_positions = self.position_tracker.get_active_positions(user_id)
+                                if isinstance(user_positions, dict):
+                                    for pos_id, pos in user_positions.items():
+                                        if isinstance(pos, dict):
+                                            entry_price = pos.get('entry_price')
+                                            stop_loss = pos.get('stop_loss')
+                                            take_profit = pos.get('take_profit')
+                                            direction = pos.get('signal_type', 'BUY')
+                                            
+                                            current_pnl_pips = None
+                                            distance_to_tp_pips = None
+                                            distance_to_sl_pips = None
+                                            unrealized_pnl_usd = 0.0
+                                            
+                                            current_price = price_data.get('mid')
+                                            pip_value = getattr(self.config, 'XAUUSD_PIP_VALUE', 10.0)
+                                            lot_size = pos.get('lot_size', getattr(self.config, 'LOT_SIZE', 0.01))
+                                            
+                                            if current_price and entry_price:
+                                                if direction == 'BUY':
+                                                    current_pnl_pips = round((current_price - entry_price) * pip_value, 1)
+                                                else:
+                                                    current_pnl_pips = round((entry_price - current_price) * pip_value, 1)
                                                 
-                                                current_pnl_pips = None
-                                                distance_to_tp_pips = None
-                                                distance_to_sl_pips = None
-                                                unrealized_pnl_usd = 0.0
+                                                unrealized_pnl_usd = round(current_pnl_pips * lot_size * pip_value, 2)
+                                            
+                                            if current_price and take_profit:
+                                                if direction == 'BUY':
+                                                    distance_to_tp_pips = round((take_profit - current_price) * pip_value, 1)
+                                                else:
+                                                    distance_to_tp_pips = round((current_price - take_profit) * pip_value, 1)
+                                            
+                                            if current_price and stop_loss:
+                                                if direction == 'BUY':
+                                                    distance_to_sl_pips = round((current_price - stop_loss) * pip_value, 1)
+                                                else:
+                                                    distance_to_sl_pips = round((stop_loss - current_price) * pip_value, 1)
+                                            
+                                            active_position = {
+                                                'active': True,
+                                                'direction': direction,
+                                                'entry_price': entry_price,
+                                                'sl': stop_loss,
+                                                'tp': take_profit,
+                                                'unrealized_pnl': unrealized_pnl_usd,
+                                                'current_pnl_pips': current_pnl_pips,
+                                                'distance_to_tp_pips': distance_to_tp_pips,
+                                                'distance_to_sl_pips': distance_to_sl_pips,
+                                                'lot_size': lot_size
+                                            }
+                                            logger.debug(f"[DASHBOARD] Found position for user {user_id}: {direction}")
+                                            break
+                            else:
+                                logger.debug(f"[DASHBOARD] user_id={user_id} is AUTHORIZED - menampilkan posisi miliknya")
+                                user_positions = self.position_tracker.get_active_positions(user_id)
+                                if isinstance(user_positions, dict):
+                                    for pos_id, pos in user_positions.items():
+                                        if isinstance(pos, dict):
+                                            entry_price = pos.get('entry_price')
+                                            stop_loss = pos.get('stop_loss')
+                                            take_profit = pos.get('take_profit')
+                                            direction = pos.get('signal_type', 'BUY')
+                                            
+                                            current_pnl_pips = None
+                                            distance_to_tp_pips = None
+                                            distance_to_sl_pips = None
+                                            unrealized_pnl_usd = 0.0
+                                            
+                                            current_price = price_data.get('mid')
+                                            pip_value = getattr(self.config, 'XAUUSD_PIP_VALUE', 10.0)
+                                            lot_size = pos.get('lot_size', getattr(self.config, 'LOT_SIZE', 0.01))
+                                            
+                                            if current_price and entry_price:
+                                                if direction == 'BUY':
+                                                    current_pnl_pips = round((current_price - entry_price) * pip_value, 1)
+                                                else:
+                                                    current_pnl_pips = round((entry_price - current_price) * pip_value, 1)
                                                 
-                                                current_price = price_data.get('mid')
-                                                pip_value = getattr(self.config, 'XAUUSD_PIP_VALUE', 10.0)
-                                                lot_size = pos.get('lot_size', getattr(self.config, 'LOT_SIZE', 0.01))
-                                                
-                                                if current_price and entry_price:
-                                                    if direction == 'BUY':
-                                                        current_pnl_pips = round((current_price - entry_price) * pip_value, 1)
-                                                    else:
-                                                        current_pnl_pips = round((entry_price - current_price) * pip_value, 1)
-                                                    
-                                                    unrealized_pnl_usd = round(current_pnl_pips * lot_size * pip_value, 2)
-                                                
-                                                if current_price and take_profit:
-                                                    if direction == 'BUY':
-                                                        distance_to_tp_pips = round((take_profit - current_price) * pip_value, 1)
-                                                    else:
-                                                        distance_to_tp_pips = round((current_price - take_profit) * pip_value, 1)
-                                                
-                                                if current_price and stop_loss:
-                                                    if direction == 'BUY':
-                                                        distance_to_sl_pips = round((current_price - stop_loss) * pip_value, 1)
-                                                    else:
-                                                        distance_to_sl_pips = round((stop_loss - current_price) * pip_value, 1)
-                                                
-                                                active_position = {
-                                                    'active': True,
-                                                    'direction': direction,
-                                                    'entry_price': entry_price,
-                                                    'sl': stop_loss,
-                                                    'tp': take_profit,
-                                                    'unrealized_pnl': unrealized_pnl_usd,
-                                                    'current_pnl_pips': current_pnl_pips,
-                                                    'distance_to_tp_pips': distance_to_tp_pips,
-                                                    'distance_to_sl_pips': distance_to_sl_pips,
-                                                    'lot_size': lot_size
-                                                }
-                                                break
-                                    if active_position['active']:
-                                        break
+                                                unrealized_pnl_usd = round(current_pnl_pips * lot_size * pip_value, 2)
+                                            
+                                            if current_price and take_profit:
+                                                if direction == 'BUY':
+                                                    distance_to_tp_pips = round((take_profit - current_price) * pip_value, 1)
+                                                else:
+                                                    distance_to_tp_pips = round((current_price - take_profit) * pip_value, 1)
+                                            
+                                            if current_price and stop_loss:
+                                                if direction == 'BUY':
+                                                    distance_to_sl_pips = round((current_price - stop_loss) * pip_value, 1)
+                                                else:
+                                                    distance_to_sl_pips = round((stop_loss - current_price) * pip_value, 1)
+                                            
+                                            active_position = {
+                                                'active': True,
+                                                'direction': direction,
+                                                'entry_price': entry_price,
+                                                'sl': stop_loss,
+                                                'tp': take_profit,
+                                                'unrealized_pnl': unrealized_pnl_usd,
+                                                'current_pnl_pips': current_pnl_pips,
+                                                'distance_to_tp_pips': distance_to_tp_pips,
+                                                'distance_to_sl_pips': distance_to_sl_pips,
+                                                'lot_size': lot_size
+                                            }
+                                            logger.debug(f"[DASHBOARD] Found position for authorized user {user_id}: {direction}")
+                                            break
                         except Exception as e:
                             logger.debug(f"Error getting positions: {e}")
                     
@@ -1555,38 +1607,29 @@ class TradingBotOrchestrator:
                             if session:
                                 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
                                 
-                                if user_id is not None and is_authorized:
+                                if user_id is not None:
+                                    logger.debug(f"[DASHBOARD] Stats untuk user_id={user_id} (authorized={is_authorized})")
                                     result = session.execute(text(
                                         "SELECT COUNT(*) as total, "
                                         "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
                                         "COALESCE(SUM(actual_pl), 0) as total_pnl "
                                         "FROM trades WHERE status = 'CLOSED' AND user_id = :user_id"
                                     ), {'user_id': user_id})
-                                else:
-                                    result = session.execute(text(
-                                        "SELECT COUNT(*) as total, "
-                                        "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
-                                        "COALESCE(SUM(actual_pl), 0) as total_pnl "
-                                        "FROM trades WHERE status = 'CLOSED'"
-                                    ))
-                                row = result.fetchone()
-                                if row:
-                                    total = int(row[0] or 0)
-                                    wins = int(row[1] or 0)
-                                    stats['total_trades'] = total
-                                    stats['total_pnl'] = float(row[2] or 0)
-                                    stats['win_rate'] = float(wins / total * 100) if total > 0 else 0.0
-                                
-                                if user_id is not None and is_authorized:
+                                    row = result.fetchone()
+                                    if row:
+                                        total = int(row[0] or 0)
+                                        wins = int(row[1] or 0)
+                                        stats['total_trades'] = total
+                                        stats['total_pnl'] = float(row[2] or 0)
+                                        stats['win_rate'] = float(wins / total * 100) if total > 0 else 0.0
+                                    
                                     today_result = session.execute(text(
                                         "SELECT COUNT(*) FROM trades WHERE signal_time >= :today AND user_id = :user_id"
                                     ), {'today': today_start, 'user_id': user_id})
+                                    signals_today = today_result.scalar()
+                                    stats['signals_today'] = int(signals_today or 0)
                                 else:
-                                    today_result = session.execute(text(
-                                        "SELECT COUNT(*) FROM trades WHERE signal_time >= :today"
-                                    ), {'today': today_start})
-                                signals_today = today_result.scalar()
-                                stats['signals_today'] = int(signals_today or 0)
+                                    logger.debug(f"[DASHBOARD] user_id=None - stats kosong (strict isolation)")
                                 
                                 session.close()
                         except Exception as e:
@@ -1677,35 +1720,22 @@ class TradingBotOrchestrator:
                     active_position = None
                     if self.config_valid and self.position_tracker:
                         try:
-                            positions = self.position_tracker.get_active_positions()
-                            if positions:
-                                if request_user_id is not None and is_authorized:
-                                    user_positions = positions.get(request_user_id, {})
-                                    if isinstance(user_positions, dict):
-                                        for pos_id, pos in user_positions.items():
-                                            if isinstance(pos, dict):
-                                                active_position = {
-                                                    'entry_price': pos.get('entry_price'),
-                                                    'stop_loss': pos.get('stop_loss'),
-                                                    'take_profit': pos.get('take_profit'),
-                                                    'trailing_sl': pos.get('trailing_sl'),
-                                                    'direction': pos.get('signal_type', 'BUY')
-                                                }
-                                                break
-                                else:
-                                    for user_id, user_positions in positions.items():
-                                        if isinstance(user_positions, dict):
-                                            for pos_id, pos in user_positions.items():
-                                                if isinstance(pos, dict):
-                                                    active_position = {
-                                                        'entry_price': pos.get('entry_price'),
-                                                        'stop_loss': pos.get('stop_loss'),
-                                                        'take_profit': pos.get('take_profit'),
-                                                        'trailing_sl': pos.get('trailing_sl'),
-                                                        'direction': pos.get('signal_type', 'BUY')
-                                                    }
-                                                    break
-                                        if active_position:
+                            if request_user_id is None:
+                                logger.debug(f"[CANDLES] user_id=None - TIDAK menampilkan posisi (strict isolation)")
+                            else:
+                                logger.debug(f"[CANDLES] Mengambil posisi untuk user_id={request_user_id} (authorized={is_authorized})")
+                                user_positions = self.position_tracker.get_active_positions(request_user_id)
+                                if isinstance(user_positions, dict):
+                                    for pos_id, pos in user_positions.items():
+                                        if isinstance(pos, dict):
+                                            active_position = {
+                                                'entry_price': pos.get('entry_price'),
+                                                'stop_loss': pos.get('stop_loss'),
+                                                'take_profit': pos.get('take_profit'),
+                                                'trailing_sl': pos.get('trailing_sl'),
+                                                'direction': pos.get('signal_type', 'BUY')
+                                            }
+                                            logger.debug(f"[CANDLES] Found position for user {request_user_id}: {active_position['direction']}")
                                             break
                         except Exception as e:
                             logger.debug(f"Error getting positions for candles API: {e}")
@@ -1774,17 +1804,16 @@ class TradingBotOrchestrator:
                                 else:
                                     status_condition = "1=1"
                                 
-                                if user_id is not None and is_authorized:
+                                if user_id is None:
+                                    logger.debug(f"[TRADE-HISTORY] user_id=None - mengembalikan list kosong (strict isolation)")
+                                else:
+                                    logger.debug(f"[TRADE-HISTORY] Mengambil trade history untuk user_id={user_id} (authorized={is_authorized})")
+                                    
                                     count_result = session.execute(text(
                                         f"SELECT COUNT(*) FROM trades WHERE {status_condition} AND user_id = :user_id"
                                     ), {'user_id': user_id})
-                                else:
-                                    count_result = session.execute(text(
-                                        f"SELECT COUNT(*) FROM trades WHERE {status_condition}"
-                                    ))
-                                total_trades = count_result.scalar() or 0
-                                
-                                if user_id is not None and is_authorized:
+                                    total_trades = count_result.scalar() or 0
+                                    
                                     result = session.execute(text(
                                         f"SELECT id, user_id, ticker, signal_type, entry_price, stop_loss, "
                                         f"take_profit, exit_price, status, signal_time, close_time, result, actual_pl "
@@ -1792,32 +1821,26 @@ class TradingBotOrchestrator:
                                         f"ORDER BY COALESCE(close_time, signal_time) DESC "
                                         f"LIMIT :limit OFFSET :offset"
                                     ), {'limit': limit, 'offset': offset, 'user_id': user_id})
-                                else:
-                                    result = session.execute(text(
-                                        f"SELECT id, user_id, ticker, signal_type, entry_price, stop_loss, "
-                                        f"take_profit, exit_price, status, signal_time, close_time, result, actual_pl "
-                                        f"FROM trades WHERE {status_condition} "
-                                        f"ORDER BY COALESCE(close_time, signal_time) DESC "
-                                        f"LIMIT :limit OFFSET :offset"
-                                    ), {'limit': limit, 'offset': offset})
-                                
-                                for row in result:
-                                    trade_data = {
-                                        'id': row[0],
-                                        'user_id': row[1],
-                                        'ticker': row[2],
-                                        'signal_type': row[3],
-                                        'entry_price': float(row[4]) if row[4] else None,
-                                        'stop_loss': float(row[5]) if row[5] else None,
-                                        'take_profit': float(row[6]) if row[6] else None,
-                                        'exit_price': float(row[7]) if row[7] else None,
-                                        'status': row[8],
-                                        'signal_time': row[9].isoformat() if row[9] else None,
-                                        'close_time': row[10].isoformat() if row[10] else None,
-                                        'result': row[11],
-                                        'pnl': float(row[12]) if row[12] else 0.0
-                                    }
-                                    trades_list.append(trade_data)
+                                    
+                                    for row in result:
+                                        trade_data = {
+                                            'id': row[0],
+                                            'user_id': row[1],
+                                            'ticker': row[2],
+                                            'signal_type': row[3],
+                                            'entry_price': float(row[4]) if row[4] else None,
+                                            'stop_loss': float(row[5]) if row[5] else None,
+                                            'take_profit': float(row[6]) if row[6] else None,
+                                            'exit_price': float(row[7]) if row[7] else None,
+                                            'status': row[8],
+                                            'signal_time': row[9].isoformat() if row[9] else None,
+                                            'close_time': row[10].isoformat() if row[10] else None,
+                                            'result': row[11],
+                                            'pnl': float(row[12]) if row[12] else 0.0
+                                        }
+                                        trades_list.append(trade_data)
+                                    
+                                    logger.debug(f"[TRADE-HISTORY] Found {len(trades_list)} trades for user {user_id}")
                                 
                                 session.close()
                         except Exception as e:
