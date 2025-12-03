@@ -226,16 +226,14 @@ class Config:
     @classmethod
     def _refresh_secrets(cls):
         """
-        Refresh secrets dari environment variables.
-        Dipanggil saat bot startup untuk memastikan secrets terbaca dengan benar.
-        Penting untuk deployment Koyeb dimana secrets mungkin di-inject setelah module import.
+        Refresh secrets dan Koyeb environment variables.
+        Dipanggil saat bot startup untuk memastikan semua config terbaca dengan benar.
+        Penting untuk deployment Koyeb dimana env vars mungkin di-inject setelah module import.
         """
-        # Re-read dari environment
         new_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
         new_users = _parse_user_ids(os.getenv('AUTHORIZED_USER_IDS', ''))
         new_public = _parse_user_ids(os.getenv('ID_USER_PUBLIC', ''))
         
-        # Update jika ada nilai baru
         if new_token:
             cls.TELEGRAM_BOT_TOKEN = new_token
         if new_users:
@@ -243,10 +241,38 @@ class Config:
         if new_public:
             cls.ID_USER_PUBLIC = new_public
         
+        cls.KOYEB_PUBLIC_DOMAIN = os.getenv('KOYEB_PUBLIC_DOMAIN', '')
+        cls.KOYEB_REGION = os.getenv('KOYEB_REGION', '')
+        cls.KOYEB_SERVICE_NAME = os.getenv('KOYEB_SERVICE_NAME', '')
+        cls.IS_KOYEB = bool(
+            cls.KOYEB_PUBLIC_DOMAIN or 
+            cls.KOYEB_REGION or 
+            cls.KOYEB_SERVICE_NAME or 
+            os.getenv('KOYEB_APP_NAME', '')
+        )
+        
+        _telegram_webhook_mode_env = os.getenv('TELEGRAM_WEBHOOK_MODE', '')
+        if _telegram_webhook_mode_env:
+            cls.TELEGRAM_WEBHOOK_MODE = _telegram_webhook_mode_env.lower() == 'true'
+        else:
+            cls.TELEGRAM_WEBHOOK_MODE = cls.IS_KOYEB
+        
+        _webhook_url_env = os.getenv('WEBHOOK_URL', '')
+        if _webhook_url_env:
+            cls.WEBHOOK_URL = _webhook_url_env
+        elif cls.KOYEB_PUBLIC_DOMAIN:
+            cls.WEBHOOK_URL = f"https://{cls.KOYEB_PUBLIC_DOMAIN}/webhook"
+        else:
+            cls.WEBHOOK_URL = ''
+        
         return {
             'token_set': bool(cls.TELEGRAM_BOT_TOKEN),
             'users_count': len(cls.AUTHORIZED_USER_IDS),
-            'public_count': len(cls.ID_USER_PUBLIC)
+            'public_count': len(cls.ID_USER_PUBLIC),
+            'is_koyeb': cls.IS_KOYEB,
+            'webhook_mode': cls.TELEGRAM_WEBHOOK_MODE,
+            'webhook_url_set': bool(cls.WEBHOOK_URL),
+            'koyeb_domain': cls.KOYEB_PUBLIC_DOMAIN[:30] + '...' if len(cls.KOYEB_PUBLIC_DOMAIN) > 30 else cls.KOYEB_PUBLIC_DOMAIN
         }
     
     # Koyeb deployment detection - auto-enable webhook mode

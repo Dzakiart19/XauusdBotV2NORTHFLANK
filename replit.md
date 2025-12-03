@@ -4,6 +4,13 @@
 This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision.
 
 ## Recent Changes (December 2025)
+- **Koyeb Webhook Fix & Environment Refresh (Dec 03)**:
+  - Fixed: Bot tidak merespon di Koyeb karena WEBHOOK_URL kosong saat startup
+  - Config._refresh_secrets() sekarang juga me-refresh KOYEB_PUBLIC_DOMAIN, IS_KOYEB, WEBHOOK_URL
+  - Auto-generate WEBHOOK_URL dari KOYEB_PUBLIC_DOMAIN jika tersedia
+  - Startup logging lebih informatif dengan status Koyeb/webhook
+  - Script fix_webhook.py untuk troubleshooting manual (--status, --delete, atau URL argument)
+  - Documentation DEPLOYMENT_KOYEB.md diupdate dengan fix webhook manual section
 - **Signal Filter Relaxation & Blocking Rate Optimization (Dec 03)**:
   - Threshold scoring relaxed: AUTO 60→50%, MANUAL 40→35%
   - H1 Confirmation relaxed: 1/3 criteria pass (bukan 2/3), weak score 0.90 (bukan 0.75)

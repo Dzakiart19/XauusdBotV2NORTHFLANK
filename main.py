@@ -168,11 +168,18 @@ class TradingBotOrchestrator:
         initialize_sentry(sentry_dsn, environment)
         logger.info(f"Sentry error tracking initialized (environment: {environment})")
         
-        # Refresh secrets dari environment (penting untuk Koyeb deployment)
-        # Secrets mungkin di-inject setelah module import
-        logger.info("Refreshing secrets dari environment...")
+        logger.info("=" * 60)
+        logger.info("🔄 REFRESHING ENVIRONMENT CONFIGURATION")
+        logger.info("=" * 60)
         refresh_result = Config._refresh_secrets()
-        logger.info(f"Secrets refresh: token_set={refresh_result['token_set']}, users={refresh_result['users_count']}")
+        logger.info(f"Token: {'✅ Set' if refresh_result['token_set'] else '❌ NOT SET'}")
+        logger.info(f"Authorized Users: {refresh_result['users_count']}")
+        logger.info(f"Is Koyeb: {'✅ Yes' if refresh_result.get('is_koyeb') else '❌ No'}")
+        logger.info(f"Webhook Mode: {'✅ Enabled' if refresh_result.get('webhook_mode') else '❌ Disabled'}")
+        logger.info(f"Webhook URL: {'✅ Set' if refresh_result.get('webhook_url_set') else '❌ NOT SET'}")
+        if refresh_result.get('koyeb_domain'):
+            logger.info(f"Koyeb Domain: {refresh_result.get('koyeb_domain')}")
+        logger.info("=" * 60)
         
         logger.info("Validating configuration...")
         try:

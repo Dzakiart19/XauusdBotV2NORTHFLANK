@@ -277,7 +277,7 @@ Jika Anda TIDAK melihat logs ini saat kirim command, berarti:
 **Problem**: Logs menunjukkan "Webhook mode: FALSE" di health check
 **Solusi:**
 1. Pastikan environment variable `TELEGRAM_WEBHOOK_MODE=true` sudah diset
-2. Set `WEBHOOK_URL` atau biarkan auto-detect Koyeb domain
+2. Set `WEBHOOK_URL` atau `KOYEB_PUBLIC_DOMAIN` untuk auto-generate URL
 3. Restart service di Koyeb Dashboard
 4. Check logs untuk konfirmasi: "✅ Webhook configured successfully!"
 5. Test dengan mengirim pesan ke bot di Telegram
@@ -287,6 +287,26 @@ Jika Anda TIDAK melihat logs ini saat kirim command, berarti:
 curl https://<your-koyeb-domain>/health
 ```
 Response harus menunjukkan `"webhook_mode": true`
+
+### 🔧 Fix Webhook Manual (Jika Bot Tidak Merespon)
+
+Jika bot sudah deployed tapi tidak merespon command, gunakan script `fix_webhook.py`:
+
+```bash
+# Cek status webhook saat ini
+python fix_webhook.py --status
+
+# Setup webhook manual
+python fix_webhook.py https://your-app.koyeb.app/webhook
+
+# Hapus webhook (untuk switch ke polling mode)
+python fix_webhook.py --delete
+```
+
+**Catatan:**
+- Script ini akan register webhook URL ke Telegram API
+- Pastikan `TELEGRAM_BOT_TOKEN` sudah diset di environment
+- Jalankan di environment dimana bot token tersedia
 
 ### Docker Build Failed - libgl1-mesa-glx Error
 
