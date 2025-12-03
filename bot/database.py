@@ -315,7 +315,17 @@ class SignalLog(Base):
     rejection_reason = Column(String(255))
 
 class Position(Base):
-    """Position tracking with support for large Telegram user IDs (BigInteger)"""
+    """Position tracking with support for large Telegram user IDs (BigInteger)
+    
+    Signal grading fields for auto-close logic:
+    - signal_grade: A/B/C grading from strategy analysis
+    - confidence_score: 0.0-1.0 confidence from signal detection
+    
+    Auto-close rules based on grade:
+    - Grade C: auto-close if >20 min without profit
+    - Grade B: auto-close if Grade A signal appears
+    - Grade A: hold until TP/SL or >60 min
+    """
     __tablename__ = 'positions'
     
     id = Column(Integer, primary_key=True)
@@ -336,6 +346,8 @@ class Position(Base):
     max_profit_reached = Column(Float, default=0.0)
     last_price_update = Column(DateTime)
     signal_quality_id = Column(Integer, nullable=True)
+    signal_grade = Column(String(2), nullable=True, default='B')
+    confidence_score = Column(Float, nullable=True, default=0.5)
 
 class Performance(Base):
     __tablename__ = 'performance'

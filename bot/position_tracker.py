@@ -848,16 +848,27 @@ class PositionTracker:
         return pos
         
     async def add_position(self, user_id: int, trade_id: int, signal_type: str, entry_price: float,
-                          stop_loss: float, take_profit: float, signal_quality_id: Optional[int] = None):
+                          stop_loss: float, take_profit: float, signal_quality_id: Optional[int] = None,
+                          signal_grade: Optional[str] = 'B', confidence_score: Optional[float] = 0.5):
         """Add position with comprehensive validation and error handling
         
         Thread-safe with asyncio.Lock for active_positions access
+        
+        Args:
+            signal_grade: Signal quality grade (A/B/C) from strategy analysis
+            confidence_score: Confidence score 0.0-1.0 from signal detection
         """
         is_valid, error_msg = validate_position_data(user_id, trade_id, signal_type, entry_price, stop_loss, take_profit)
         if not is_valid:
             logger.error(f"Position validation failed: {error_msg}")
             logger.debug(f"Invalid data: user_id={user_id}, trade_id={trade_id}, signal={signal_type}, entry={entry_price}, sl={stop_loss}, tp={take_profit}")
             return None
+        
+        valid_grades = ['A', 'B', 'C']
+        if signal_grade not in valid_grades:
+            signal_grade = 'B'
+        if confidence_score is None or confidence_score < 0.0 or confidence_score > 1.0:
+            confidence_score = 0.5
         
         session = None
         position_id = None
@@ -885,12 +896,16 @@ class PositionTracker:
                 max_profit_reached=0.0,
                 last_price_update=datetime.now(pytz.UTC),
                 signal_quality_id=signal_quality_id,
+                signal_grade=signal_grade,
+                confidence_score=confidence_score,
                 opened_at=opened_at
             )
             session.add(position)
             session.flush()
             position_id = position.id
             session.commit()
+            
+            logger.info(f"📊 Position created with Grade:{signal_grade} Confidence:{confidence_score:.2f}")
             
             async with self._position_lock:
                 if user_id not in self.active_positions:
@@ -906,6 +921,8 @@ class PositionTracker:
                     'sl_adjustment_count': 0,
                     'max_profit_reached': 0.0,
                     'signal_quality_id': signal_quality_id,
+                    'signal_grade': signal_grade,
+                    'confidence_score': confidence_score,
                     'opened_at': opened_at
                 }
             
@@ -1180,6 +1197,127 @@ class PositionTracker:
         
         return sl_adjusted, new_sl
     
+    async def _check_grade_based_auto_close(self, user_id: int, position_id: int, 
+                                            pos: Dict, unrealized_pl: float) -> Optional[str]:
+        """Check if position should be auto-closed based on signal grade and duration.
+        
+        Auto-close rules:
+        - Grade C: auto-close if >20 min without profit
+        - Grade B: auto-close if >45 min with minimal profit (<25% of TP)
+        - Grade A: hold until TP/SL or >60 min timeout
+        
+        Args:
+            user_id: User ID
+            position_id: Position ID
+            pos: Position dict
+            unrealized_pl: Current unrealized P/L
+            
+        Returns:
+            Auto-close reason string if should close, None otherwise
+        """
+        try:
+            signal_grade = pos.get('signal_grade', 'B')
+            opened_at = pos.get('opened_at')
+            take_profit = pos.get('take_profit', 0)
+            entry_price = pos.get('entry_price', 0)
+            
+            if not opened_at:
+                return None
+            
+            if isinstance(opened_at, str):
+                try:
+                    opened_at = datetime.fromisoformat(opened_at.replace('Z', '+00:00'))
+                except (ValueError, TypeError):
+                    return None
+            
+            now = datetime.now(pytz.UTC)
+            if opened_at.tzinfo is None:
+                opened_at = pytz.UTC.localize(opened_at)
+            
+            duration_minutes = (now - opened_at).total_seconds() / 60
+            
+            tp_distance = abs(take_profit - entry_price) if take_profit and entry_price else 0
+            tp_progress = unrealized_pl / (tp_distance * 10) if tp_distance > 0 else 0
+            
+            if signal_grade == 'C':
+                if duration_minutes > 20 and unrealized_pl <= 0:
+                    logger.info(
+                        f"🔴 [GRADE_AUTO_CLOSE] Grade C position {position_id} closing: "
+                        f"Duration={duration_minutes:.1f}min (>20min), P/L=${unrealized_pl:.2f} (<=0)"
+                    )
+                    if self.telegram_app:
+                        try:
+                            msg = (
+                                f"🔴 *Auto-Close: Grade C Signal*\n\n"
+                                f"Position ID: {position_id}\n"
+                                f"Grade: C (Low confidence)\n"
+                                f"Duration: {duration_minutes:.1f} menit\n"
+                                f"P/L: ${unrealized_pl:.2f}\n"
+                                f"Reason: No profit after 20 minutes"
+                            )
+                            await asyncio.wait_for(
+                                self.telegram_app.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown'),
+                                timeout=NOTIFICATION_TIMEOUT
+                            )
+                        except (asyncio.TimeoutError, TelegramError) as e:
+                            logger.error(f"Failed to send Grade C auto-close notification: {e}")
+                    return 'GRADE_C_TIMEOUT'
+            
+            elif signal_grade == 'B':
+                if duration_minutes > 45 and tp_progress < 0.25:
+                    logger.info(
+                        f"🟡 [GRADE_AUTO_CLOSE] Grade B position {position_id} closing: "
+                        f"Duration={duration_minutes:.1f}min (>45min), TP Progress={tp_progress*100:.1f}% (<25%)"
+                    )
+                    if self.telegram_app:
+                        try:
+                            msg = (
+                                f"🟡 *Auto-Close: Grade B Signal*\n\n"
+                                f"Position ID: {position_id}\n"
+                                f"Grade: B (Medium confidence)\n"
+                                f"Duration: {duration_minutes:.1f} menit\n"
+                                f"P/L: ${unrealized_pl:.2f}\n"
+                                f"TP Progress: {tp_progress*100:.1f}%\n"
+                                f"Reason: Minimal profit after 45 minutes"
+                            )
+                            await asyncio.wait_for(
+                                self.telegram_app.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown'),
+                                timeout=NOTIFICATION_TIMEOUT
+                            )
+                        except (asyncio.TimeoutError, TelegramError) as e:
+                            logger.error(f"Failed to send Grade B auto-close notification: {e}")
+                    return 'GRADE_B_TIMEOUT'
+            
+            elif signal_grade == 'A':
+                if duration_minutes > 60:
+                    logger.info(
+                        f"🟢 [GRADE_AUTO_CLOSE] Grade A position {position_id} closing: "
+                        f"Duration={duration_minutes:.1f}min (>60min max hold), P/L=${unrealized_pl:.2f}"
+                    )
+                    if self.telegram_app:
+                        try:
+                            msg = (
+                                f"🟢 *Auto-Close: Grade A Max Duration*\n\n"
+                                f"Position ID: {position_id}\n"
+                                f"Grade: A (High confidence)\n"
+                                f"Duration: {duration_minutes:.1f} menit\n"
+                                f"P/L: ${unrealized_pl:.2f}\n"
+                                f"Reason: Maximum hold time reached (60 min)"
+                            )
+                            await asyncio.wait_for(
+                                self.telegram_app.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown'),
+                                timeout=NOTIFICATION_TIMEOUT
+                            )
+                        except (asyncio.TimeoutError, TelegramError) as e:
+                            logger.error(f"Failed to send Grade A auto-close notification: {e}")
+                    return 'GRADE_A_MAX_DURATION'
+            
+            return None
+            
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Error in grade-based auto-close check: {e}")
+            return None
+    
     async def update_position(self, user_id: int, position_id: int, current_price: float) -> Optional[str]:
         """Update position with current price and apply dynamic SL/TP logic with validation
         
@@ -1279,6 +1417,13 @@ class PositionTracker:
                         session.close()
                     except (OperationalError, SQLAlchemyError) as close_error:
                         logger.error(f"Error closing session: {close_error}")
+            
+            auto_close_reason = await self._check_grade_based_auto_close(
+                user_id, position_id, pos, unrealized_pl
+            )
+            if auto_close_reason:
+                await self.close_position(user_id, position_id, current_price, auto_close_reason)
+                return auto_close_reason
             
             hit_tp = False
             hit_sl = False

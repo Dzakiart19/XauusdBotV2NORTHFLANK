@@ -666,8 +666,17 @@ class TradingBot:
                 time_since_last = (now - last_same_type['timestamp']).total_seconds()
                 cooldown = getattr(self.config, 'TICK_COOLDOWN_FOR_SAME_SIGNAL', 60)
                 
+                logger.debug(
+                    f"📊 [COOLDOWN_CHECK] User:{mask_user_id(user_id)} Type:{signal_type} | "
+                    f"TimeSinceLast:{time_since_last:.1f}s | Cooldown:{cooldown}s | "
+                    f"GlobalCooldown:{self.global_signal_cooldown}s | TickThrottle:{self.tick_throttle_seconds}s"
+                )
+                
                 if time_since_last < cooldown:
-                    logger.info(f"🚫 Signal {signal_type} diblokir: cooldown per type belum habis ({time_since_last:.1f}s < {cooldown}s)")
+                    logger.info(
+                        f"🚫 [BLOCKED:COOLDOWN] Signal {signal_type} diblokir: cooldown per type belum habis "
+                        f"({time_since_last:.1f}s < {cooldown}s) | User:{mask_user_id(user_id)}"
+                    )
                     self._cache_telemetry['hits'] += 1
                     return False
                 
@@ -677,7 +686,11 @@ class TradingBot:
                 price_diff = abs(entry_price - last_price)
                 
                 if price_diff < min_movement:
-                    logger.info(f"🚫 Signal {signal_type} diblokir: pergerakan harga terlalu kecil (${price_diff:.2f} < ${min_movement:.2f})")
+                    logger.info(
+                        f"🚫 [BLOCKED:PRICE_MOVEMENT] Signal {signal_type} diblokir: pergerakan harga terlalu kecil "
+                        f"(${price_diff:.2f} < ${min_movement:.2f}) | Last:${last_price:.2f} → New:${entry_price:.2f} | "
+                        f"User:{mask_user_id(user_id)}"
+                    )
                     self._cache_telemetry['hits'] += 1
                     return False
             
@@ -689,7 +702,10 @@ class TradingBot:
                 status = cached.get('status', 'confirmed')
                 time_since = (now - cached['timestamp']).total_seconds()
                 self._cache_telemetry['hits'] += 1
-                logger.debug(f"Cache HIT - Signal duplikat diblokir: {signal_hash}, status={status}, {time_since:.1f}s lalu")
+                logger.info(
+                    f"🚫 [BLOCKED:DUPLICATE_CACHE] Signal duplikat diblokir | Hash:{signal_hash} | "
+                    f"Status:{status} | TimeSince:{time_since:.1f}s | User:{mask_user_id(user_id)}"
+                )
                 return False
             
             # === SIGNAL DIIZINKAN - Set pending dan update tracking ===
@@ -3369,6 +3385,18 @@ class TradingBot:
                     except (ValueError, TypeError, KeyError, AttributeError) as sqt_error:
                         logger.warning(f"Failed to record signal to quality tracker: {sqt_error}")
                 
+                signal_grade = signal.get('grade', 'B')
+                if signal_grade not in ['A', 'B', 'C']:
+                    confidence = signal.get('confidence', 0.5)
+                    if confidence >= 0.85:
+                        signal_grade = 'A'
+                    elif confidence >= 0.65:
+                        signal_grade = 'B'
+                    else:
+                        signal_grade = 'C'
+                
+                confidence_score = signal.get('confidence', 0.5)
+                
                 position_id = await self.position_tracker.add_position(
                     user_id,
                     trade_id,
@@ -3376,7 +3404,9 @@ class TradingBot:
                     entry_price,
                     signal['stop_loss'],
                     signal['take_profit'],
-                    signal_quality_id
+                    signal_quality_id,
+                    signal_grade=signal_grade,
+                    confidence_score=confidence_score
                 )
                 
                 if not position_id:

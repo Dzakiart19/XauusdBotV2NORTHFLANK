@@ -157,7 +157,7 @@ class SignalQualityTracker:
         self._blocked_signals: Dict[int, List[Dict]] = {}
         self._blocked_signals_lock = threading.RLock()
         self._last_blocking_rate_check: Dict[int, datetime] = {}
-        self.BLOCKING_RATE_ALERT_THRESHOLD = 0.80
+        self.BLOCKING_RATE_ALERT_THRESHOLD = 0.50
         self.BLOCKING_RATE_WINDOW_MINUTES = 5
         
         self._ensure_table_exists()
@@ -921,7 +921,13 @@ class SignalQualityTracker:
             self._check_blocking_rate_alert(user_id)
     
     def _check_blocking_rate_alert(self, user_id: int) -> None:
-        """Check if blocking rate exceeds threshold and generate alert."""
+        """Check if blocking rate exceeds threshold and generate alert.
+        
+        Enhanced alert logic with actionable recommendations:
+        - Alert triggered at 5+ blocked signals in window (previously 10)
+        - Includes breakdown by blocking reason
+        - Provides specific recommendations based on blocking pattern
+        """
         now = datetime.now(pytz.UTC)
         window_start = now - timedelta(minutes=self.BLOCKING_RATE_WINDOW_MINUTES)
         
@@ -938,26 +944,62 @@ class SignalQualityTracker:
         
         blocking_count = len(recent_blocked)
         
-        if blocking_count >= 10:
+        by_reason: Dict[str, int] = {}
+        high_quality_blocked = 0
+        for s in recent_blocked:
+            reason = s.get('blocking_reason', 'unknown')
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+            if s.get('grade') in ['A', 'Grade A'] or s.get('confidence', 0) >= 0.9:
+                high_quality_blocked += 1
+        
+        if blocking_count >= 5:
             self._last_blocking_rate_check[user_id] = now
+            
+            reason_breakdown = ", ".join([f"{r}: {c}" for r, c in by_reason.items()])
+            
+            recommendation = ""
+            if by_reason.get('ACTIVE_POSITION', 0) > blocking_count * 0.5:
+                recommendation = (
+                    "\n\n💡 Rekomendasi:\n"
+                    "• Gunakan /close untuk menutup posisi aktif\n"
+                    "• Posisi lama mungkin blocking signal baru yang lebih baik\n"
+                    "• Gunakan /status untuk cek profit/loss posisi saat ini"
+                )
+            elif by_reason.get('DUPLICATE_SIGNAL', 0) > blocking_count * 0.5:
+                recommendation = (
+                    "\n\n💡 Rekomendasi:\n"
+                    "• Duplicate signal adalah normal, menunggu kondisi pasar berubah\n"
+                    "• Signal cache akan reset dalam 5 menit"
+                )
+            
+            high_quality_warning = ""
+            if high_quality_blocked > 0:
+                high_quality_warning = f"\n⚡ {high_quality_blocked} signal Grade A/high-confidence di-block!"
             
             alert = QualityAlert(
                 alert_type="HIGH_BLOCKING_RATE",
                 message=(
-                    f"⚠️ Tingkat blocking signal tinggi!\n"
-                    f"User {user_id} memiliki {blocking_count} signal di-block "
-                    f"dalam {self.BLOCKING_RATE_WINDOW_MINUTES} menit terakhir.\n"
-                    f"Pertimbangkan untuk menutup posisi aktif."
+                    f"⚠️ Tingkat blocking signal tinggi!\n\n"
+                    f"📊 {blocking_count} signal di-block dalam {self.BLOCKING_RATE_WINDOW_MINUTES} menit\n"
+                    f"📋 Breakdown: {reason_breakdown}"
+                    f"{high_quality_warning}"
+                    f"{recommendation}"
                 ),
-                severity="WARNING",
+                severity="WARNING" if high_quality_blocked == 0 else "CRITICAL",
                 data={
                     'user_id': user_id,
                     'blocked_count': blocking_count,
-                    'window_minutes': self.BLOCKING_RATE_WINDOW_MINUTES
+                    'window_minutes': self.BLOCKING_RATE_WINDOW_MINUTES,
+                    'by_reason': by_reason,
+                    'high_quality_blocked': high_quality_blocked
                 }
             )
             self._pending_alerts.append(alert)
-            logger.warning(f"⚠️ High blocking rate alert for user {user_id}: {blocking_count} blocked")
+            logger.warning(
+                f"⚠️ High blocking rate alert for user {user_id}: "
+                f"{blocking_count} blocked ({reason_breakdown}), "
+                f"HQ blocked: {high_quality_blocked}"
+            )
     
     def get_blocking_stats(self, user_id: int, minutes: int = 60) -> Dict[str, Any]:
         """
