@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from bot.signal_session_manager import SignalSessionManager
 from bot.message_templates import MessageFormatter
 from bot.resilience import RateLimiter
+from bot.signal_event_store import SignalEventStore
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -378,6 +379,12 @@ class TradingBot:
         self.signal_price_tolerance_pips = 10.0
         self.last_signal_per_type: Dict[str, Dict] = {}  # Tracking terakhir per signal type (BUY/SELL)
         logger.info(f"✅ Anti-duplicate cache: expiry={self.signal_cache_expiry_seconds}s, dengan tracking per signal type")
+        
+        self.signal_event_store = SignalEventStore(
+            ttl_seconds=3600,  # 1 jam TTL
+            max_signals_per_user=100
+        )
+        logger.info("✅ SignalEventStore diinisialisasi untuk sinkronisasi sinyal dengan WebApp Dashboard")
         self._cache_lock = asyncio.Lock()
         self._dashboard_lock = asyncio.Lock()
         self._chart_cleanup_lock = asyncio.Lock()
@@ -3539,16 +3546,28 @@ class TradingBot:
                 await self._confirm_signal_sent(user_id, signal_type, entry_price)
                 
                 type_key = f"{user_id}_{signal_type}"
+                signal_record_data = {
+                    'timestamp': datetime.now(),
+                    'entry_price': entry_price,
+                    'signal_type': signal_type,
+                    'stop_loss': signal.get('stop_loss'),
+                    'take_profit': signal.get('take_profit'),
+                    'trade_id': trade_id,
+                    'position_id': position_id,
+                    'confidence': signal.get('confidence', 0),
+                    'grade': signal.get('grade', 'B'),
+                    'timeframe': signal.get('timeframe', 'M1')
+                }
+                
                 async with self._cache_lock:
-                    self.last_signal_per_type[type_key] = {
-                        'timestamp': datetime.now(),
-                        'entry_price': entry_price,
-                        'signal_type': signal_type,
-                        'stop_loss': signal.get('stop_loss'),
-                        'take_profit': signal.get('take_profit'),
-                        'trade_id': trade_id,
-                        'position_id': position_id
-                    }
+                    self.last_signal_per_type[type_key] = signal_record_data.copy()
+                
+                if hasattr(self, 'signal_event_store') and self.signal_event_store:
+                    try:
+                        await self.signal_event_store.record_signal(user_id, signal_record_data)
+                        logger.debug(f"📝 Sinyal direkam ke SignalEventStore untuk user {mask_user_id(user_id)}")
+                    except Exception as store_error:
+                        logger.warning(f"Gagal merekam sinyal ke SignalEventStore: {store_error}")
                 
                 logger.info(f"✅ Signal sent - Trade:{trade_id} Position:{position_id} User:{mask_user_id(user_id)} {signal_type} @${entry_price:.2f}")
                 

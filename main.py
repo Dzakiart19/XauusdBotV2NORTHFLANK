@@ -7,6 +7,7 @@ import fcntl
 import atexit
 import psutil
 import glob
+import re
 from datetime import timedelta
 from aiohttp import web
 from typing import Optional, Dict, Set, Any, Callable
@@ -1434,31 +1435,64 @@ class TradingBotOrchestrator:
                     last_signal = None
                     if self.config_valid and self.telegram_bot:
                         try:
-                            for type_key, signal_data in self.telegram_bot.last_signal_per_type.items():
-                                if signal_data and signal_data.get('timestamp'):
-                                    ts = signal_data['timestamp']
-                                    if last_signal is None or ts > last_signal.get('_ts', datetime.min):
+                            signal_from_store = False
+                            
+                            if hasattr(self.telegram_bot, 'signal_event_store') and self.telegram_bot.signal_event_store:
+                                try:
+                                    if user_id is not None:
+                                        store_signal = self.telegram_bot.signal_event_store.get_latest_signal_sync(user_id)
+                                        logger.debug(f"[DASHBOARD] Mengambil sinyal dari SignalEventStore untuk user_id={user_id} (strict per-user)")
+                                    else:
+                                        store_signal = None
+                                        logger.debug(f"[DASHBOARD] user_id=None - TIDAK mengambil sinyal dari store (strict isolation)")
+                                    
+                                    if store_signal:
+                                        ts = store_signal.get('timestamp')
+                                        if isinstance(ts, str):
+                                            ts = datetime.fromisoformat(ts)
                                         last_signal = {
-                                            'direction': signal_data.get('signal_type', 'UNKNOWN'),
-                                            'entry_price': signal_data.get('entry_price'),
-                                            'sl': signal_data.get('stop_loss'),
-                                            'tp': signal_data.get('take_profit'),
-                                            'timestamp': ts.isoformat(),
-                                            '_ts': ts
+                                            'direction': store_signal.get('signal_type', 'UNKNOWN'),
+                                            'entry_price': store_signal.get('entry_price'),
+                                            'sl': store_signal.get('stop_loss'),
+                                            'tp': store_signal.get('take_profit'),
+                                            'timestamp': ts.isoformat() if isinstance(ts, datetime) else ts
                                         }
-                            if last_signal:
-                                last_signal.pop('_ts', None)
+                                        signal_from_store = True
+                                        logger.debug(f"[DASHBOARD] Sinyal diambil dari SignalEventStore untuk user {user_id}: {last_signal.get('direction')} @${last_signal.get('entry_price')}")
+                                except Exception as store_err:
+                                    logger.debug(f"[DASHBOARD] Error membaca dari SignalEventStore: {store_err}")
+                            
+                            if not signal_from_store and user_id is not None:
+                                user_key_pattern = re.compile(rf'^{user_id}_(?:BUY|SELL)$')
                                 
-                            if last_signal and (last_signal.get('sl') is None or last_signal.get('tp') is None):
+                                for type_key, signal_data in self.telegram_bot.last_signal_per_type.items():
+                                    if not user_key_pattern.match(type_key):
+                                        continue
+                                    
+                                    if signal_data and signal_data.get('timestamp'):
+                                        ts = signal_data['timestamp']
+                                        if last_signal is None or ts > last_signal.get('_ts', datetime.min):
+                                            last_signal = {
+                                                'direction': signal_data.get('signal_type', 'UNKNOWN'),
+                                                'entry_price': signal_data.get('entry_price'),
+                                                'sl': signal_data.get('stop_loss'),
+                                                'tp': signal_data.get('take_profit'),
+                                                'timestamp': ts.isoformat(),
+                                                '_ts': ts
+                                            }
+                                if last_signal:
+                                    last_signal.pop('_ts', None)
+                                    logger.debug(f"[DASHBOARD] Sinyal diambil dari last_signal_per_type untuk user {user_id} (fallback): {last_signal.get('direction')}")
+                                
+                            if last_signal and (last_signal.get('sl') is None or last_signal.get('tp') is None) and user_id is not None:
                                 if hasattr(self, 'signal_session_manager') and self.signal_session_manager:
-                                    sessions = self.signal_session_manager.get_all_active_sessions()
-                                    for user_id, session in sessions.items():
-                                        if session and hasattr(session, 'stop_loss') and hasattr(session, 'take_profit'):
-                                            if last_signal.get('sl') is None:
-                                                last_signal['sl'] = session.stop_loss
-                                            if last_signal.get('tp') is None:
-                                                last_signal['tp'] = session.take_profit
-                                            break
+                                    user_session = self.signal_session_manager.get_active_session(user_id)
+                                    if user_session and hasattr(user_session, 'stop_loss') and hasattr(user_session, 'take_profit'):
+                                        if last_signal.get('sl') is None:
+                                            last_signal['sl'] = user_session.stop_loss
+                                        if last_signal.get('tp') is None:
+                                            last_signal['tp'] = user_session.take_profit
+                                        logger.debug(f"[DASHBOARD] TP/SL diambil dari session user {user_id}")
                         except Exception as e:
                             logger.debug(f"Error getting last signal: {e}")
                     
