@@ -337,6 +337,9 @@ class MarketRegimeDetector:
     
     CLUSTER_TOLERANCE_PCT = 0.001
     
+    REGIME_MIN_PERSISTENCE_CANDLES = 5
+    REGIME_STABILITY_THRESHOLD = 3
+    
     def __init__(self, config, indicator_engine: Optional[IndicatorEngine] = None):
         """
         Inisialisasi MarketRegimeDetector.
@@ -351,7 +354,10 @@ class MarketRegimeDetector:
         self._regime_history: List[Tuple[str, str]] = []
         self._regime_start_candle: int = 0
         self._current_candle_count: int = 0
-        logger.info("MarketRegimeDetector initialized with enhanced detection")
+        self._pending_regime_change: Optional[str] = None
+        self._pending_change_count: int = 0
+        self._confirmed_regime: str = RegimeType.UNKNOWN.value
+        logger.info("MarketRegimeDetector initialized with enhanced detection and smoothing")
     
     def _safe_get_value(self, data: Any, index: int = -1, default: float = 0.0) -> float:
         """Safely get value from series/dataframe with NaN/Inf handling"""
@@ -1127,49 +1133,83 @@ class MarketRegimeDetector:
     
     def _detect_regime_transition(self, current_regime: str) -> RegimeTransition:
         """
-        Detect regime transitions dan track duration.
+        Detect regime transitions dengan smoothing untuk mencegah flickering.
+        
+        Smoothing Logic:
+        - Regime baru harus terdeteksi REGIME_STABILITY_THRESHOLD kali berturut-turut
+        - Durasi regime minimum REGIME_MIN_PERSISTENCE_CANDLES sebelum transisi
+        - Ini mencegah regime berubah setiap 1-3 candle
         
         Args:
-            current_regime: Current regime type
+            current_regime: Current regime type (detected, belum smoothed)
             
         Returns:
-            RegimeTransition dengan hasil analisis
+            RegimeTransition dengan hasil analisis (smoothed)
         """
         result = RegimeTransition()
-        result.current_regime = current_regime
         
         try:
             self._current_candle_count += 1
             
+            if self._confirmed_regime == RegimeType.UNKNOWN.value:
+                self._confirmed_regime = current_regime
+                self._regime_start_candle = self._current_candle_count
+                logger.debug(f"Initial regime set to: {current_regime}")
+            
             if self._last_regime is not None:
                 result.previous_regime = self._last_regime.regime_type
             else:
-                result.previous_regime = 'unknown'
+                result.previous_regime = self._confirmed_regime
             
-            if result.previous_regime != current_regime and result.previous_regime != 'unknown':
-                result.transition_detected = True
-                result.transition_type = f"{result.previous_regime}_to_{current_regime}"
-                
-                self._regime_history.append((result.previous_regime, current_regime))
-                if len(self._regime_history) > 10:
-                    self._regime_history = self._regime_history[-10:]
-                
-                old_duration = self._current_candle_count - self._regime_start_candle
-                self._regime_start_candle = self._current_candle_count
-                
-                alert = f"Regime change detected: {result.previous_regime} → {current_regime} (after {old_duration} candles)"
-                result.alerts.append(alert)
-                logger.info(alert)
-                
-                if result.previous_regime == RegimeType.RANGE_BOUND.value and current_regime in [
-                    RegimeType.STRONG_TREND.value, RegimeType.MODERATE_TREND.value
-                ]:
-                    result.alerts.append("Potential breakout: Range → Trend transition")
-                
-                if result.previous_regime in [RegimeType.STRONG_TREND.value, RegimeType.MODERATE_TREND.value] and \
-                   current_regime == RegimeType.RANGE_BOUND.value:
-                    result.alerts.append("Trend exhaustion: Trend → Range transition")
+            current_duration = self._current_candle_count - self._regime_start_candle
             
+            if current_regime != self._confirmed_regime:
+                if current_regime == self._pending_regime_change:
+                    self._pending_change_count += 1
+                else:
+                    self._pending_regime_change = current_regime
+                    self._pending_change_count = 1
+                
+                stability_met = self._pending_change_count >= self.REGIME_STABILITY_THRESHOLD
+                duration_met = current_duration >= self.REGIME_MIN_PERSISTENCE_CANDLES
+                
+                if stability_met and duration_met:
+                    old_regime = self._confirmed_regime
+                    self._confirmed_regime = current_regime
+                    self._pending_regime_change = None
+                    self._pending_change_count = 0
+                    
+                    self._regime_history.append((old_regime, current_regime))
+                    if len(self._regime_history) > 10:
+                        self._regime_history = self._regime_history[-10:]
+                    
+                    old_duration = current_duration
+                    self._regime_start_candle = self._current_candle_count
+                    
+                    result.transition_detected = True
+                    result.transition_type = f"{old_regime}_to_{current_regime}"
+                    
+                    alert = f"Regime change CONFIRMED: {old_regime} → {current_regime} (after {old_duration} candles, {self._pending_change_count}x stable)"
+                    result.alerts.append(alert)
+                    logger.info(alert)
+                    
+                    if old_regime == RegimeType.RANGE_BOUND.value and current_regime in [
+                        RegimeType.STRONG_TREND.value, RegimeType.MODERATE_TREND.value
+                    ]:
+                        result.alerts.append("Potential breakout: Range → Trend transition")
+                    
+                    if old_regime in [RegimeType.STRONG_TREND.value, RegimeType.MODERATE_TREND.value] and \
+                       current_regime == RegimeType.RANGE_BOUND.value:
+                        result.alerts.append("Trend exhaustion: Trend → Range transition")
+                else:
+                    logger.debug(f"Regime change pending: {self._confirmed_regime} → {current_regime} "
+                               f"(count: {self._pending_change_count}/{self.REGIME_STABILITY_THRESHOLD}, "
+                               f"duration: {current_duration}/{self.REGIME_MIN_PERSISTENCE_CANDLES})")
+            else:
+                self._pending_regime_change = None
+                self._pending_change_count = 0
+            
+            result.current_regime = self._confirmed_regime
             result.regime_duration_candles = self._current_candle_count - self._regime_start_candle
             
             if self._regime_start_candle == 0:
@@ -1177,6 +1217,7 @@ class MarketRegimeDetector:
             
         except Exception as e:
             logger.error(f"Error in regime transition detection: {str(e)}")
+            result.current_regime = self._confirmed_regime if self._confirmed_regime else current_regime
         
         return result
     

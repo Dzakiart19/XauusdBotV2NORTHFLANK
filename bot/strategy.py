@@ -1162,7 +1162,7 @@ class TradingStrategy:
             logger.error(f"Error in check_momentum_filter: {e}")
             return False, f"Error: {str(e)}"
     
-    def check_adx_filter(self, indicators: Dict, signal_mode: str = 'M1_SCALP') -> Tuple[bool, str, float, float]:
+    def check_adx_filter(self, indicators: Dict, signal_mode: str = 'M1_SCALP', signal_type: str = '') -> Tuple[bool, str, float, float]:
         """Check ADX filter - BLOCKING dengan threshold berbeda berdasarkan signal mode
         
         ADX filter dengan multi-level threshold:
@@ -1170,9 +1170,14 @@ class TradingStrategy:
         - M5_SWING: ADX >= 20 (butuh trend lebih kuat)
         - BREAKOUT: ADX >= 25 (butuh momentum kuat untuk breakout)
         
+        ADX Directional Check:
+        - BUY signal dengan -DI > +DI (bearish) = warning/blocked
+        - SELL signal dengan +DI > -DI (bullish) = warning/blocked
+        
         Args:
             indicators: Dictionary of calculated indicators
             signal_mode: Mode signal ('M1_SCALP', 'M5_SWING', 'BREAKOUT')
+            signal_type: 'BUY' atau 'SELL' untuk directional check
             
         Returns:
             Tuple of (is_valid, reason, adx_value, tp_multiplier)
@@ -1194,17 +1199,35 @@ class TradingStrategy:
             
             di_info = ""
             di_direction = 'neutral'
+            directional_conflict = False
+            plus_val = 0.0
+            minus_val = 0.0
+            
             if is_valid_number(plus_di) and is_valid_number(minus_di):
                 plus_val = safe_float(plus_di, 0.0)
                 minus_val = safe_float(minus_di, 0.0)
                 if plus_val > minus_val:
                     di_info = f" | +DI({plus_val:.1f}) > -DI({minus_val:.1f}) = Bullish"
                     di_direction = 'bullish'
-                else:
+                    if signal_type == 'SELL':
+                        directional_conflict = True
+                elif minus_val > plus_val:
                     di_info = f" | -DI({minus_val:.1f}) > +DI({plus_val:.1f}) = Bearish"
                     di_direction = 'bearish'
+                    if signal_type == 'BUY':
+                        directional_conflict = True
+                else:
+                    di_info = f" | +DI({plus_val:.1f}) = -DI({minus_val:.1f}) = Neutral"
+                    di_direction = 'neutral'
             
             tp_multiplier = 1.0
+            
+            if directional_conflict and signal_mode in ['M5_SWING', 'BREAKOUT']:
+                di_diff = abs(plus_val - minus_val)
+                if di_diff >= 5.0:
+                    reason = f"❌ ADX DIRECTIONAL CONFLICT: {signal_type} berlawanan dengan DI {di_direction.upper()}{di_info}"
+                    logger.info(reason)
+                    return False, reason, adx_val, 0.0
             
             if signal_mode == 'BREAKOUT':
                 if adx_val >= adx_threshold_breakout:
@@ -1227,6 +1250,14 @@ class TradingStrategy:
                     return False, reason, adx_val, 0.0
             
             else:
+                if directional_conflict:
+                    di_diff = abs(plus_val - minus_val)
+                    if di_diff >= 10.0:
+                        tp_multiplier = 0.5
+                        reason = f"⚠️ ADX DIRECTIONAL WARNING: {signal_type} berlawanan dengan DI {di_direction.upper()} (diff:{di_diff:.1f}) - TP reduced 50%{di_info}"
+                        logger.info(reason)
+                        return True, reason, adx_val, tp_multiplier
+                
                 if adx_val >= adx_threshold_scalp:
                     reason = f"✅ ADX SCALP: ADX({adx_val:.1f}) >= {adx_threshold_scalp} (Trending){di_info}"
                     logger.info(reason)
@@ -1393,6 +1424,11 @@ class TradingStrategy:
         2. RSI H1 mendukung arah signal (> 50 untuk BUY, < 50 untuk SELL)
         3. Overall trend structure confirmation
         
+        Incomplete Data Handling:
+        - Data H1 tidak tersedia: lanjut dengan M1+M5
+        - Data H1 partial/incomplete: lanjut dengan data yang tersedia
+        - Kalkulasi indicator membutuhkan minimal data, jika tidak cukup = skip indicator
+        
         Args:
             h1_indicators: Dictionary indicator dari timeframe H1 (bisa None)
             signal_type: 'BUY' atau 'SELL' dari M1/M5
@@ -1406,13 +1442,19 @@ class TradingStrategy:
                 logger.debug(reason)
                 return True, reason, 1.0
             
+            available_indicators = [k for k, v in h1_indicators.items() if is_valid_number(v)]
+            if len(available_indicators) < 2:
+                reason = f"✅ H1 Confirmation: Data H1 incomplete ({len(available_indicators)} indicators) - lanjut dengan M1+M5"
+                logger.debug(reason)
+                return True, reason, 1.0
+            
             if signal_type not in ['BUY', 'SELL']:
                 reason = f"❌ H1 Confirmation: Invalid signal_type: {signal_type}"
                 logger.warning(reason)
                 return False, reason, 0.0
             
             confirmations_passed = 0
-            confirmations_needed = 2
+            confirmations_possible = 0
             confirmation_details = []
             ema_aligned = False
             score_multiplier = 1.0
@@ -1423,6 +1465,7 @@ class TradingStrategy:
             close_h1 = h1_indicators.get('close')
             
             if is_valid_number(ema_5_h1) and is_valid_number(ema_20_h1):
+                confirmations_possible += 1
                 ema5 = safe_float(ema_5_h1, 0.0)
                 ema20 = safe_float(ema_20_h1, 0.0)
                 ema50 = safe_float(ema_50_h1, 0.0) if is_valid_number(ema_50_h1) else None
@@ -1450,10 +1493,11 @@ class TradingStrategy:
                         confirmation_details.append(f"⚠️ EMA H1 TIDAK bearish - 25% REDUCTION")
                         score_multiplier = 0.75
             else:
-                confirmation_details.append("EMA H1: data tidak tersedia")
+                confirmation_details.append("EMA H1: data incomplete - skipped")
             
             rsi_h1 = h1_indicators.get('rsi')
             if is_valid_number(rsi_h1):
+                confirmations_possible += 1
                 rsi = safe_float(rsi_h1, 50.0)
                 
                 if signal_type == 'BUY':
@@ -1469,11 +1513,12 @@ class TradingStrategy:
                     else:
                         confirmation_details.append(f"RSI H1 tidak mendukung SELL ({rsi:.1f} >= 60)")
             else:
-                confirmation_details.append("RSI H1: data tidak tersedia")
+                confirmation_details.append("RSI H1: data incomplete - skipped")
             
             macd_h1 = h1_indicators.get('macd')
             macd_signal_h1 = h1_indicators.get('macd_signal')
             if is_valid_number(macd_h1) and is_valid_number(macd_signal_h1):
+                confirmations_possible += 1
                 macd = safe_float(macd_h1, 0.0)
                 macd_sig = safe_float(macd_signal_h1, 0.0)
                 
@@ -1486,14 +1531,21 @@ class TradingStrategy:
                 else:
                     confirmation_details.append(f"MACD H1 tidak mendukung {signal_type}")
             
+            if confirmations_possible == 0:
+                reason = f"✅ H1 Confirmation: Semua indicator incomplete - lanjut dengan M1+M5"
+                logger.debug(reason)
+                return True, reason, 1.0
+            
+            confirmations_needed = max(1, confirmations_possible // 2 + 1)
+            
             if confirmations_passed >= confirmations_needed:
                 score_info = "" if score_multiplier == 1.0 else f" [Score: {score_multiplier:.0%}]"
-                reason = f"✅ H1 Confirmation PASSED: {confirmations_passed}/{confirmations_needed} kriteria{score_info} ({', '.join(confirmation_details)})"
+                reason = f"✅ H1 Confirmation PASSED: {confirmations_passed}/{confirmations_possible} (need {confirmations_needed}){score_info} ({', '.join(confirmation_details)})"
                 logger.info(reason)
                 return True, reason, score_multiplier
             else:
                 score_info = "" if score_multiplier == 1.0 else f" [Score: {score_multiplier:.0%}]"
-                reason = f"⚠️ H1 Confirmation WEAK: Hanya {confirmations_passed}/{confirmations_needed} kriteria{score_info} ({', '.join(confirmation_details)})"
+                reason = f"⚠️ H1 Confirmation WEAK: {confirmations_passed}/{confirmations_possible} (need {confirmations_needed}){score_info} ({', '.join(confirmation_details)})"
                 logger.info(reason)
                 return True, reason, score_multiplier * 0.85
                 
@@ -3874,7 +3926,7 @@ class TradingStrategy:
             result['confluence_count'] += 1
             result['confidence_reasons'].append(trend_reason)
             
-            adx_passed, adx_reason, adx_value, adx_tp_mult = self.check_adx_filter(indicators, signal_mode)
+            adx_passed, adx_reason, adx_value, adx_tp_mult = self.check_adx_filter(indicators, signal_mode, signal_type)
             result['adx_filter'] = {'passed': adx_passed, 'reason': adx_reason, 'value': adx_value, 'tp_multiplier': adx_tp_mult}
             result['confidence_reasons'].append(adx_reason)
             
@@ -4365,8 +4417,19 @@ class TradingStrategy:
                     
                     self._update_signal_tracking(candle_timestamp, signal, close_price)
                     
-                    logger.info(f"✅ WEIGHTED SCORE PASSED - Signal: {signal}")
-                    logger.info(f"📊 Weighted Score: {adjusted_score:.0f}% (threshold: {auto_threshold}%)")
+                    confluence_count = mc_result.get('confluence_count', 0)
+                    score_passed = adjusted_score >= auto_threshold
+                    confluence_passed = confluence_count >= 3
+                    
+                    if score_passed:
+                        logger.info(f"✅ WEIGHTED SCORE PASSED - Signal: {signal}")
+                        logger.info(f"📊 Weighted Score: {adjusted_score:.0f}% >= {auto_threshold}% threshold")
+                    elif confluence_passed:
+                        logger.info(f"✅ CONFLUENCE PASSED - Signal: {signal} (score {adjusted_score:.0f}% < {auto_threshold}% threshold)")
+                        logger.info(f"📊 Confluence: {confluence_count}/6 >= 3 minimum - Signal diizinkan via confluence fallback")
+                    else:
+                        logger.info(f"✅ SIGNAL READY - Signal: {signal}")
+                        logger.info(f"📊 Score: {adjusted_score:.0f}% | Confluence: {confluence_count}/6")
                     
                     if trf_trend is not None:
                         if signal == 'BUY' and trf_trend == 1:
@@ -4407,11 +4470,33 @@ class TradingStrategy:
                 else:
                     passed_filters = []
                     failed_filters = []
+                    blocking_reasons = []
                     
-                    if mc_result['trend_filter']['passed']:
-                        passed_filters.append("Trend")
+                    trend_passed = mc_result['trend_filter']['passed']
+                    adx_filter = mc_result.get('adx_filter', {})
+                    adx_passed = adx_filter.get('passed', True)
+                    adx_value = adx_filter.get('value', 0)
+                    rsi_level_filter = mc_result.get('rsi_level_filter', {})
+                    rsi_passed = rsi_level_filter.get('passed', True)
+                    ema_slope_filter = mc_result.get('ema_slope_filter', {})
+                    ema_slope_passed = ema_slope_filter.get('passed', True)
+                    
+                    if not trend_passed:
+                        blocking_reasons.append("Trend")
                     else:
-                        failed_filters.append("Trend")
+                        passed_filters.append("Trend")
+                    
+                    if not adx_passed:
+                        blocking_reasons.append(f"ADX({adx_value:.1f})")
+                    elif adx_value > 0:
+                        passed_filters.append(f"ADX({adx_value:.1f})")
+                    
+                    if not rsi_passed:
+                        blocking_reasons.append("RSI_Level")
+                    
+                    if not ema_slope_passed:
+                        blocking_reasons.append("EMA_Slope")
+                    
                     if mc_result['momentum_filter']['passed']:
                         passed_filters.append("Momentum")
                     else:
@@ -4433,7 +4518,17 @@ class TradingStrategy:
                     else:
                         failed_filters.append("Spread")
                     
-                    logger.info(f"❌ Weighted score below threshold: {adjusted_score:.0f}% < {auto_threshold}%")
+                    score_passed = adjusted_score >= auto_threshold
+                    confluence_count = mc_result.get('confluence_count', 0)
+                    confluence_passed = confluence_count >= 3
+                    
+                    if blocking_reasons:
+                        logger.info(f"❌ Signal BLOCKED by core filters: {', '.join(blocking_reasons)}")
+                    elif not score_passed and not confluence_passed:
+                        logger.info(f"❌ Weighted score below threshold: {adjusted_score:.0f}% < {auto_threshold}% (confluence: {confluence_count}/3)")
+                    else:
+                        logger.info(f"❌ Signal not ready - Score: {adjusted_score:.0f}%, Confluence: {confluence_count}/6")
+                    
                     logger.info(f"📊 Passed: {', '.join(passed_filters) if passed_filters else 'None'} | Failed: {', '.join(failed_filters)}")
                     return None
             else:
