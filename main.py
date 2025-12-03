@@ -974,6 +974,10 @@ class TradingBotOrchestrator:
         processing tanpa blocking HTTP response ke Telegram.
         """
         try:
+            if not self.telegram_bot:
+                logger.error(f"❌ Cannot process update {update_id}: telegram_bot not initialized")
+                return
+            
             logger.info(f"🔄 Background processing update {update_id}...")
             await self.telegram_bot.process_update(update_data)
             logger.info(f"✅ Background processed update {update_id}")
