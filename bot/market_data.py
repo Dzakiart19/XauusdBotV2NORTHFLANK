@@ -2007,24 +2007,56 @@ class MarketDataClient:
                             f"health_score={self.connection_health_score}/100"
                         )
                         
-                        if self._loaded_from_db and (len(self.m1_builder.candles) >= 30 or len(self.m5_builder.candles) >= 30):
-                            logger.info("✅ Skipping historical fetch - already loaded from DB")
-                            logger.info(f"Current candle counts: M1={len(self.m1_builder.candles)}, M5={len(self.m5_builder.candles)}, H1={len(self.h1_builder.candles)}")
+                        h1_count = len(self.h1_builder.candles)
+                        m1_count = len(self.m1_builder.candles)
+                        m5_count = len(self.m5_builder.candles)
+                        
+                        need_m1_fetch = m1_count < 30
+                        need_m5_fetch = m5_count < 30
+                        need_h1_fetch = h1_count < 60
+                        
+                        if self._loaded_from_db and not need_m1_fetch and not need_m5_fetch and not need_h1_fetch:
+                            logger.info("✅ Skipping historical fetch - all timeframes loaded from DB")
+                            logger.info(f"Current candle counts: M1={m1_count}, M5={m5_count}, H1={h1_count}")
                         else:
                             if self._loaded_from_db:
-                                logger.warning(f"DB loaded but insufficient candles (M1={len(self.m1_builder.candles)}, M5={len(self.m5_builder.candles)}) - fetching from Deriv")
+                                missing = []
+                                if need_m1_fetch: missing.append(f"M1({m1_count}<30)")
+                                if need_m5_fetch: missing.append(f"M5({m5_count}<30)")
+                                if need_h1_fetch: missing.append(f"H1({h1_count}<60)")
+                                logger.warning(f"DB loaded but insufficient candles: {', '.join(missing)} - fetching from Deriv")
                             else:
                                 logger.info("No DB load - fetching historical candles from Deriv API")
                             
                             try:
-                                m1_success = await self.fetch_historical_candles(websocket, timeframe_minutes=1, count=100)
-                                m5_success = await self.fetch_historical_candles(websocket, timeframe_minutes=5, count=100)
-                                h1_success = await self.fetch_historical_candles(websocket, timeframe_minutes=60, count=100)
+                                if need_m1_fetch or not self._loaded_from_db:
+                                    m1_success = await self.fetch_historical_candles(websocket, timeframe_minutes=1, count=100)
+                                else:
+                                    m1_success = True
+                                    
+                                if need_m5_fetch or not self._loaded_from_db:
+                                    m5_success = await self.fetch_historical_candles(websocket, timeframe_minutes=5, count=100)
+                                else:
+                                    m5_success = True
+                                
+                                if need_h1_fetch or not self._loaded_from_db:
+                                    h1_success = await self.fetch_historical_candles(websocket, timeframe_minutes=60, count=100)
+                                    
+                                    if h1_success and len(self.h1_builder.candles) < 60:
+                                        logger.warning(f"⚠️ H1 fetch returned only {len(self.h1_builder.candles)}/60 candles")
+                                        logger.info("Retrying H1 fetch with extended count...")
+                                        await self.fetch_historical_candles(websocket, timeframe_minutes=60, count=200)
+                                else:
+                                    h1_success = True
                                 
                                 if not m1_success and not m5_success:
                                     logger.warning("Failed to fetch any historical data, but continuing with live feed")
-                                if h1_success:
-                                    logger.info(f"✅ H1 historical candles loaded: {len(self.h1_builder.candles)}")
+                                    
+                                h1_final = len(self.h1_builder.candles)
+                                if h1_final < 60:
+                                    logger.warning(f"⚠️ H1 INCOMPLETE: Hanya {h1_final}/60 candles - H1 analysis akan terbatas")
+                                else:
+                                    logger.info(f"✅ H1 historical candles COMPLETE: {h1_final} candles")
                             except Exception as e:
                                 logger.error(f"Error fetching historical data: {e}. Continuing with live feed")
                         

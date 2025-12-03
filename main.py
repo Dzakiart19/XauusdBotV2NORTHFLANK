@@ -966,6 +966,21 @@ class TradingBotOrchestrator:
         logger.warning("Could not auto-detect webhook URL - no Koyeb/Replit domain found")
         logger.warning("Set WEBHOOK_URL environment variable manually or KOYEB_PUBLIC_DOMAIN")
         return None
+    
+    async def _process_update_background(self, update_data: dict, update_id):
+        """Background processing untuk webhook update yang timeout
+        
+        Digunakan ketika webhook handler timeout (>25s) untuk menyelesaikan
+        processing tanpa blocking HTTP response ke Telegram.
+        """
+        try:
+            logger.info(f"🔄 Background processing update {update_id}...")
+            await self.telegram_bot.process_update(update_data)
+            logger.info(f"✅ Background processed update {update_id}")
+        except Exception as e:
+            logger.error(f"❌ Background processing error for update {update_id}: {e}")
+            if self.error_handler:
+                self.error_handler.log_exception(e, f"background_update_{update_id}")
         
     async def start_health_server(self):
         try:
@@ -1091,9 +1106,17 @@ class TradingBotOrchestrator:
                     
                     logger.info(f"📨 Webhook received: update_id={update_id}, user={user_id}, message='{message_text}'")
                     
-                    await self.telegram_bot.process_update(update_data)
+                    try:
+                        await asyncio.wait_for(
+                            self.telegram_bot.process_update(update_data),
+                            timeout=25.0
+                        )
+                        logger.info(f"✅ Webhook processed: update_id={update_id}")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"⚠️ Webhook processing timeout (25s): update_id={update_id}")
+                        asyncio.create_task(self._process_update_background(update_data, update_id))
+                        return web.json_response({'ok': True, 'note': 'processing_async'})
                     
-                    logger.info(f"✅ Webhook processed successfully: update_id={update_id}")
                     return web.json_response({'ok': True})
                     
                 except Exception as e:
