@@ -53,10 +53,29 @@ MEMORY_WARNING_THRESHOLD_MB=400
 MEMORY_CRITICAL_THRESHOLD_MB=450
 ```
 
+## DATABASE_URL (WAJIB untuk Koyeb!)
+
+⚠️ **PENTING**: Koyeb filesystem bersifat ephemeral (data hilang saat restart). 
+Anda HARUS menggunakan PostgreSQL eksternal.
+
+### Cara Mendapatkan DATABASE_URL Gratis (Neon):
+
+1. **Buka https://neon.tech** dan buat akun (gratis)
+2. **Buat project baru** (nama bebas, misal: `trading-bot`)
+3. **Copy Connection String** dari dashboard:
+   ```
+   DATABASE_URL=postgresql://user:password@ep-xxx.neon.tech/neondb?sslmode=require
+   ```
+
+### Alternatif PostgreSQL Gratis:
+- **Neon** (https://neon.tech) - Recommended, serverless
+- **Supabase** (https://supabase.com) - All-in-one platform
+- **Railway** (https://railway.app) - Kuota terbatas
+- **ElephantSQL** (https://elephantsql.com) - Shared instance
+
 ## OPSIONAL
 
 ```
-DATABASE_URL=postgresql://user:pass@host:5432/dbname
 DRY_RUN=false
 ENVIRONMENT=production
 ```
@@ -64,20 +83,32 @@ ENVIRONMENT=production
 ## Contoh Lengkap untuk Koyeb
 
 ```env
-# WAJIB
+# ============================================
+# WAJIB (Bot tidak akan jalan tanpa ini)
+# ============================================
 TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ
 AUTHORIZED_USER_IDS=123456789
 TELEGRAM_WEBHOOK_MODE=true
-KOYEB_PUBLIC_DOMAIN=trading-bot-xyz.koyeb.app
+KOYEB_PUBLIC_DOMAIN=painful-koral-dzeckyete-ee811ac5.koyeb.app
 PORT=8000
 
-# FREE TIER OPTIMIZATION
+# DATABASE (Dari Neon/Supabase - WAJIB untuk Koyeb)
+DATABASE_URL=postgresql://user:password@ep-xxx.neon.tech/neondb?sslmode=require
+
+# ============================================
+# FREE TIER OPTIMIZATION (Recommended)
+# ============================================
 FREE_TIER_MODE=true
 SELF_PING_ENABLED=true
 SELF_PING_INTERVAL=240
+MEMORY_WARNING_THRESHOLD_MB=400
+MEMORY_CRITICAL_THRESHOLD_MB=450
 
-# TRADING
+# ============================================
+# UNLIMITED SIGNALS (Jangan ubah!)
+# ============================================
 SIGNAL_COOLDOWN_SECONDS=0
+OPPOSITE_SIGNAL_COOLDOWN_SECONDS=0
 MAX_TRADES_PER_DAY=0
 ```
 
