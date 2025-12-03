@@ -2167,6 +2167,8 @@ class PositionTracker:
                         'sl_adjustment_count': pos.sl_adjustment_count or 0,
                         'max_profit_reached': pos.max_profit_reached or 0.0,
                         'signal_quality_id': getattr(pos, 'signal_quality_id', None),
+                        'signal_grade': getattr(pos, 'signal_grade', 'B'),
+                        'confidence_score': getattr(pos, 'confidence_score', 0.5),
                         'opened_at': pos.opened_at
                     }
             

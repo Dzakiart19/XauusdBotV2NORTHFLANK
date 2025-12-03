@@ -1481,7 +1481,7 @@ class MarketRegimeDetector:
             
             self._last_regime = regime
             
-            logger.info(f"Market Regime: {regime.regime_type} | Bias: {regime.bias} | "
+            logger.debug(f"Market Regime: {regime.regime_type} | Bias: {regime.bias} | "
                        f"Strictness: {regime.strictness_level:.2f} | Confidence: {regime.confidence:.2f} | "
                        f"Confirmations: {regime.multi_confirmation.confirmation_count}/3")
             

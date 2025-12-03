@@ -3092,7 +3092,7 @@ class MarketDataClient:
                     
                     seen_timestamps.clear()
                     
-                    max_candles = 50 if timeframe == 'H1' else 100
+                    max_candles = 50 if timeframe == 'H1' else self.config.MAX_CANDLE_HISTORY
                     candles_to_save = deduplicated_candles[-max_candles:]
                     
                     session.execute(delete(CandleData).where(CandleData.timeframe == timeframe))

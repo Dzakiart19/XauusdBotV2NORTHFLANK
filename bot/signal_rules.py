@@ -706,7 +706,7 @@ class AggressiveSignalRules:
         hard_min = 8.0
         final_threshold = max(hard_min, base_threshold)
         
-        logger.info(f"Dynamic ADX threshold: {final_threshold:.1f} (session={session_strength}, volatility={volatility_zone}, base={base_threshold:.1f})")
+        logger.debug(f"Dynamic ADX threshold: {final_threshold:.1f} (session={session_strength}, volatility={volatility_zone}, base={base_threshold:.1f})")
         
         return final_threshold
     
@@ -978,7 +978,7 @@ class AggressiveSignalRules:
             adaptive_volume_threshold = self.get_adaptive_volume_threshold(
                 volatility_zone, session_strength, result.regime_type
             )
-            logger.info(f"M1 Scalp adaptive volume filter: threshold={adaptive_volume_threshold:.2f}, "
+            logger.debug(f"M1 Scalp adaptive volume filter: threshold={adaptive_volume_threshold:.2f}, "
                        f"ratio={volume_ratio:.2f}, zone={volatility_zone}, session={session_strength}")
             
             if volume_ratio > adaptive_volume_threshold:
@@ -1334,7 +1334,7 @@ class AggressiveSignalRules:
             adaptive_volume_threshold = self.get_adaptive_volume_threshold(
                 volatility_zone, session_strength, result.regime_type
             )
-            logger.info(f"M5 Swing adaptive volume filter: threshold={adaptive_volume_threshold:.2f}, "
+            logger.debug(f"M5 Swing adaptive volume filter: threshold={adaptive_volume_threshold:.2f}, "
                        f"ratio={volume_ratio:.2f}, zone={volatility_zone}, session={session_strength}")
             
             if volume_ratio > adaptive_volume_threshold:
@@ -1463,7 +1463,7 @@ class AggressiveSignalRules:
             is_breakout = price_break_above or price_break_below
             has_momentum = has_adx_condition or is_breakout
             
-            logger.info(f"M5 Swing ADX check: ADX={adx:.1f}, dynamic_threshold={dynamic_adx_threshold:.1f}, "
+            logger.debug(f"M5 Swing ADX check: ADX={adx:.1f}, dynamic_threshold={dynamic_adx_threshold:.1f}, "
                        f"has_adx_condition={has_adx_condition}, static_M5_ADX_THRESHOLD={self.M5_ADX_THRESHOLD}")
             
             if has_adx_condition:
@@ -2056,7 +2056,7 @@ class AggressiveSignalRules:
             adx_increasing = adx > adx_prev
             has_adx_rising = adx_increasing and adx >= dynamic_adx_threshold
             
-            logger.info(f"Breakout ADX check: ADX={adx:.1f}, dynamic_threshold={dynamic_adx_threshold:.1f}, "
+            logger.debug(f"Breakout ADX check: ADX={adx:.1f}, dynamic_threshold={dynamic_adx_threshold:.1f}, "
                        f"adx_increasing={adx_increasing}, has_adx_rising={has_adx_rising}")
             
             if breakout_up_10:
