@@ -441,6 +441,10 @@ class TradingStrategy:
             Tuple of (is_aligned, reason)
         """
         try:
+            if m1_df is None and m5_df is None:
+                logger.debug(f"Regime check skipped - no DataFrame provided, allowing {signal_type}")
+                return True, f"⚠️ Regime check skipped (no DataFrame) - {signal_type} allowed"
+            
             regime_detector = self._get_regime_detector()
             self._current_regime = regime_detector.get_regime(
                 indicators=indicators,
@@ -449,7 +453,7 @@ class TradingStrategy:
             )
             
             if self._current_regime is None:
-                logger.warning(f"⚠️ Regime unavailable - allowing {signal_type} with caution")
+                logger.debug(f"Regime unavailable - allowing {signal_type} with caution")
                 return True, f"⚠️ Regime data unavailable - {signal_type} allowed with caution"
             
             bias = self._current_regime.bias
@@ -1326,17 +1330,17 @@ class TradingStrategy:
                 rsi = safe_float(rsi_m5, 50.0)
                 
                 if signal_type == 'BUY':
-                    if rsi > 45:
+                    if rsi > 40:
                         confirmations_passed += 1
-                        confirmation_details.append(f"RSI M5 bullish ({rsi:.1f} > 45)")
+                        confirmation_details.append(f"RSI M5 bullish ({rsi:.1f} > 40)")
                     else:
-                        confirmation_details.append(f"RSI M5 bearish ({rsi:.1f} <= 45)")
+                        confirmation_details.append(f"RSI M5 bearish ({rsi:.1f} <= 40)")
                 elif signal_type == 'SELL':
-                    if rsi < 55:
+                    if rsi < 60:
                         confirmations_passed += 1
-                        confirmation_details.append(f"RSI M5 bearish ({rsi:.1f} < 55)")
+                        confirmation_details.append(f"RSI M5 bearish ({rsi:.1f} < 60)")
                     else:
-                        confirmation_details.append(f"RSI M5 bullish ({rsi:.1f} >= 55)")
+                        confirmation_details.append(f"RSI M5 bullish ({rsi:.1f} >= 60)")
             else:
                 confirmation_details.append("RSI M5: data tidak tersedia")
             
