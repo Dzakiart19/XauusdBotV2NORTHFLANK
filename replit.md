@@ -43,6 +43,23 @@ The bot features a modular architecture for scalability and maintainability, des
 - **Candle Data Persistence:** Stores M1, M5, and H1 candles, including a smart H1 candle bootstrap.
 - **Bot Stability:** Hang detection, health monitors, optimized Telegram polling, and a global error handler.
 
+## Recent Changes (December 2025)
+
+**Bot Restart Fix:**
+- Fixed "Updater is already running" error in main.py restart logic
+- Restart now follows proper sequence: stop() -> wait -> initialize() -> start_background_cleanup_tasks() -> run()
+- Prevents Telegram Application state conflicts during auto-restart
+
+**Per-User Isolation Tests:**
+- Added 20 comprehensive unit tests in tests/test_user_isolation.py
+- Tests cover SignalEventStore isolation: get_latest_signal, get_recent_signals, clear_user_signals, get_user_signal_count
+- All tests validate strict per-user data separation
+
+**Memory Monitoring Enhancement:**
+- Added get_memory_stats() method to SignalEventStore
+- Enhanced telemetry with cleanup_runs and average_signals_per_user tracking
+- Memory stats logged after each cleanup cycle for monitoring
+
 ## External Dependencies
 - **Deriv WebSocket API:** For real-time XAUUSD market data.
 - **Telegram Bot API (`python-telegram-bot`):** For all Telegram interactions.
