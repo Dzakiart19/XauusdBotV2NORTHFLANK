@@ -4227,124 +4227,6 @@ class TradingBot:
             except (TelegramError, asyncio.CancelledError):
                 pass
 
-    async def optimize_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Handle /optimize command - Manual trigger untuk optimization.
-        
-        Usage:
-            /optimize - Run optimization dan tampilkan report
-            /optimize status - Tampilkan status optimizer
-            /optimize report - Tampilkan optimization report (7 hari)
-        """
-        if self._is_shutting_down:
-            return
-        
-        message = update.message
-        if not message:
-            return
-        
-        chat = message.chat
-        if not chat:
-            return
-        
-        user_id = chat.id
-        
-        if user_id not in self.config.AUTHORIZED_USER_IDS:
-            try:
-                await message.reply_text("⛔ Anda tidak memiliki akses ke perintah ini.")
-            except (TelegramError, asyncio.CancelledError):
-                pass
-            return
-        
-        try:
-            args = context.args if context.args else []
-            subcommand = args[0].lower() if args else ''
-            
-            if not self.auto_optimizer:
-                await message.reply_text(
-                    "⚠️ *Auto-Optimizer Tidak Tersedia*\n\n"
-                    "Modul auto-optimizer tidak diinisialisasi.",
-                    parse_mode='Markdown'
-                )
-                return
-            
-            if subcommand == 'status':
-                status_report = self.auto_optimizer.get_status_report()
-                await message.reply_text(status_report, parse_mode='Markdown')
-                logger.info(f"Sent optimizer status to user {user_id}")
-                
-            elif subcommand == 'report':
-                opt_report = self.auto_optimizer.get_optimization_report(days=7)
-                await message.reply_text(opt_report, parse_mode='Markdown')
-                logger.info(f"Sent optimization report to user {user_id}")
-                
-            else:
-                await message.reply_text(
-                    "🔧 *Menjalankan Optimization...*\n\n"
-                    "Proses ini mungkin membutuhkan beberapa detik.",
-                    parse_mode='Markdown'
-                )
-                
-                result = await self.auto_optimizer.run_optimization_async()
-                
-                if result.status == 'SUCCESS':
-                    response = "✅ *Optimization Berhasil*\n\n"
-                    response += f"📊 Signals Analyzed: {result.signals_analyzed}\n"
-                    response += f"🔧 Adjustments: {len(result.adjustments)}\n\n"
-                    
-                    if result.adjustments:
-                        response += "*Parameter Changes:*\n"
-                        for adj in result.adjustments[:5]:
-                            response += f"• {adj.parameter_name}: {adj.old_value} → {adj.new_value}\n"
-                    
-                    if result.recommendations:
-                        response += "\n💡 *Recommendations:*\n"
-                        for rec in result.recommendations[:3]:
-                            response += f"• {rec}\n"
-                    
-                elif result.status == 'SKIPPED':
-                    response = "⏭️ *Optimization Skipped*\n\n"
-                    response += f"Reason: {result.error_message or 'No adjustments needed'}\n"
-                    if result.recommendations:
-                        response += "\n💡 *Recommendations:*\n"
-                        for rec in result.recommendations[:3]:
-                            response += f"• {rec}\n"
-                    
-                else:
-                    response = f"⚠️ *Optimization Status: {result.status}*\n\n"
-                    if result.error_message:
-                        response += f"Error: {result.error_message}\n"
-                
-                await message.reply_text(response, parse_mode='Markdown')
-                logger.info(f"Optimization triggered manually by user {user_id}: {result.status}")
-                
-        except Forbidden as e:
-            await self._handle_forbidden_error(chat.id, e)
-        except ChatMigrated as e:
-            await self._handle_chat_migrated(chat.id, e)
-        except (TimedOut, NetworkError) as e:
-            logger.warning(f"Network/timeout error pada optimize command: {e}")
-            try:
-                await message.reply_text("Koneksi timeout, silakan coba lagi.")
-            except (TelegramError, asyncio.CancelledError):
-                pass
-        except Conflict as e:
-            await self._handle_conflict_error(e)
-        except InvalidToken as e:
-            await self._handle_unauthorized_error(e)
-        except TelegramError as e:
-            logger.error(f"Telegram error pada optimize command: {e}")
-            try:
-                await message.reply_text("Error menjalankan optimization.")
-            except (TelegramError, asyncio.CancelledError):
-                pass
-        except (ValueError, TypeError, KeyError, AttributeError) as e:
-            logger.error(f"Data error pada optimize command: {type(e).__name__}: {e}", exc_info=True)
-            try:
-                await message.reply_text("Error menjalankan optimization.")
-            except (TelegramError, asyncio.CancelledError):
-                pass
-
     async def trialstatus_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Command untuk melihat status trial user."""
         if update.effective_user is None or update.message is None or update.effective_chat is None:
@@ -4578,7 +4460,6 @@ class TradingBot:
         self.app.add_handler(CommandHandler("riset", self.riset_command))
         self.app.add_handler(CommandHandler("riwayat", self.riwayat_command))
         self.app.add_handler(CommandHandler("performa", self.performa_command))
-        self.app.add_handler(CommandHandler("optimize", self.optimize_command))
         
         self.app.add_error_handler(self._handle_telegram_error)
         logger.info("✅ Global error handler registered for Telegram updates")

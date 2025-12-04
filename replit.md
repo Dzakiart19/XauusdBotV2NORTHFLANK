@@ -43,6 +43,15 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **Bot Stability:** Hang detection, health monitors, optimized Telegram polling, and a global error handler.
 - **Polling Mode Keep-Alive:** Implemented to prevent unexpected task completion and ensure 24/7 bot availability.
 - **Koyeb Anti-Sleep Optimization:** Aggressive self-ping interval and multi-endpoint ping strategy with burst ping mode to prevent idle shutdown.
+- **Background Task Health Management:** Smart stuck-task detection with whitelist for continuous background tasks (self_ping, health_check, memory_monitor, etc.) to prevent false-positive restarts and warning spam.
+- **Timezone WIB:** Web dashboard menampilkan waktu dalam zona waktu WIB (UTC+7) untuk user Indonesia.
+
+## Recent Changes (December 2024)
+- Fixed stuck task detection to skip background tasks that are designed to run continuously
+- Reduced "LONG TASK" warning spam for legitimate background processes
+- Added WIB timezone conversion to web dashboard (formatTime/formatTimeShort functions)
+- Fixed datetime serialization for health check endpoints
+- Improved import handling (pytz)
 
 ## External Dependencies
 - **Deriv WebSocket API:** For real-time XAUUSD market data.
