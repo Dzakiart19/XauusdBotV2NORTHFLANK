@@ -62,7 +62,6 @@ class NotificationService:
         self.base_delay = base_delay
         self.max_delay = max_delay
         self.timeout = timeout
-        self._pending_queue: asyncio.Queue = asyncio.Queue()
         self._stats = {
             'sent': 0,
             'failed': 0,

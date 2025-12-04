@@ -2285,7 +2285,7 @@ class TradingBot:
             mode = "LIVE" if not self.config.DRY_RUN else "DRY RUN"
             
             welcome_msg = (
-                "🤖 *XAUUSD Trading Bot Lite*\n\n"
+                "🤖 *XAUUSD Trading Bot*\n\n"
                 "Bot sinyal trading XAUUSD - ringan dan efisien.\n\n"
                 f"*Status:* {user_status}\n"
                 f"{trial_msg}\n"
@@ -2293,7 +2293,9 @@ class TradingBot:
                 "/help - Bantuan\n"
                 "/monitor - Mulai monitoring sinyal\n"
                 "/stopmonitor - Stop monitoring\n"
-                "/getsignal - Dapatkan sinyal manual\n\n"
+                "/getsignal - Dapatkan sinyal manual\n"
+                "/riwayat - Lihat riwayat trading\n"
+                "/performa - Statistik performa\n\n"
                 "*Access:*\n"
                 "/trialstatus - Cek status trial\n"
                 "/buyaccess - Info berlangganan\n"
@@ -2306,8 +2308,7 @@ class TradingBot:
                 )
             
             welcome_msg += (
-                f"\n*Mode:* LITE (Koyeb Free Tier)\n"
-                f"Chart & Analytics: Tersedia di webapp\n"
+                f"\nChart & Analytics: Tersedia di webapp\n"
             )
             
             await message.reply_text(welcome_msg, parse_mode='Markdown')
@@ -2383,7 +2384,7 @@ class TradingBot:
                 user_status = "🎁 Trial User"
             
             help_msg = (
-                "🤖 *XAUUSD Trading Bot Lite*\n\n"
+                "🤖 *XAUUSD Trading Bot*\n\n"
                 "Bot sinyal trading XAUUSD - ringan dan efisien.\n\n"
                 f"*Status:* {user_status}\n\n"
                 "*📋 Commands Utama:*\n"
@@ -2391,7 +2392,9 @@ class TradingBot:
                 "/help - Bantuan\n"
                 "/monitor - Mulai monitoring sinyal\n"
                 "/stopmonitor - Stop monitoring\n"
-                "/getsignal - Dapatkan sinyal manual\n\n"
+                "/getsignal - Dapatkan sinyal manual\n"
+                "/riwayat - Lihat riwayat trading\n"
+                "/performa - Statistik performa\n\n"
                 "*🔑 Access Commands:*\n"
                 "/trialstatus - Status trial Anda\n"
                 "/buyaccess - Info beli akses\n\n"
@@ -2405,7 +2408,6 @@ class TradingBot:
             
             help_msg += (
                 "*⚙️ System Info:*\n"
-                f"Mode: LITE (Koyeb Free Tier)\n"
                 f"Risk: ${self.config.FIXED_RISK_AMOUNT:.2f}/trade\n"
                 f"Chart & Analytics: Tersedia di webapp\n"
             )
