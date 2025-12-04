@@ -635,7 +635,16 @@ class PositionTracker:
         return task
     
     async def _resolve_session_state(self, user_id: int) -> None:
-        """Resolve SignalSessionManager state after task completion."""
+        """Resolve SignalSessionManager state after task completion.
+        
+        PENTING: Method ini hanya membersihkan orphaned sessions, BUKAN menghentikan monitoring.
+        Session cleanup dan monitoring adalah dua hal yang terpisah:
+        - Session = satu siklus sinyal (dari signal dikirim sampai posisi ditutup)
+        - Monitoring = loop yang terus berjalan untuk mendeteksi sinyal baru
+        
+        Setelah posisi ditutup, session di-end agar user bisa menerima sinyal baru,
+        tapi monitoring harus TETAP BERJALAN selama user tidak menjalankan /stopmonitor.
+        """
         if not self.signal_session_manager:
             return
         
@@ -646,8 +655,12 @@ class PositionTracker:
             if not has_active:
                 session = self.signal_session_manager.get_active_session(user_id)
                 if session:
-                    logger.info(f"Resolving orphaned session state for user {user_id}")
+                    # Hanya end session jika masih ada session aktif yang orphaned
+                    # CATATAN: Ini TIDAK menghentikan monitoring, hanya membersihkan state session
+                    logger.info(f"🧹 Resolving orphaned session state for user {user_id} (session cleanup only, monitoring continues)")
                     await self.signal_session_manager.end_session(user_id, 'RESOLVED')
+                else:
+                    logger.debug(f"No orphaned session to resolve for user {user_id} - session already cleaned up")
         except (asyncio.CancelledError, asyncio.TimeoutError, KeyError, ValueError, AttributeError) as e:
             logger.error(f"Error resolving session state for user {user_id}: {e}")
     
@@ -2393,8 +2406,10 @@ class PositionTracker:
             if self.user_manager:
                 self.user_manager.update_user_stats(user_id, actual_pl)
             
-            if self.signal_session_manager:
-                await self.signal_session_manager.end_session(user_id, reason)
+            # REMOVED: Duplicate end_session call - sudah dipanggil di line 2289
+            # end_session hanya perlu dipanggil SEKALI setelah posisi ditutup
+            # Duplicate call ini menyebabkan event handler dipanggil 2x yang bisa
+            # memicu cleanup prematur dan mengganggu monitoring loop
             
         except (IntegrityError, OperationalError, SQLAlchemyError, asyncio.CancelledError, asyncio.TimeoutError, ValueError, TypeError, KeyError) as e:
             logger.error(f"Error closing position {position_id}: {e}", exc_info=True)

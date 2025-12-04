@@ -2440,33 +2440,60 @@ class TradingBot:
         2. Cancelled tasks (explicit cancellation)
         3. Failed tasks (exceptions)
         
+        PENTING: Callback ini HANYA dipanggil saat monitoring task benar-benar SELESAI.
+        Session end (posisi ditutup) TIDAK menyebabkan monitoring task selesai.
+        Monitoring task selesai karena:
+        - User menjalankan /stopmonitor (removed from monitoring_chats)
+        - Sistem shutdown (_is_shutting_down = True)
+        - Error fatal (forbidden, invalid token, dll)
+        
         Args:
             chat_id: The chat ID whose monitoring task completed
             task: The completed asyncio.Task
         """
         try:
             task_status = "unknown"
+            task_error = None
             if task.cancelled():
                 task_status = "cancelled"
             elif task.done():
-                exc = task.exception() if not task.cancelled() else None
-                if exc:
-                    task_status = f"failed: {type(exc).__name__}"
-                    logger.error(f"❌ Monitoring task for chat {mask_user_id(chat_id)} failed: {exc}")
-                else:
-                    task_status = "completed"
+                try:
+                    exc = task.exception()
+                    if exc:
+                        task_status = f"failed: {type(exc).__name__}"
+                        task_error = exc
+                        logger.error(f"❌ Monitoring task for chat {mask_user_id(chat_id)} failed: {exc}")
+                    else:
+                        task_status = "completed"
+                except (asyncio.CancelledError, asyncio.InvalidStateError):
+                    task_status = "cancelled_during_check"
             
-            logger.info(f"📋 Monitoring task for chat {mask_user_id(chat_id)} done (status: {task_status})")
+            # Log kondisi saat task selesai untuk debugging
+            in_monitoring_chats = chat_id in self.monitoring_chats
+            is_shutting_down = getattr(self, '_is_shutting_down', False)
+            monitoring_flag = getattr(self, 'monitoring', False)
+            
+            logger.info(
+                f"📋 Monitoring task DONE for chat {mask_user_id(chat_id)} | "
+                f"Status: {task_status} | "
+                f"In monitoring_chats: {in_monitoring_chats} | "
+                f"Shutdown: {is_shutting_down} | "
+                f"Monitoring flag: {monitoring_flag}"
+            )
             
             if chat_id in self.monitoring_tasks:
                 del self.monitoring_tasks[chat_id]
             
+            # Hanya hapus dari monitoring_chats jika memang sudah di-register
+            # Ini mencegah error jika sudah dihapus sebelumnya
             if chat_id in self.monitoring_chats:
                 self.monitoring_chats.remove(chat_id)
+                logger.debug(f"Removed chat {mask_user_id(chat_id)} from monitoring_chats after task completion")
             
             if chat_id in self._monitoring_drain_complete:
                 self._monitoring_drain_complete[chat_id].set()
             
+            # Cleanup resources setelah monitoring task benar-benar selesai
             asyncio.create_task(self._cleanup_user_monitoring_resources(chat_id))
             
         except Exception as e:
@@ -3140,7 +3167,16 @@ class TradingBot:
             if self._is_shutting_down and exit_reason == "normal":
                 exit_reason = "shutdown_graceful"
             elif exit_reason == "normal":
-                logger.warning(f"⚠️ Monitoring loop exited with normal reason but conditions changed for user {mask_user_id(chat_id)}")
+                # Log detail kondisi yang menyebabkan loop keluar
+                in_monitoring_chats = chat_id in self.monitoring_chats
+                logger.warning(
+                    f"⚠️ Monitoring loop exited - Kondisi yang berubah untuk user {mask_user_id(chat_id)}:\n"
+                    f"   - self.monitoring: {self.monitoring}\n"
+                    f"   - chat_id in monitoring_chats: {in_monitoring_chats}\n"
+                    f"   - _is_shutting_down: {self._is_shutting_down}\n"
+                    f"   - Total iterasi: {iteration_count}\n"
+                    f"   CATATAN: Session end seharusnya TIDAK menyebabkan monitoring berhenti!"
+                )
                 exit_reason = "condition_changed"
                     
         except Exception as outer_error:
@@ -3577,15 +3613,46 @@ class TradingBot:
                     logger.error(f"Failed to send error alert: {alert_error}")
     
     async def _on_session_end_handler(self, session):
-        """Handler untuk event on_session_end dari SignalSessionManager"""
+        """Handler untuk event on_session_end dari SignalSessionManager.
+        
+        PENTING: Handler ini HANYA membersihkan resources terkait SESI SINYAL yang berakhir:
+        - Dashboard untuk posisi tersebut (karena posisi sudah ditutup)
+        - Signal cache untuk user (agar bisa menerima sinyal baru)
+        
+        Handler ini TIDAK dan TIDAK BOLEH menghentikan monitoring loop!
+        Monitoring harus tetap berjalan agar user bisa menerima sinyal baru setelah posisi ditutup.
+        
+        Alur yang benar:
+        1. Posisi ditutup (hit TP/SL)
+        2. Session di-end (sinyal siklus ini selesai)
+        3. Dashboard dihentikan (karena tidak ada posisi aktif)
+        4. Signal cache dibersihkan (reset untuk sinyal baru)
+        5. Monitoring TETAP BERJALAN (user siap terima sinyal baru)
+        """
         try:
             user_id = session.user_id
-            logger.info(f"Session ended for user {mask_user_id(user_id)}, stopping dashboard and cleaning up cache")
             
+            # CRITICAL: Cek apakah monitoring masih aktif - JANGAN diubah di sini!
+            monitoring_active = user_id in self.monitoring_chats
+            
+            logger.info(
+                f"📋 Session ended for user {mask_user_id(user_id)} | "
+                f"Signal type: {session.signal_type} | "
+                f"Monitoring active: {monitoring_active} | "
+                f"Cleaning up session resources (dashboard + cache) - MONITORING CONTINUES"
+            )
+            
+            # Stop dashboard untuk posisi yang sudah ditutup
             await self.stop_dashboard(user_id)
             
+            # Clear signal cache agar user bisa terima sinyal baru
             await self._clear_signal_cache(user_id)
-            logger.info(f"✅ Signal cache cleared for user {mask_user_id(user_id)} after session end")
+            
+            logger.info(
+                f"✅ Session cleanup complete for user {mask_user_id(user_id)} | "
+                f"Dashboard stopped, cache cleared | "
+                f"Monitoring still active: {user_id in self.monitoring_chats}"
+            )
             
         except (TelegramError, asyncio.TimeoutError, KeyError, ValueError, AttributeError) as e:
             logger.error(f"Error in session end handler: {e}")
