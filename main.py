@@ -1290,22 +1290,44 @@ class TradingBotOrchestrator:
                 
                 db_status = 'unknown'
                 position_count = 0
-                try:
-                    session = self.db_manager.get_session()
-                    if session:
+                
+                def sync_db_check():
+                    session = None
+                    try:
+                        try:
+                            session = self.db_manager.get_session()
+                        except Exception as e:
+                            return f'error: session_acquire: {str(e)[:30]}', 0
+                        
+                        if not session:
+                            return 'error: session is None', 0
+                        
                         result = session.execute(text('SELECT 1'))
                         result.fetchone()
-                        
                         try:
                             count_result = session.execute(text("SELECT COUNT(*) FROM positions WHERE status = 'open'"))
-                            position_count = count_result.scalar() or 0
+                            pos_count = count_result.scalar() or 0
                         except Exception:
-                            position_count = 0
-                        
-                        session.close()
-                        db_status = 'connected'
-                    else:
-                        db_status = 'error: session is None'
+                            pos_count = 0
+                        return 'connected', pos_count
+                    except Exception as e:
+                        return f'error: {str(e)[:50]}', 0
+                    finally:
+                        if session:
+                            try:
+                                session.close()
+                            except Exception:
+                                pass
+                
+                try:
+                    loop = asyncio.get_event_loop()
+                    db_status, position_count = await asyncio.wait_for(
+                        loop.run_in_executor(None, sync_db_check),
+                        timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    db_status = 'timeout'
+                    logger.warning("Database health check timed out (3s)")
                 except Exception as e:
                     db_status = f'error: {str(e)[:50]}'
                     logger.error(f"Database health check failed: {e}")
@@ -1759,37 +1781,59 @@ class TradingBotOrchestrator:
                         'total_trades': 0
                     }
                     
-                    if self.config_valid and self.db_manager:
+                    if self.config_valid and self.db_manager and user_id is not None:
+                        def sync_get_stats(uid, today_start):
+                            session = None
+                            default_stats = {'win_rate': 0.0, 'total_pnl': 0.0, 'signals_today': 0, 'total_trades': 0}
+                            try:
+                                try:
+                                    session = self.db_manager.get_session()
+                                except Exception as e:
+                                    logger.debug(f"Error acquiring session: {e}")
+                                    return default_stats
+                                
+                                if not session:
+                                    return default_stats
+                                
+                                result = session.execute(text(
+                                    "SELECT COUNT(*) as total, "
+                                    "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
+                                    "COALESCE(SUM(actual_pl), 0) as total_pnl "
+                                    "FROM trades WHERE status = 'CLOSED' AND user_id = :user_id"
+                                ), {'user_id': uid})
+                                row = result.fetchone()
+                                
+                                total = int(row[0] or 0) if row else 0
+                                wins = int(row[1] or 0) if row else 0
+                                total_pnl = float(row[2] or 0) if row else 0.0
+                                win_rate = float(wins / total * 100) if total > 0 else 0.0
+                                
+                                today_result = session.execute(text(
+                                    "SELECT COUNT(*) FROM trades WHERE signal_time >= :today AND user_id = :user_id"
+                                ), {'today': today_start, 'user_id': uid})
+                                signals_today = int(today_result.scalar() or 0)
+                                
+                                return {'win_rate': win_rate, 'total_pnl': total_pnl, 'signals_today': signals_today, 'total_trades': total}
+                            except Exception as e:
+                                logger.debug(f"Error getting stats in executor: {e}")
+                                return default_stats
+                            finally:
+                                if session:
+                                    try:
+                                        session.close()
+                                    except Exception:
+                                        pass
+                        
                         try:
-                            session = self.db_manager.get_session()
-                            if session:
-                                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                                
-                                if user_id is not None:
-                                    logger.debug(f"[DASHBOARD] Stats untuk user_id={user_id} (authorized={is_authorized})")
-                                    result = session.execute(text(
-                                        "SELECT COUNT(*) as total, "
-                                        "SUM(CASE WHEN actual_pl > 0 THEN 1 ELSE 0 END) as wins, "
-                                        "COALESCE(SUM(actual_pl), 0) as total_pnl "
-                                        "FROM trades WHERE status = 'CLOSED' AND user_id = :user_id"
-                                    ), {'user_id': user_id})
-                                    row = result.fetchone()
-                                    if row:
-                                        total = int(row[0] or 0)
-                                        wins = int(row[1] or 0)
-                                        stats['total_trades'] = total
-                                        stats['total_pnl'] = float(row[2] or 0)
-                                        stats['win_rate'] = float(wins / total * 100) if total > 0 else 0.0
-                                    
-                                    today_result = session.execute(text(
-                                        "SELECT COUNT(*) FROM trades WHERE signal_time >= :today AND user_id = :user_id"
-                                    ), {'today': today_start, 'user_id': user_id})
-                                    signals_today = today_result.scalar()
-                                    stats['signals_today'] = int(signals_today or 0)
-                                else:
-                                    logger.debug(f"[DASHBOARD] user_id=None - stats kosong (strict isolation)")
-                                
-                                session.close()
+                            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                            loop = asyncio.get_event_loop()
+                            stats = await asyncio.wait_for(
+                                loop.run_in_executor(None, sync_get_stats, user_id, today_start),
+                                timeout=3.0
+                            )
+                            logger.debug(f"[DASHBOARD] Stats untuk user_id={user_id} (authorized={is_authorized})")
+                        except asyncio.TimeoutError:
+                            logger.warning("[DASHBOARD] Stats query timed out (3s)")
                         except Exception as e:
                             logger.debug(f"Error getting stats: {e}")
                     
@@ -1949,58 +1993,68 @@ class TradingBotOrchestrator:
                     trades_list = []
                     total_trades = 0
                     
-                    if self.config_valid and self.db_manager:
-                        try:
-                            session = self.db_manager.get_session()
-                            if session:
-                                offset = (page - 1) * limit
+                    if self.config_valid and self.db_manager and user_id is not None:
+                        def sync_get_trades(uid, pg, lim, status_cond, offs):
+                            try:
+                                session = self.db_manager.get_session()
+                                if not session:
+                                    return [], 0
                                 
-                                if status_filter == 'closed':
-                                    status_condition = "status = 'CLOSED'"
-                                elif status_filter == 'open':
-                                    status_condition = "status = 'OPEN'"
-                                else:
-                                    status_condition = "1=1"
+                                count_result = session.execute(text(
+                                    f"SELECT COUNT(*) FROM trades WHERE {status_cond} AND user_id = :user_id"
+                                ), {'user_id': uid})
+                                total = count_result.scalar() or 0
                                 
-                                if user_id is None:
-                                    logger.debug(f"[TRADE-HISTORY] user_id=None - mengembalikan list kosong (strict isolation)")
-                                else:
-                                    logger.debug(f"[TRADE-HISTORY] Mengambil trade history untuk user_id={user_id} (authorized={is_authorized})")
-                                    
-                                    count_result = session.execute(text(
-                                        f"SELECT COUNT(*) FROM trades WHERE {status_condition} AND user_id = :user_id"
-                                    ), {'user_id': user_id})
-                                    total_trades = count_result.scalar() or 0
-                                    
-                                    result = session.execute(text(
-                                        f"SELECT id, user_id, ticker, signal_type, entry_price, stop_loss, "
-                                        f"take_profit, exit_price, status, signal_time, close_time, result, actual_pl "
-                                        f"FROM trades WHERE {status_condition} AND user_id = :user_id "
-                                        f"ORDER BY COALESCE(close_time, signal_time) DESC "
-                                        f"LIMIT :limit OFFSET :offset"
-                                    ), {'limit': limit, 'offset': offset, 'user_id': user_id})
-                                    
-                                    for row in result:
-                                        trade_data = {
-                                            'id': row[0],
-                                            'user_id': row[1],
-                                            'ticker': row[2],
-                                            'signal_type': row[3],
-                                            'entry_price': float(row[4]) if row[4] else None,
-                                            'stop_loss': float(row[5]) if row[5] else None,
-                                            'take_profit': float(row[6]) if row[6] else None,
-                                            'exit_price': float(row[7]) if row[7] else None,
-                                            'status': row[8],
-                                            'signal_time': row[9].isoformat() if row[9] else None,
-                                            'close_time': row[10].isoformat() if row[10] else None,
-                                            'result': row[11],
-                                            'pnl': float(row[12]) if row[12] else 0.0
-                                        }
-                                        trades_list.append(trade_data)
-                                    
-                                    logger.debug(f"[TRADE-HISTORY] Found {len(trades_list)} trades for user {user_id}")
+                                result = session.execute(text(
+                                    f"SELECT id, user_id, ticker, signal_type, entry_price, stop_loss, "
+                                    f"take_profit, exit_price, status, signal_time, close_time, result, actual_pl "
+                                    f"FROM trades WHERE {status_cond} AND user_id = :user_id "
+                                    f"ORDER BY COALESCE(close_time, signal_time) DESC "
+                                    f"LIMIT :limit OFFSET :offset"
+                                ), {'limit': lim, 'offset': offs, 'user_id': uid})
+                                
+                                trades = []
+                                for row in result:
+                                    trade_data = {
+                                        'id': row[0],
+                                        'user_id': row[1],
+                                        'ticker': row[2],
+                                        'signal_type': row[3],
+                                        'entry_price': float(row[4]) if row[4] else None,
+                                        'stop_loss': float(row[5]) if row[5] else None,
+                                        'take_profit': float(row[6]) if row[6] else None,
+                                        'exit_price': float(row[7]) if row[7] else None,
+                                        'status': row[8],
+                                        'signal_time': row[9].isoformat() if row[9] else None,
+                                        'close_time': row[10].isoformat() if row[10] else None,
+                                        'result': row[11],
+                                        'pnl': float(row[12]) if row[12] else 0.0
+                                    }
+                                    trades.append(trade_data)
                                 
                                 session.close()
+                                return trades, total
+                            except Exception as e:
+                                logger.debug(f"Error in sync_get_trades: {e}")
+                                return [], 0
+                        
+                        try:
+                            offset_val = (page - 1) * limit
+                            if status_filter == 'closed':
+                                status_condition = "status = 'CLOSED'"
+                            elif status_filter == 'open':
+                                status_condition = "status = 'OPEN'"
+                            else:
+                                status_condition = "1=1"
+                            
+                            loop = asyncio.get_event_loop()
+                            trades_list, total_trades = await asyncio.wait_for(
+                                loop.run_in_executor(None, sync_get_trades, user_id, page, limit, status_condition, offset_val),
+                                timeout=5.0
+                            )
+                            logger.debug(f"[TRADE-HISTORY] Found {len(trades_list)} trades for user {user_id}")
+                        except asyncio.TimeoutError:
+                            logger.warning("[TRADE-HISTORY] Query timed out (5s)")
                         except Exception as e:
                             logger.error(f"Error fetching trade history: {e}")
                     
@@ -2721,16 +2775,56 @@ class TradingBotOrchestrator:
             if self.config.TELEGRAM_WEBHOOK_MODE:
                 if self.config.WEBHOOK_URL:
                     logger.info(f"Setting up webhook: {self.config.WEBHOOK_URL}")
-                    try:
-                        success = await self.telegram_bot.setup_webhook(self.config.WEBHOOK_URL)
-                        if success:
-                            logger.info("✅ Webhook setup completed successfully")
-                        else:
-                            logger.error("❌ Webhook setup failed!")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to setup webhook: {e}")
-                        if self.error_handler:
-                            self.error_handler.log_exception(e, "webhook_setup")
+                    webhook_success = False
+                    max_retries = 3
+                    
+                    for attempt in range(max_retries):
+                        try:
+                            success = await self.telegram_bot.setup_webhook(self.config.WEBHOOK_URL)
+                            if success:
+                                logger.info("✅ Webhook setup returned success")
+                                
+                                if self.telegram_bot.app and self.telegram_bot.app.bot:
+                                    try:
+                                        webhook_info = await self.telegram_bot.app.bot.get_webhook_info()
+                                        if webhook_info and webhook_info.url:
+                                            logger.info("=" * 50)
+                                            logger.info("📊 WEBHOOK STATUS VERIFIED")
+                                            logger.info(f"   URL: {webhook_info.url}")
+                                            logger.info(f"   Pending Updates: {webhook_info.pending_update_count}")
+                                            logger.info(f"   Max Connections: {webhook_info.max_connections}")
+                                            if webhook_info.last_error_message:
+                                                logger.warning(f"   Last Error: {webhook_info.last_error_message}")
+                                                logger.warning(f"   Error Date: {webhook_info.last_error_date}")
+                                            logger.info("=" * 50)
+                                            webhook_success = True
+                                            break
+                                        else:
+                                            logger.warning(f"⚠️ Webhook verification failed - URL not set (attempt {attempt + 1}/{max_retries})")
+                                    except Exception as ve:
+                                        logger.warning(f"⚠️ Webhook verification error (attempt {attempt + 1}/{max_retries}): {ve}")
+                                else:
+                                    logger.warning(f"⚠️ Bot app not initialized for verification (attempt {attempt + 1}/{max_retries})")
+                            else:
+                                logger.warning(f"❌ Webhook setup attempt {attempt + 1}/{max_retries} failed")
+                        except Exception as e:
+                            logger.error(f"❌ Webhook setup attempt {attempt + 1}/{max_retries} error: {e}")
+                            if self.error_handler:
+                                self.error_handler.log_exception(e, f"webhook_setup_attempt_{attempt + 1}")
+                        
+                        if attempt < max_retries - 1:
+                            wait_time = (attempt + 1) * 2
+                            logger.info(f"⏳ Waiting {wait_time}s before retry...")
+                            await asyncio.sleep(wait_time)
+                    
+                    if not webhook_success:
+                        logger.error("=" * 60)
+                        logger.error("⚠️ WEBHOOK SETUP FAILED AFTER ALL RETRIES!")
+                        logger.error("=" * 60)
+                        logger.error("Bot may not receive Telegram updates properly.")
+                        logger.error("Check your WEBHOOK_URL is accessible from the internet.")
+                        logger.error(f"Current URL: {self.config.WEBHOOK_URL}")
+                        logger.error("=" * 60)
                 else:
                     logger.error("=" * 60)
                     logger.error("⚠️ WEBHOOK MODE ENABLED BUT NO WEBHOOK_URL!")
