@@ -60,6 +60,14 @@ The bot features a modular architecture for scalability and maintainability, des
 - Enhanced telemetry with cleanup_runs and average_signals_per_user tracking
 - Memory stats logged after each cleanup cycle for monitoring
 
+**Koyeb Anti-Sleep Optimization:**
+- Unified Koyeb detection across config and main (KOYEB_PUBLIC_DOMAIN, KOYEB_REGION, KOYEB_SERVICE_NAME, KOYEB_APP_NAME)
+- Aggressive self-ping interval: 55s for Koyeb, 240s for Replit
+- Multi-endpoint ping strategy: /health, /, /api/health with retry fallback
+- Ultra-light health endpoints: /api/health and /ping for fast response
+- Burst ping mode: extra pings every 10 cycles for Koyeb anti-idle
+- Warning log when Koyeb detected but aggressive mode disabled
+
 ## External Dependencies
 - **Deriv WebSocket API:** For real-time XAUUSD market data.
 - **Telegram Bot API (`python-telegram-bot`):** For all Telegram interactions.
