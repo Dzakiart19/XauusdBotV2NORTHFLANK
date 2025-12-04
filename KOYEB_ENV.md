@@ -114,19 +114,70 @@ MAX_TRADES_PER_DAY=0
 
 ## Troubleshooting
 
-### Bot tidak merespon command?
-1. Cek apakah `TELEGRAM_WEBHOOK_MODE=true`
-2. Cek apakah `KOYEB_PUBLIC_DOMAIN` atau `WEBHOOK_URL` sudah di-set
-3. Pastikan domain sesuai dengan yang di Koyeb dashboard
-4. Cek log di Koyeb untuk error message
+### Bot tidak merespon command sama sekali?
 
-### Bot masih bisa kirim signal tapi tidak merespon?
-Ini berarti webhook tidak ter-setup dengan benar. Pastikan:
-- `KOYEB_PUBLIC_DOMAIN` sudah benar (contoh: `trading-bot-abc123.koyeb.app`)
-- BUKAN `https://...` - hanya domain saja
+**Penyebab umum:**
+1. Environment variables tidak terbaca dengan benar
+2. Webhook belum ter-register ke Telegram
+3. Bot dalam "limited mode"
+
+**Langkah fix:**
+
+1. **Cek log di Koyeb dashboard**
+   - Buka Koyeb > Service > Logs
+   - Cari pesan "REFRESHING ENVIRONMENT CONFIGURATION"
+   - Pastikan terlihat:
+     - Token: ✅ Set
+     - Authorized Users: (harus > 0)
+     - Webhook Mode: ✅ Enabled
+
+2. **Pastikan format environment variables BENAR:**
+   ```
+   TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ
+   AUTHORIZED_USER_IDS=123456789
+   TELEGRAM_WEBHOOK_MODE=true
+   WEBHOOK_URL=https://nama-app.koyeb.app/bot1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ
+   PORT=8000
+   ```
+
+3. **Format WEBHOOK_URL yang BENAR:**
+   ```
+   WEBHOOK_URL=https://DOMAIN/bot<TELEGRAM_TOKEN>
+   ```
+   Contoh:
+   ```
+   WEBHOOK_URL=https://logical-krill-dzeckyete-3968ba8c.koyeb.app/bot7879056603:AAE_hnemqmyUVpl8bPvZLWMSOLbauvWADjQ
+   ```
+
+4. **Re-deploy service** setelah mengubah environment variables
+
+### Website/Dashboard lambat?
+- Ini normal jika bot dalam "limited mode"
+- Cek log apakah ada error saat startup
+- Pastikan semua environment variables sudah di-set
+
+### Bot dalam "limited mode"?
+Ini berarti TELEGRAM_BOT_TOKEN atau AUTHORIZED_USER_IDS tidak terbaca.
+
+**Fix:**
+1. Pastikan TIDAK ada spasi di awal/akhir value
+2. Pastikan TIDAK ada kutip (`"` atau `'`) di value
+3. Re-deploy setelah mengubah environment variables
 
 ### Cara mendapatkan KOYEB_PUBLIC_DOMAIN:
 1. Buka Koyeb dashboard
 2. Pilih service/app anda
 3. Lihat di bagian "Public URL" atau "Domain"
 4. Copy hanya bagian domain (tanpa https://)
+
+### Cara test webhook:
+Buka browser dan akses:
+```
+https://YOUR-DOMAIN.koyeb.app/webhook
+```
+Response yang benar:
+```json
+{"ok": true, "webhook_mode": true, "is_koyeb": true, "config_valid": true, "token_set": true, "bot_initialized": true}
+```
+
+Jika `config_valid: false` atau `bot_initialized: false`, cek environment variables.

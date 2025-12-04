@@ -172,12 +172,26 @@ class TradingBotOrchestrator:
         logger.info("=" * 60)
         logger.info("🔄 REFRESHING ENVIRONMENT CONFIGURATION")
         logger.info("=" * 60)
+        
+        # Debug: tampilkan raw environment variables untuk troubleshooting
+        env_debug = {
+            'TELEGRAM_BOT_TOKEN': '***SET***' if os.getenv('TELEGRAM_BOT_TOKEN') else 'NOT SET',
+            'AUTHORIZED_USER_IDS': os.getenv('AUTHORIZED_USER_IDS', 'NOT SET'),
+            'TELEGRAM_WEBHOOK_MODE': os.getenv('TELEGRAM_WEBHOOK_MODE', 'NOT SET'),
+            'WEBHOOK_URL': os.getenv('WEBHOOK_URL', 'NOT SET')[:50] + '...' if os.getenv('WEBHOOK_URL') else 'NOT SET',
+            'PORT': os.getenv('PORT', 'NOT SET'),
+            'DATABASE_URL': '***SET***' if os.getenv('DATABASE_URL') else 'NOT SET',
+        }
+        logger.info(f"📋 Raw Environment Variables: {env_debug}")
+        
         refresh_result = Config._refresh_secrets()
-        logger.info(f"Token: {'✅ Set' if refresh_result['token_set'] else '❌ NOT SET'}")
-        logger.info(f"Authorized Users: {refresh_result['users_count']}")
+        logger.info(f"Token: {'✅ Set' if refresh_result['token_set'] else '❌ NOT SET'} ({refresh_result.get('token_preview', 'N/A')})")
+        logger.info(f"Authorized Users: {refresh_result['users_count']} users {refresh_result.get('users_list', [])}")
         logger.info(f"Is Koyeb: {'✅ Yes' if refresh_result.get('is_koyeb') else '❌ No'}")
+        logger.info(f"Is Container: {'✅ Yes' if refresh_result.get('is_container') else '❌ No'}")
         logger.info(f"Webhook Mode: {'✅ Enabled' if refresh_result.get('webhook_mode') else '❌ Disabled'}")
-        logger.info(f"Webhook URL: {'✅ Set' if refresh_result.get('webhook_url_set') else '❌ NOT SET'}")
+        logger.info(f"Webhook URL: {'✅ ' + refresh_result.get('webhook_url_preview', 'N/A') if refresh_result.get('webhook_url_set') else '❌ NOT SET'}")
+        logger.info(f"Port: {refresh_result.get('port', 'unknown')}")
         if refresh_result.get('koyeb_domain'):
             logger.info(f"Koyeb Domain: {refresh_result.get('koyeb_domain')}")
         logger.info("=" * 60)
@@ -1343,36 +1357,71 @@ class TradingBotOrchestrator:
                     'message': 'Bot running in degraded mode - memory critical' if is_degraded else 'Bot running in limited mode - set missing environment variables to enable full functionality' if not self.config_valid else 'Bot running normally'
                 }
                 
-                status_code = 200 if self.config_valid and self.running else 503
+                # PENTING: Selalu return 200 untuk health check agar Koyeb tidak restart container
+                # Meskipun bot dalam limited mode atau belum fully running, container masih aktif
+                # Status sebenarnya ada di response body (mode field)
+                # Koyeb akan restart container jika health check gagal, jadi harus selalu 200
+                status_code = 200
                 
                 return web.json_response(health_status, status=status_code)
             
             async def telegram_webhook(request):
+                # Quick response untuk Telegram - harus respond dalam 60 detik
+                # Telegram akan retry jika tidak ada response
+                
                 if not self.config.TELEGRAM_WEBHOOK_MODE:
                     logger.warning("⚠️ Webhook endpoint called but webhook mode is disabled")
-                    return web.json_response({'error': 'Webhook mode is disabled'}, status=400)
+                    return web.json_response({'ok': False, 'error': 'Webhook mode is disabled'}, status=200)
                 
                 if not self.telegram_bot or not self.telegram_bot.app:
-                    logger.error("❌ Webhook called but telegram bot not initialized (running in limited mode?)")
-                    logger.error("Check if TELEGRAM_BOT_TOKEN and AUTHORIZED_USER_IDS are set in environment variables")
-                    return web.json_response({'error': 'Bot not initialized'}, status=503)
+                    # Log detailed error untuk debugging
+                    logger.error("❌ Webhook called but telegram bot not initialized")
+                    logger.error(f"   config_valid={self.config_valid}")
+                    logger.error(f"   token_set={bool(self.config.TELEGRAM_BOT_TOKEN)}")
+                    logger.error(f"   users_count={len(self.config.AUTHORIZED_USER_IDS)}")
+                    logger.error("   Check if TELEGRAM_BOT_TOKEN and AUTHORIZED_USER_IDS are set correctly")
+                    
+                    # Return 200 OK agar Telegram tidak terus retry
+                    # Tapi log error agar kita tahu ada masalah
+                    return web.json_response({
+                        'ok': False, 
+                        'error': 'Bot not initialized - check environment variables',
+                        'debug': {
+                            'config_valid': self.config_valid,
+                            'token_set': bool(self.config.TELEGRAM_BOT_TOKEN),
+                            'users_count': len(self.config.AUTHORIZED_USER_IDS)
+                        }
+                    }, status=200)
                 
                 try:
                     update_data = await request.json()
                     update_id = update_data.get('update_id', 'unknown')
-                    message_text = update_data.get('message', {}).get('text', 'no text')
-                    user_id = update_data.get('message', {}).get('from', {}).get('id', 'unknown')
+                    message = update_data.get('message', {})
+                    callback_query = update_data.get('callback_query', {})
                     
-                    logger.info(f"📨 Webhook received: update_id={update_id}, user={user_id}, message='{message_text}'")
+                    # Extract info from message or callback_query
+                    if message:
+                        message_text = message.get('text', 'no text')
+                        user_id = message.get('from', {}).get('id', 'unknown')
+                    elif callback_query:
+                        message_text = f"callback:{callback_query.get('data', 'unknown')}"
+                        user_id = callback_query.get('from', {}).get('id', 'unknown')
+                    else:
+                        message_text = 'unknown update type'
+                        user_id = 'unknown'
+                    
+                    logger.info(f"📨 Webhook received: update_id={update_id}, user={user_id}, message='{message_text[:50]}'")
                     
                     try:
+                        # Timeout 20 detik (buffer dari 60 detik Telegram limit)
                         await asyncio.wait_for(
                             self.telegram_bot.process_update(update_data),
-                            timeout=25.0
+                            timeout=20.0
                         )
                         logger.info(f"✅ Webhook processed: update_id={update_id}")
                     except asyncio.TimeoutError:
-                        logger.warning(f"⚠️ Webhook processing timeout (25s): update_id={update_id}")
+                        logger.warning(f"⚠️ Webhook processing timeout (20s): update_id={update_id}")
+                        # Process di background tapi tetap return OK ke Telegram
                         asyncio.create_task(self._process_update_background(update_data, update_id))
                         return web.json_response({'ok': True, 'note': 'processing_async'})
                     
@@ -1383,7 +1432,8 @@ class TradingBotOrchestrator:
                     logger.error(f"Request path: {request.path}, Method: {request.method}")
                     if self.error_handler:
                         self.error_handler.log_exception(e, "webhook_endpoint")
-                    return web.json_response({'error': str(e)}, status=500)
+                    # Return 200 OK agar Telegram tidak terus retry
+                    return web.json_response({'ok': False, 'error': str(e)}, status=200)
             
             async def dashboard_page(request):
                 """Serve dashboard web app HTML"""
@@ -2205,24 +2255,31 @@ class TradingBotOrchestrator:
             logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /api/health, /ping, /api/candles, /api/trade-history, /ws/dashboard, /static/*")
             
             webhook_path = None
-            if self.config_valid and self.config.TELEGRAM_BOT_TOKEN:
-                # Register both /webhook (simple) and /bot{token} (standard Telegram format)
-                webhook_path = f"/bot{self.config.TELEGRAM_BOT_TOKEN}"
+            
+            # SELALU register webhook routes jika ada token (meskipun config_valid=False)
+            # Ini penting untuk Koyeb deployment dimana env vars mungkin ter-refresh setelah startup
+            bot_token = self.config.TELEGRAM_BOT_TOKEN
+            if bot_token:
+                webhook_path = f"/bot{bot_token}"
                 app.router.add_post(webhook_path, telegram_webhook)
                 app.router.add_post('/webhook', telegram_webhook)
                 logger.info(f"Webhook routes registered: /webhook and {webhook_path[:20]}...")
-                
-                # Also register GET for webhook status check (Koyeb health check)
-                async def webhook_status(request):
-                    return web.json_response({
-                        'ok': True,
-                        'webhook_mode': self.config.TELEGRAM_WEBHOOK_MODE,
-                        'is_koyeb': self.config.IS_KOYEB,
-                        'bot_initialized': self.telegram_bot is not None and self.telegram_bot.app is not None
-                    })
-                app.router.add_get('/webhook', webhook_status)
             else:
-                logger.info("Webhook route not registered - limited mode or missing bot token")
+                # Fallback: register generic /webhook route yang akan return error
+                app.router.add_post('/webhook', telegram_webhook)
+                logger.warning("Webhook route registered but bot token not set - will return error on webhook calls")
+            
+            # GET endpoint untuk webhook status check (Koyeb health check)
+            async def webhook_status(request):
+                return web.json_response({
+                    'ok': True,
+                    'webhook_mode': self.config.TELEGRAM_WEBHOOK_MODE,
+                    'is_koyeb': self.config.IS_KOYEB,
+                    'config_valid': self.config_valid,
+                    'token_set': bool(self.config.TELEGRAM_BOT_TOKEN),
+                    'bot_initialized': self.telegram_bot is not None and self.telegram_bot.app is not None
+                })
+            app.router.add_get('/webhook', webhook_status)
             
             runner = web.AppRunner(app)
             await runner.setup()

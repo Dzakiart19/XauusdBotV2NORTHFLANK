@@ -72,14 +72,14 @@ ENV MEMORY_WARNING_THRESHOLD_MB=380
 ENV MEMORY_CRITICAL_THRESHOLD_MB=450
 ENV MEMORY_MONITOR_INTERVAL_SECONDS=60
 
-ENV PORT=8080
-EXPOSE 8080
+ENV PORT=8000
+EXPOSE 8000
 
 # ============================================
-# Health Check for Koyeb
+# Health Check for Koyeb - uses PORT env var
 # ============================================
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
 # ============================================
 # Use tini for proper signal handling

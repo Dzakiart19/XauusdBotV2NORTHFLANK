@@ -218,48 +218,66 @@ def _parse_int_list(env_value: str, default_list: list) -> list:
 
 class Config:
     # Critical secrets - di-set sebagai class attributes
-    # Akan di-refresh oleh _refresh_secrets() untuk Koyeb compatibility
-    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
-    AUTHORIZED_USER_IDS = _parse_user_ids(os.getenv('AUTHORIZED_USER_IDS', ''))
-    ID_USER_PUBLIC = _parse_user_ids(os.getenv('ID_USER_PUBLIC', ''))
+    # PENTING: Akan di-refresh oleh _refresh_secrets() saat startup untuk Koyeb compatibility
+    # Koyeb meng-inject env vars SETELAH Python module di-import, jadi perlu di-refresh
+    TELEGRAM_BOT_TOKEN = ''
+    AUTHORIZED_USER_IDS = []
+    ID_USER_PUBLIC = []
+    
+    # Flag untuk tracking apakah secrets sudah di-refresh
+    _secrets_refreshed = False
     
     @classmethod
     def _refresh_secrets(cls):
         """
-        Refresh secrets dan Koyeb environment variables.
-        Dipanggil saat bot startup untuk memastikan semua config terbaca dengan benar.
-        Penting untuk deployment Koyeb dimana env vars mungkin di-inject setelah module import.
+        Refresh ALL secrets dan Koyeb environment variables.
+        HARUS dipanggil saat bot startup untuk memastikan semua config terbaca dengan benar.
+        
+        PENTING untuk deployment Koyeb:
+        - Koyeb meng-inject environment variables SETELAH Python module di-import
+        - Jadi class attributes yang di-set saat import akan kosong
+        - Method ini HARUS dipanggil untuk membaca ulang semua env vars
+        
+        Returns:
+            dict: Status refresh dengan info debug
         """
-        new_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
-        new_users = _parse_user_ids(os.getenv('AUTHORIZED_USER_IDS', ''))
-        new_public = _parse_user_ids(os.getenv('ID_USER_PUBLIC', ''))
+        import sys
         
-        if new_token:
-            cls.TELEGRAM_BOT_TOKEN = new_token
-        if new_users:
-            cls.AUTHORIZED_USER_IDS = new_users
-        if new_public:
-            cls.ID_USER_PUBLIC = new_public
+        # SELALU baca ulang dari environment (jangan check if truthy dulu)
+        cls.TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '').strip()
+        cls.AUTHORIZED_USER_IDS = _parse_user_ids(os.getenv('AUTHORIZED_USER_IDS', ''))
+        cls.ID_USER_PUBLIC = _parse_user_ids(os.getenv('ID_USER_PUBLIC', ''))
         
+        # Koyeb detection - check multiple indicators
         cls.KOYEB_PUBLIC_DOMAIN = os.getenv('KOYEB_PUBLIC_DOMAIN', '')
         cls.KOYEB_REGION = os.getenv('KOYEB_REGION', '')
         cls.KOYEB_SERVICE_NAME = os.getenv('KOYEB_SERVICE_NAME', '')
+        koyeb_app_name = os.getenv('KOYEB_APP_NAME', '')
+        
+        # Juga detect dari hostname atau environment hints
+        hostname = os.getenv('HOSTNAME', '')
+        is_container = os.path.exists('/.dockerenv') or os.getenv('container', '') != ''
+        
         cls.IS_KOYEB = bool(
             cls.KOYEB_PUBLIC_DOMAIN or 
             cls.KOYEB_REGION or 
             cls.KOYEB_SERVICE_NAME or 
-            os.getenv('KOYEB_APP_NAME', '')
+            koyeb_app_name or
+            'koyeb' in hostname.lower()
         )
         
+        # Webhook mode - SELALU baca ulang
         _telegram_webhook_mode_env = os.getenv('TELEGRAM_WEBHOOK_MODE', '')
         if _telegram_webhook_mode_env:
             cls.TELEGRAM_WEBHOOK_MODE = _telegram_webhook_mode_env.lower() == 'true'
         else:
-            cls.TELEGRAM_WEBHOOK_MODE = cls.IS_KOYEB
+            # Auto-detect: enable webhook mode jika running di Koyeb atau container
+            cls.TELEGRAM_WEBHOOK_MODE = cls.IS_KOYEB or is_container
         
+        # Webhook URL - SELALU baca ulang dan rebuild
         _webhook_url_env = os.getenv('WEBHOOK_URL', '')
         if _webhook_url_env:
-            cls.WEBHOOK_URL = _webhook_url_env
+            cls.WEBHOOK_URL = _webhook_url_env.strip()
         elif cls.KOYEB_PUBLIC_DOMAIN and cls.TELEGRAM_BOT_TOKEN:
             cls.WEBHOOK_URL = f"https://{cls.KOYEB_PUBLIC_DOMAIN}/bot{cls.TELEGRAM_BOT_TOKEN}"
         elif cls.KOYEB_PUBLIC_DOMAIN:
@@ -267,15 +285,40 @@ class Config:
         else:
             cls.WEBHOOK_URL = ''
         
-        return {
+        # PORT juga perlu di-refresh untuk Koyeb
+        cls.HEALTH_CHECK_PORT = _get_int_env('PORT', '8000')
+        
+        # Mark as refreshed
+        cls._secrets_refreshed = True
+        
+        # Debug info untuk troubleshooting
+        debug_info = {
             'token_set': bool(cls.TELEGRAM_BOT_TOKEN),
+            'token_preview': f"{cls.TELEGRAM_BOT_TOKEN[:10]}..." if cls.TELEGRAM_BOT_TOKEN else 'NOT SET',
             'users_count': len(cls.AUTHORIZED_USER_IDS),
+            'users_list': cls.AUTHORIZED_USER_IDS[:3] if cls.AUTHORIZED_USER_IDS else [],
             'public_count': len(cls.ID_USER_PUBLIC),
             'is_koyeb': cls.IS_KOYEB,
+            'is_container': is_container,
             'webhook_mode': cls.TELEGRAM_WEBHOOK_MODE,
             'webhook_url_set': bool(cls.WEBHOOK_URL),
-            'koyeb_domain': cls.KOYEB_PUBLIC_DOMAIN[:30] + '...' if len(cls.KOYEB_PUBLIC_DOMAIN) > 30 else cls.KOYEB_PUBLIC_DOMAIN
+            'webhook_url_preview': cls.WEBHOOK_URL[:50] + '...' if len(cls.WEBHOOK_URL) > 50 else cls.WEBHOOK_URL,
+            'koyeb_domain': cls.KOYEB_PUBLIC_DOMAIN[:30] + '...' if len(cls.KOYEB_PUBLIC_DOMAIN) > 30 else cls.KOYEB_PUBLIC_DOMAIN,
+            'port': cls.HEALTH_CHECK_PORT,
+            'hostname': hostname[:20] if hostname else 'unknown'
         }
+        
+        return debug_info
+    
+    @classmethod
+    def ensure_secrets_loaded(cls):
+        """
+        Pastikan secrets sudah di-load. Panggil ini sebelum mengakses config values.
+        Berguna untuk lazy loading di Koyeb environment.
+        """
+        if not cls._secrets_refreshed:
+            cls._refresh_secrets()
+        return cls._secrets_refreshed
     
     # Koyeb deployment detection - auto-enable webhook mode
     KOYEB_PUBLIC_DOMAIN = os.getenv('KOYEB_PUBLIC_DOMAIN', '')
@@ -680,7 +723,7 @@ class Config:
     
     DRY_RUN = os.getenv('DRY_RUN', 'false').lower() == 'true'
     
-    HEALTH_CHECK_PORT = _get_int_env('PORT', '8080')
+    HEALTH_CHECK_PORT = _get_int_env('PORT', '8000')
     HEALTH_CHECK_INTERVAL = _get_int_env('HEALTH_CHECK_INTERVAL', '120')
     HEALTH_CHECK_TIMEOUT = _get_int_env('HEALTH_CHECK_TIMEOUT', '30')
     HEALTH_CHECK_LONG_TIMEOUT = _get_int_env('HEALTH_CHECK_LONG_TIMEOUT', '35')
