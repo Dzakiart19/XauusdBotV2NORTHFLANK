@@ -82,10 +82,18 @@ ADMIN_USER_ID=your_admin_telegram_id
 
 ## Recent Changes (December 2025)
 
+**Major Code Cleanup & Optimization (Dec 4):**
+- Removed 15 unused command handlers from telegram_bot.py (~1234 lines removed)
+- Deleted unused modules: bot/backtester.py, bot/pair_config.py
+- Removed test folder and coverage reports (htmlcov/, tests/, pytest.ini)
+- Cleaned up old log files and test database files
+- Bot now focused on 10 essential commands only
+- File size reduced significantly for faster startup and less memory usage
+
 **Lite Mode for Koyeb Free Tier (Dec 4):**
 - Removed matplotlib/mplfinance dependencies (~100MB saved)
 - Chart generator converted to stub (no-op mode)
-- Reduced commands from 24 to 8 essential ones
+- Reduced commands from 24 to 10 essential ones
 - Simplified help and start messages
 - Focus on core features: signals + trial + buy access
 - SignalEventStore syncs with webapp for charts
