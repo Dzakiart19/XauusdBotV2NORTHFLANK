@@ -45,6 +45,21 @@ The bot features a modular architecture for scalability and maintainability, des
 
 ## Recent Changes (December 2025)
 
+**Blocking Database Operations Fix (Dec 4):**
+- Fixed critical issue where synchronous database operations blocked the event loop, causing 20+ second response times
+- Health check handler now uses run_in_executor() with 3-second timeout for database queries
+- Dashboard stats endpoint uses same async pattern for database queries
+- Session lifecycle properly managed with try/finally blocks to prevent connection pool exhaustion
+- Inner try/except for session acquisition prevents executor crashes from bubbling up
+- All database operations now gracefully degrade with safe default values on errors
+
+**Webhook Verification Enhancement (Dec 4):**
+- Added robust webhook verification after setup with retry logic (3 attempts with exponential backoff)
+- Webhook success only marked True after URL is confirmed registered with Telegram API
+- Detailed logging of webhook status including URL, pending updates, max connections, and last error info
+- Proper null checks for telegram_bot.app.bot before accessing webhook info
+- Verification failures trigger retries with actionable warning logs
+
 **Koyeb Deployment Environment Fix (Dec 4):**
 - Fixed critical bug where environment variables not loading correctly on Koyeb
 - Root cause: Config class attributes evaluated at import time before Koyeb injects env vars
