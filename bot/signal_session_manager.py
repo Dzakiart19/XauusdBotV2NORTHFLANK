@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, Dict, Callable, List
 from dataclasses import dataclass, field
 import pytz
-from bot.logger import setup_logger
+from bot.logger import setup_logger, mask_user_id
 from config import Config
 
 logger = setup_logger('SignalSessionManager')
@@ -128,9 +128,12 @@ class SignalSessionManager:
         duration = (datetime.now(pytz.UTC) - session.started_at).total_seconds()
         icon = "🤖" if session.signal_source == "auto" else "👤"
         
+        masked_uid = mask_user_id(user_id)
+        entry = session.entry_price if hasattr(session, 'entry_price') else 0
         logger.info(
-            f"⚡ FORCE CLOSE sesi - User:{user_id} {icon} {session.signal_source.upper()} "
-            f"Tipe:{session.signal_type} | Alasan:{reason} | Durasi:{duration:.1f}s"
+            f"⚡ FORCE CLOSE sesi - User:{masked_uid} {icon} {session.signal_source.upper()} "
+            f"Tipe:{session.signal_type} Entry:${entry:.2f} | Alasan:{reason} | Durasi:{duration:.1f}s | "
+            f"SessionID:{session.signal_id[:8] if session.signal_id else 'N/A'}"
         )
         
         return session

@@ -2728,6 +2728,12 @@ class TradingBot:
     
     async def _check_position_eligibility(self, ctx: MonitoringContext) -> Tuple[bool, Optional[str]]:
         """Cek apakah user eligible untuk sinyal baru. Returns (can_proceed, block_reason)."""
+        # CRITICAL: Early check position_tracker FIRST sebelum SignalSessionManager
+        # Ini mencegah session dibuat sia-sia jika user sudah punya active position
+        if await self.position_tracker.has_active_position_async(ctx.chat_id):
+            logger.debug(f"⏸️ Signal blocked (EARLY) - active position exists | User:{mask_user_id(ctx.chat_id)}")
+            return False, "active_position_early_check"
+        
         if self.signal_session_manager:
             can_create, block_reason = await self.signal_session_manager.can_create_signal(
                 ctx.chat_id, 'auto', position_tracker=self.position_tracker
@@ -2736,13 +2742,8 @@ class TradingBot:
                 logger.debug(f"⏸️ Signal blocked - {block_reason} | User:{mask_user_id(ctx.chat_id)} | Will recheck in 0.5s")
                 await asyncio.sleep(0.5)
                 return False, block_reason
-        elif await self.position_tracker.has_active_position_async(ctx.chat_id):
-            logger.debug(f"⏸️ Signal blocked - active position exists | User:{mask_user_id(ctx.chat_id)} | Will recheck in 0.5s")
-            await asyncio.sleep(0.5)
-            return False, "active position exists"
-        else:
-            logger.debug(f"✅ No active position - ready for new signal | User:{mask_user_id(ctx.chat_id)}")
         
+        logger.debug(f"✅ No active position - ready for new signal | User:{mask_user_id(ctx.chat_id)}")
         return True, None
     
     def _check_candle_filter(self, ctx: MonitoringContext, df_m1: pd.DataFrame) -> bool:

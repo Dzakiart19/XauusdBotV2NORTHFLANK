@@ -3250,7 +3250,7 @@ class TradingStrategy:
                     reason = f"⚠️ Volume SCALP VERY LOW: [{volume_ratio:.1%}] - hanya 5% reduction (Deriv data terbatas){vwap_info}{increasing_info}"
                     confidence_multiplier = 0.95
                 
-                logger.info(reason)
+                logger.debug(reason)  # Reduce spam dari volume warnings
                 return True, reason, confidence_multiplier
             
         except (StrategyError, Exception) as e:

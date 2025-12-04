@@ -3475,13 +3475,17 @@ def setup_default_tasks(scheduler: TaskScheduler, bot_components: Dict):
         interval_seconds=300
     )
     
-    position_check_interval = 5 if Config.FREE_TIER_MODE else 10
+    # Gunakan config override jika di-set (> 0), else fallback ke default FREE_TIER_MODE
+    if Config.POSITION_MONITORING_INTERVAL > 0:
+        position_check_interval = Config.POSITION_MONITORING_INTERVAL
+    else:
+        position_check_interval = 5 if Config.FREE_TIER_MODE else 10
     scheduler.add_interval_task(
         'position_monitoring',
         monitor_positions,
         interval_seconds=position_check_interval
     )
-    logger.info(f"Position monitoring interval: {position_check_interval}s (FREE_TIER_MODE={Config.FREE_TIER_MODE})")
+    logger.info(f"Position monitoring interval: {position_check_interval}s (FREE_TIER_MODE={Config.FREE_TIER_MODE}, override={Config.POSITION_MONITORING_INTERVAL})")
     
     scheduler.add_interval_task(
         'periodic_gc',

@@ -352,6 +352,7 @@ class Config:
     else:
         WEBHOOK_URL = ''
     FREE_TIER_MODE = os.getenv('FREE_TIER_MODE', 'true').lower() == 'true'
+    POSITION_MONITORING_INTERVAL = _get_int_env('POSITION_MONITORING_INTERVAL', '0')  # 0 = use default based on FREE_TIER_MODE
     TICK_LOG_SAMPLE_RATE = _get_int_env('TICK_LOG_SAMPLE_RATE', '30')
     EMA_PERIODS = _parse_int_list(os.getenv('EMA_PERIODS', '5,20,50'), [5, 20, 50])
     
