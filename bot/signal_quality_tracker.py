@@ -1132,30 +1132,41 @@ class SignalQualityTracker:
             return 'C'
     
     def should_block_signal(self, signal_params: Dict[str, Any], 
-                           min_grade: str = 'C', 
-                           min_win_rate: float = 40.0) -> Tuple[bool, str]:
+                           min_grade: str = 'D', 
+                           min_win_rate: float = 30.0) -> Tuple[bool, str]:
         """
         Cek apakah signal harus di-block berdasarkan quality grade dan win rate.
         
+        PENTING: Untuk mode unlimited signal, blocking di-relax:
+        - Default min_grade = 'D' (sebelumnya 'C')
+        - Default min_win_rate = 30.0 (sebelumnya 40.0)
+        - Grade F tetap di-block untuk kualitas sangat rendah
+        
         Args:
             signal_params: Dict dengan parameter signal
-            min_grade: Minimum grade yang diperbolehkan (default 'C')
-            min_win_rate: Minimum win rate persen (default 40.0)
+            min_grade: Minimum grade yang diperbolehkan (default 'D')
+            min_win_rate: Minimum win rate persen (default 30.0)
         
         Returns:
             Tuple (should_block: bool, reason: str)
         """
         try:
             if self.config:
-                min_grade = getattr(self.config, 'MIN_SIGNAL_QUALITY_GRADE', 'C')
-                min_win_rate = getattr(self.config, 'MIN_WIN_RATE_PERCENT', 40.0)
+                min_grade = getattr(self.config, 'MIN_SIGNAL_QUALITY_GRADE', 'D')
+                min_win_rate = getattr(self.config, 'MIN_WIN_RATE_PERCENT', 30.0)
+                
+                signal_cooldown = getattr(self.config, 'SIGNAL_COOLDOWN_SECONDS', 60)
+                if signal_cooldown == 0:
+                    logger.debug("📡 Unlimited signal mode detected - quality check relaxed")
+                    min_grade = 'F'
+                    min_win_rate = 0.0
             
             grade = self.get_quality_grade(signal_params)
             signal_params['grade'] = grade
             
             grade_order = {'A': 5, 'B': 4, 'C': 3, 'D': 2, 'F': 1}
             signal_grade_value = grade_order.get(grade, 0)
-            min_grade_value = grade_order.get(min_grade, 3)
+            min_grade_value = grade_order.get(min_grade, 2)
             
             if signal_grade_value < min_grade_value:
                 reason = f"LOW_QUALITY_GRADE: Signal grade {grade} < minimum {min_grade}"
@@ -1165,16 +1176,17 @@ class SignalQualityTracker:
             rule_name = signal_params.get('rule_name', 'UNKNOWN')
             historical_accuracy = self.get_accuracy_by_type(rule_name, last_n_signals=30)
             
-            if historical_accuracy >= 0:
+            if historical_accuracy >= 0 and min_win_rate > 0:
                 win_rate_percent = historical_accuracy * 100
                 if win_rate_percent < min_win_rate:
                     reason = f"LOW_WIN_RATE: {rule_name} win rate {win_rate_percent:.1f}% < minimum {min_win_rate}%"
                     logger.info(f"🚫 Signal blocked - {reason}")
                     return True, reason
             
+            win_rate_display = historical_accuracy * 100 if historical_accuracy >= 0 else 0
             logger.debug(
                 f"✅ Signal passed quality check: grade={grade}, "
-                f"win_rate={historical_accuracy*100:.1f}% (min={min_win_rate}%)"
+                f"win_rate={win_rate_display:.1f}% (min={min_win_rate}%)"
             )
             return False, ""
             

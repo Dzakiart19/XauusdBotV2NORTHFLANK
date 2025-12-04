@@ -397,7 +397,7 @@ class Config:
     VOLUME_BYPASS_THRESHOLD = _get_float_env('VOLUME_BYPASS_THRESHOLD', '0.5')
     
     OPTIMIZATION_INTERVAL_HOURS = _get_int_env('OPTIMIZATION_INTERVAL_HOURS', '6')
-    MIN_SIGNAL_QUALITY_GRADE = os.getenv('MIN_SIGNAL_QUALITY_GRADE', 'C').upper()
+    MIN_SIGNAL_QUALITY_GRADE = os.getenv('MIN_SIGNAL_QUALITY_GRADE', 'D').upper()  # Changed from 'C' to 'D' to allow more signals
     MIN_WIN_RATE_PERCENT = _get_float_env('MIN_WIN_RATE_PERCENT', '40.0')
     
     PERFORMANCE_SAMPLE_RATE = _get_int_env('PERFORMANCE_SAMPLE_RATE', '100')
