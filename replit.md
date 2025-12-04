@@ -45,6 +45,20 @@ The bot features a modular architecture for scalability and maintainability, des
 
 ## Recent Changes (December 2025)
 
+**Quick Health Server Pattern for Koyeb (Dec 4):**
+- Added background thread-based quick health server that starts IMMEDIATELY at module load
+- Runs in separate thread with its own event loop before any heavy imports
+- Responds to /health, /ping, /api/health, and / endpoints instantly
+- Allows Koyeb health checks to pass while bot initializes (60+ second initialization)
+- Main health server takes over once fully initialized with proper thread cleanup
+- Uses threading.Event for clean stop signaling and join(timeout=3.0) for cleanup
+
+**Non-Blocking Webhook Handler (Dec 4):**
+- Webhook handler now responds immediately with 200 OK to Telegram
+- All update processing happens in background via asyncio.create_task
+- Eliminates timeout issues during high-latency operations
+- Logs minimal info before responding for quick turnaround
+
 **Blocking Database Operations Fix (Dec 4):**
 - Fixed critical issue where synchronous database operations blocked the event loop, causing 20+ second response times
 - Health check handler now uses run_in_executor() with 3-second timeout for database queries
