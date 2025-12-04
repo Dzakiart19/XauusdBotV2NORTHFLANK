@@ -2286,8 +2286,11 @@ class TradingBot:
                 "/monitor - Mulai monitoring sinyal\n"
                 "/stopmonitor - Stop monitoring\n"
                 "/getsignal - Dapatkan sinyal manual\n"
+                "/status - Lihat posisi aktif dan status\n"
                 "/riwayat - Lihat riwayat trading\n"
                 "/performa - Statistik performa\n\n"
+                "*🔧 System Commands:*\n"
+                "/optimize - Status auto-optimizer\n\n"
                 "*🔑 Access Commands:*\n"
                 "/trialstatus - Status trial Anda\n"
                 "/buyaccess - Info beli akses\n\n"
@@ -4491,6 +4494,175 @@ class TradingBot:
             except (TelegramError, asyncio.CancelledError):
                 pass
 
+    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command untuk melihat status trading dan posisi aktif user."""
+        if update.effective_user is None or update.message is None or update.effective_chat is None:
+            return
+        
+        user = update.effective_user
+        message = update.message
+        chat = update.effective_chat
+        
+        if not await self._check_user_rate_limit(user.id):
+            try:
+                await message.reply_text("⚠️ Anda mengirim terlalu banyak request. Silakan tunggu sebentar.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+            return
+        
+        try:
+            if self.user_manager:
+                self.user_manager.update_user_activity(user.id)
+            
+            response_lines = ["📊 *Status Trading Anda*\n"]
+            
+            connection_status = "🔴 Terputus"
+            if self.market_data:
+                try:
+                    conn_state = self.market_data.get_connection_state()
+                    if conn_state.value == "CONNECTED":
+                        connection_status = "🟢 Terhubung"
+                    elif conn_state.value == "CONNECTING":
+                        connection_status = "🟡 Menghubungkan..."
+                    elif conn_state.value == "RECONNECTING":
+                        connection_status = "🟡 Menghubungkan ulang..."
+                    else:
+                        connection_status = "🔴 Terputus"
+                except (AttributeError, TypeError):
+                    connection_status = "⚪ Tidak diketahui"
+            
+            response_lines.append(f"*📡 Koneksi:* {connection_status}")
+            
+            is_monitoring = chat.id in self.monitoring_chats if self.monitoring_chats else False
+            monitoring_status = "✅ Aktif" if is_monitoring else "❌ Tidak Aktif"
+            response_lines.append(f"*📈 Monitoring:* {monitoring_status}")
+            
+            last_update_text = "Tidak ada data"
+            if self.market_data and hasattr(self.market_data, 'last_data_received') and self.market_data.last_data_received:
+                try:
+                    now = datetime.now()
+                    last_data = self.market_data.last_data_received
+                    if last_data.tzinfo:
+                        now = datetime.now(pytz.UTC)
+                    seconds_ago = (now - last_data).total_seconds()
+                    
+                    if seconds_ago < 60:
+                        last_update_text = f"{int(seconds_ago)} detik lalu"
+                    elif seconds_ago < 3600:
+                        last_update_text = f"{int(seconds_ago // 60)} menit lalu"
+                    else:
+                        last_update_text = f"{int(seconds_ago // 3600)} jam lalu"
+                except (AttributeError, TypeError):
+                    pass
+            
+            response_lines.append(f"*🕐 Update Terakhir:* {last_update_text}")
+            response_lines.append("")
+            
+            user_positions = {}
+            if self.position_tracker and hasattr(self.position_tracker, 'active_positions'):
+                user_positions = self.position_tracker.active_positions.get(user.id, {})
+            
+            if user_positions:
+                current_price = None
+                if self.market_data:
+                    try:
+                        current_price = await self.market_data.get_current_price()
+                    except (AttributeError, TypeError, asyncio.CancelledError):
+                        pass
+                
+                position_count = len(user_positions)
+                response_lines.append(f"*💼 Posisi Aktif:* {position_count} posisi\n")
+                
+                for pos_id, pos in user_positions.items():
+                    try:
+                        signal_type = pos.get('signal_type', 'UNKNOWN')
+                        entry_price = pos.get('entry_price', 0.0)
+                        stop_loss = pos.get('stop_loss', 0.0)
+                        take_profit = pos.get('take_profit', 0.0)
+                        opened_at = pos.get('opened_at')
+                        
+                        response_lines.append(f"├─ {signal_type} @${entry_price:.2f}")
+                        response_lines.append(f"├─ SL: ${stop_loss:.2f} | TP: ${take_profit:.2f}")
+                        
+                        if current_price and entry_price > 0:
+                            if signal_type == 'BUY':
+                                pl_value = current_price - entry_price
+                            else:
+                                pl_value = entry_price - current_price
+                            
+                            pips = abs(pl_value) * 100
+                            pl_sign = "+" if pl_value >= 0 else ""
+                            pl_emoji = "🟢" if pl_value >= 0 else "🔴"
+                            response_lines.append(f"├─ {pl_emoji} P/L: {pl_sign}${pl_value:.2f} ({pl_sign}{pips:.0f} pips)")
+                        
+                        if opened_at:
+                            try:
+                                now_utc = datetime.now(pytz.UTC)
+                                if isinstance(opened_at, str):
+                                    opened_at = datetime.fromisoformat(opened_at.replace('Z', '+00:00'))
+                                if opened_at.tzinfo is None:
+                                    opened_at = pytz.UTC.localize(opened_at)
+                                
+                                duration_seconds = (now_utc - opened_at).total_seconds()
+                                if duration_seconds < 60:
+                                    duration_text = f"{int(duration_seconds)} detik lalu"
+                                elif duration_seconds < 3600:
+                                    duration_text = f"{int(duration_seconds // 60)} menit lalu"
+                                else:
+                                    duration_text = f"{int(duration_seconds // 3600)} jam lalu"
+                                response_lines.append(f"└─ Sejak: {duration_text}")
+                            except (ValueError, TypeError, AttributeError):
+                                response_lines.append("└─ Sejak: -")
+                        else:
+                            response_lines.append("└─ Sejak: -")
+                        
+                        response_lines.append("")
+                    except (KeyError, TypeError, AttributeError) as pos_err:
+                        logger.debug(f"Error parsing position {pos_id}: {pos_err}")
+                        continue
+            else:
+                response_lines.append("*💼 Posisi Aktif:* Tidak ada")
+            
+            response_lines.append("\n_Gunakan /getsignal untuk request sinyal baru_")
+            
+            response_text = "\n".join(response_lines)
+            await message.reply_text(response_text, parse_mode='Markdown')
+            logger.info(f"Status command executed for user {mask_user_id(user.id)}")
+                
+        except asyncio.CancelledError:
+            logger.info(f"Status command cancelled for user {mask_user_id(user.id)}")
+            raise
+        except RetryAfter as e:
+            logger.warning(f"Rate limit pada status command: retry setelah {e.retry_after}s")
+        except BadRequest as e:
+            await self._handle_bad_request(chat.id, e, context="status_command")
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except ChatMigrated as e:
+            await self._handle_chat_migrated(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network/timeout error pada status command: {e}")
+            try:
+                await message.reply_text("⏳ Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except Conflict as e:
+            await self._handle_conflict_error(e)
+        except InvalidToken as e:
+            await self._handle_unauthorized_error(e)
+        except TelegramError as e:
+            logger.error(f"Telegram error pada status command: {e}")
+            try:
+                await message.reply_text("❌ Error menampilkan status trading.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Data error pada status command: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await message.reply_text("❌ Error menampilkan status trading.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+
     async def initialize(self):
         self._is_shutting_down = False
         logger.info("🔄 Reset shutdown flag for fresh start")
@@ -4530,6 +4702,7 @@ class TradingBot:
         self.app.add_handler(CommandHandler("riwayat", self.riwayat_command))
         self.app.add_handler(CommandHandler("performa", self.performa_command))
         self.app.add_handler(CommandHandler("optimize", self.optimize_command))
+        self.app.add_handler(CommandHandler("status", self.status_command))
         
         self.app.add_error_handler(self._handle_telegram_error)
         logger.info("✅ Global error handler registered for Telegram updates")
