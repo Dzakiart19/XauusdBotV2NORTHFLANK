@@ -37,7 +37,18 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **Indicators:** EMA (5, 10, 20, 50), RSI (14), Stochastic (K=14, D=3), ATR (14), MACD (12,26,9), Volume, Twin Range Filter, Market Bias CEREBR. Includes advanced features like RSI Divergence, ATR Volatility Zones, and Adaptive Smoothed RSI.
 - **Risk Management:** Fixed SL ($1 per trade), dynamic TP (1.45x-2.50x R:R), max spread (5 pips), risk per trade (0.5%), and fixed lot size at 0.01.
 - **Access Control:** Private bot with dual-tier access and a trial system, with strict per-user data isolation.
-- **Telegram Commands:** Comprehensive admin and user commands, limited to 10 essential commands.
+- **Telegram Commands:** 11 command yang tersedia:
+  - `/start` - Memulai bot dan aktivasi user
+  - `/help` - Menampilkan bantuan dan daftar command
+  - `/monitor` - Mulai monitoring sinyal trading real-time
+  - `/stopmonitor` - Menghentikan monitoring sinyal
+  - `/getsignal` - Mendapatkan sinyal trading manual
+  - `/riwayat` - Melihat riwayat trading terakhir
+  - `/performa` - Statistik performa trading (7d, 30d, all-time)
+  - `/trialstatus` - Melihat status trial/akses user
+  - `/buyaccess` - Informasi berlangganan premium
+  - `/riset` - Reset database trading (Admin only)
+  - `/optimize` - Melihat status auto-optimizer dan parameter trading
 - **Anti-Duplicate Protection:** Two-phase cache pattern with hash-based tracking for signal deduplication.
 - **Candle Data Persistence:** Stores M1, M5, and H1 candles, including a smart H1 candle bootstrap.
 - **Bot Stability:** Hang detection, health monitors, optimized Telegram polling, and a global error handler.
@@ -47,6 +58,10 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **Timezone WIB:** Web dashboard menampilkan waktu dalam zona waktu WIB (UTC+7) untuk user Indonesia.
 
 ## Recent Changes (December 2024)
+- Implementasi command `/optimize` untuk melihat status auto-optimizer dan parameter trading
+- Perbaikan duplicate method `should_run_optimization` di auto_optimizer.py
+- Optimasi ukuran log files untuk menghemat storage Koyeb (dari 2.2M ke 524K)
+- Update dokumentasi command (11 command tersedia)
 - Fixed stuck task detection to skip background tasks that are designed to run continuously
 - Reduced "LONG TASK" warning spam for legitimate background processes
 - Added WIB timezone conversion to web dashboard (formatTime/formatTimeShort functions)
