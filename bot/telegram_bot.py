@@ -1,6 +1,7 @@
 import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.request import HTTPXRequest
 from telegram.error import (
     TelegramError, NetworkError, TimedOut, RetryAfter, BadRequest,
     Forbidden, Conflict, ChatMigrated, InvalidToken
@@ -2633,6 +2634,158 @@ class TradingBot:
             except (TelegramError, asyncio.CancelledError):
                 pass
     
+    async def dashboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command handler untuk /dashboard - Memulai real-time dashboard"""
+        if update.effective_user is None or update.message is None or update.effective_chat is None:
+            return
+        
+        user = update.effective_user
+        message = update.message
+        chat = update.effective_chat
+        
+        if not await self._check_user_rate_limit(user.id):
+            try:
+                await message.reply_text("⚠️ Anda mengirim terlalu banyak request. Silakan tunggu sebentar.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+            return
+        
+        try:
+            if not self.is_authorized(user.id):
+                return
+            
+            chat_id = chat.id
+            
+            if self.dashboard_enabled.get(chat_id, False):
+                await message.reply_text("⚠️ Dashboard sudah berjalan. Gunakan /stopdashboard untuk menghentikan.")
+                return
+            
+            dashboard_content = await self._render_dashboard_message(chat_id)
+            
+            sent_message = await message.reply_text(dashboard_content, parse_mode='Markdown')
+            
+            async with self._realtime_dashboard_lock:
+                self.dashboard_enabled[chat_id] = True
+                self.dashboard_messages[chat_id] = sent_message.message_id
+                self._dashboard_last_hash[chat_id] = ""
+            
+            dashboard_task = asyncio.create_task(self._realtime_dashboard_update_loop(chat_id))
+            self.dashboard_tasks[chat_id] = dashboard_task
+            
+            logger.info(f"📊 Dashboard command started for user {mask_user_id(user.id)}")
+            
+        except asyncio.CancelledError:
+            logger.info(f"Dashboard command cancelled for user {mask_user_id(user.id)}")
+            raise
+        except RetryAfter as e:
+            logger.warning(f"Rate limit pada dashboard command: retry setelah {e.retry_after}s")
+        except BadRequest as e:
+            await self._handle_bad_request(chat.id, e, context="dashboard_command")
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except ChatMigrated as e:
+            await self._handle_chat_migrated(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network/timeout error pada dashboard command: {e}")
+            try:
+                await message.reply_text("⏳ Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except Conflict as e:
+            await self._handle_conflict_error(e)
+        except InvalidToken as e:
+            await self._handle_unauthorized_error(e)
+        except TelegramError as e:
+            logger.error(f"Telegram error pada dashboard command: {e}")
+            try:
+                await message.reply_text("❌ Error memulai dashboard. Silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (ValueError, TypeError, AttributeError, KeyError, RuntimeError) as e:
+            logger.error(f"Error tidak terduga pada dashboard command: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await message.reply_text("❌ Error memulai dashboard. Silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+    
+    async def stopdashboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command handler untuk /stopdashboard - Menghentikan real-time dashboard"""
+        if update.effective_user is None or update.message is None or update.effective_chat is None:
+            return
+        
+        user = update.effective_user
+        message = update.message
+        chat = update.effective_chat
+        
+        if not await self._check_user_rate_limit(user.id):
+            try:
+                await message.reply_text("⚠️ Anda mengirim terlalu banyak request. Silakan tunggu sebentar.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+            return
+        
+        try:
+            if not self.is_authorized(user.id):
+                return
+            
+            chat_id = chat.id
+            
+            if not self.dashboard_enabled.get(chat_id, False):
+                await message.reply_text("⚠️ Tidak ada dashboard yang berjalan.")
+                return
+            
+            async with self._realtime_dashboard_lock:
+                self.dashboard_enabled[chat_id] = False
+            
+            task = self.dashboard_tasks.pop(chat_id, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            
+            async with self._realtime_dashboard_lock:
+                self.dashboard_messages.pop(chat_id, None)
+                self._dashboard_last_hash.pop(chat_id, None)
+            
+            await message.reply_text("🛑 Dashboard dihentikan.")
+            logger.info(f"📊 Dashboard stopped for user {mask_user_id(user.id)}")
+            
+        except asyncio.CancelledError:
+            logger.info(f"Stopdashboard command cancelled for user {mask_user_id(user.id)}")
+            raise
+        except RetryAfter as e:
+            logger.warning(f"Rate limit pada stopdashboard command: retry setelah {e.retry_after}s")
+        except BadRequest as e:
+            await self._handle_bad_request(chat.id, e, context="stopdashboard_command")
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except ChatMigrated as e:
+            await self._handle_chat_migrated(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network/timeout error pada stopdashboard command: {e}")
+            try:
+                await message.reply_text("⏳ Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except Conflict as e:
+            await self._handle_conflict_error(e)
+        except InvalidToken as e:
+            await self._handle_unauthorized_error(e)
+        except TelegramError as e:
+            logger.error(f"Telegram error pada stopdashboard command: {e}")
+            try:
+                await message.reply_text("❌ Error menghentikan dashboard. Silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (ValueError, TypeError, AttributeError, KeyError, RuntimeError) as e:
+            logger.error(f"Error tidak terduga pada stopdashboard command: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await message.reply_text("❌ Error menghentikan dashboard. Silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+
     async def _check_daily_summary_pause(self, ctx: MonitoringContext) -> bool:
         """Cek apakah perlu pause untuk daily summary. Returns True jika harus skip."""
         if not (self.alert_system and self.alert_system.is_sending_daily_summary()):
@@ -4775,7 +4928,22 @@ class TradingBot:
             logger.error("Telegram bot token not configured!")
             return False
         
-        self.app = Application.builder().token(self.config.TELEGRAM_BOT_TOKEN).build()
+        request = HTTPXRequest(
+            connection_pool_size=8,
+            read_timeout=30.0,
+            write_timeout=30.0,
+            connect_timeout=30.0,
+            pool_timeout=30.0
+        )
+        
+        self.app = (
+            Application.builder()
+            .token(self.config.TELEGRAM_BOT_TOKEN)
+            .request(request)
+            .get_updates_request(request)
+            .build()
+        )
+        logger.info("✅ Application built with properly initialized HTTPXRequest")
         
         if self.signal_session_manager:
             self.signal_session_manager.register_event_handler('on_session_end', self._on_session_end_handler)
@@ -4807,6 +4975,9 @@ class TradingBot:
         self.app.add_handler(CommandHandler("performa", self.performa_command))
         self.app.add_handler(CommandHandler("optimize", self.optimize_command))
         self.app.add_handler(CommandHandler("status", self.status_command))
+        self.app.add_handler(CommandHandler("dashboard", self.dashboard_command))
+        self.app.add_handler(CommandHandler("stopdashboard", self.stopdashboard_command))
+        logger.info("✅ Dashboard command handlers registered (/dashboard, /stopdashboard)")
         
         self.app.add_error_handler(self._handle_telegram_error)
         logger.info("✅ Global error handler registered for Telegram updates")
