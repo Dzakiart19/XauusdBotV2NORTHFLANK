@@ -1,18 +1,31 @@
-# XAUUSD Trading Bot Pro V2
+# XAUUSD Trading Bot Lite
 
 ## Overview
-This project is an automated Telegram-based trading bot for XAUUSD, providing real-time signals, automatic position tracking, and trade outcome notifications. It aims to deliver 24/7 unlimited signals, robust risk management, and performance tracking. Key capabilities include advanced chart generation with technical indicators, a refined dual-mode (Auto/Manual) trading strategy utilizing advanced filtering, and a Trend-Plus-Pullback approach. The bot's vision is to be a professional, informative, and accessible trading assistant for XAUUSD, with a strong focus on private access control and enhanced precision. It includes a real-time web dashboard for monitoring positions, trade history, and market regimes, with strict per-user data isolation.
+This project is a lightweight Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It provides real-time trading signals with TP/SL, 3-day trial system for new users, and buy access mechanism for paid subscriptions. The bot has been streamlined to focus on core functionality - signal delivery without heavy chart generation (charts available in webapp).
+
+**Mode:** LITE (Koyeb Free Tier Compatible)
+**Chart Generation:** Disabled (available in webapp)
+**Commands:** 8 essential commands only
 
 ## User Preferences
 - Bahasa komunikasi: **Bahasa Indonesia** (100% tidak ada bahasa Inggris)
 - Data source: **Deriv WebSocket** (gratis, tanpa API key)
 - Trading pair: **XAUUSD** (Gold)
-- Notifikasi: **Telegram** dengan foto chart + indikator
+- Notifikasi: **Telegram** dengan sinyal text (chart tersedia di webapp)
 - Tracking: **Real-time** sampai TP/SL
 - Mode: **24/7 unlimited** untuk user terdaftar
 - Akurasi: Strategi multi-indicator dengan validasi ketat
-- Chart: Menampilkan indikator EMA, RSI, Stochastic (tidak polos)
 - Akses Bot: **Privat** - hanya untuk user yang terdaftar di AUTHORIZED_USER_IDS atau ID_USER_PUBLIC
+
+## Available Commands (8 total)
+- `/start` - Mulai bot
+- `/help` - Bantuan
+- `/monitor` - Mulai monitoring sinyal
+- `/stopmonitor` - Stop monitoring
+- `/getsignal` - Dapatkan sinyal manual
+- `/trialstatus` - Status trial Anda
+- `/buyaccess` - Info beli akses
+- `/riset` - Reset database (Admin only)
 
 ## System Architecture
 The bot features a modular architecture for scalability and maintainability, designed around core components for market data, strategy execution, and user interaction.
@@ -23,7 +36,7 @@ The bot features a modular architecture for scalability and maintainability, des
 - **Strategy:** Implements dual-mode signal detection using indicators like Twin Range Filter, Market Bias CEREBR, EMA 50, and RSI, with a weighted scoring system, Market Regime Detector, and Confluence Scoring System. Features adaptive volume filters, dynamic ADX thresholds, parallel timeframe signal generation, and smart signal cooldown.
 - **Position Tracker:** Monitors real-time trade positions per user, including dynamic SL settings and trailing stops, with grade-based auto-closure for stale positions.
 - **Telegram Bot:** Manages command handling, notifications, and features a real-time dashboard with auto-updates.
-- **Chart Generator:** Creates professional charts with integrated technical indicators using `mplfinance` and `matplotlib`.
+- **Chart Generator:** Stub mode (no-op) - charts disabled to save memory on free tier.
 - **Risk Manager:** Calculates lot sizes, P/L, enforces per-user risk limits, and optimizes TP/SL based on session strength.
 - **Database:** PostgreSQL (with SQLite support) for persistent data, featuring auto-migration, connection pooling, and robust transaction management, with BIGINT support for Telegram user IDs.
 - **User Manager:** Handles user authentication, access control, and a 3-day trial system with auto-expiration.
@@ -43,7 +56,38 @@ The bot features a modular architecture for scalability and maintainability, des
 - **Candle Data Persistence:** Stores M1, M5, and H1 candles, including a smart H1 candle bootstrap.
 - **Bot Stability:** Hang detection, health monitors, optimized Telegram polling, and a global error handler.
 
+## Koyeb Environment Variables
+
+**Required:**
+```
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+AUTHORIZED_USER_IDS=123456789,987654321
+```
+
+**Optional but Recommended:**
+```
+KOYEB_PUBLIC_DOMAIN=your-app.koyeb.app
+PORT=8000
+DATABASE_URL=postgresql://...
+FREE_TIER_MODE=true
+ADMIN_USER_ID=your_admin_telegram_id
+```
+
+**Auto-detected:**
+- `KOYEB_REGION` - Koyeb sets this automatically
+- `KOYEB_SERVICE_NAME` - Koyeb sets this automatically
+- `TELEGRAM_WEBHOOK_MODE` - Auto-enabled when Koyeb detected
+
 ## Recent Changes (December 2025)
+
+**Lite Mode for Koyeb Free Tier (Dec 4):**
+- Removed matplotlib/mplfinance dependencies (~100MB saved)
+- Chart generator converted to stub (no-op mode)
+- Reduced commands from 24 to 8 essential ones
+- Simplified help and start messages
+- Focus on core features: signals + trial + buy access
+- SignalEventStore syncs with webapp for charts
+- Memory usage reduced for 512MB free tier
 
 **Quick Health Server Pattern for Koyeb (Dec 4):**
 - Added background thread-based quick health server that starts IMMEDIATELY at module load
@@ -133,8 +177,8 @@ The bot features a modular architecture for scalability and maintainability, des
 - **Telegram Bot API (`python-telegram-bot`):** For all Telegram interactions.
 - **SQLAlchemy:** ORM for database interactions.
 - **Pandas & NumPy:** For data manipulation and numerical operations.
-- **mplfinance & Matplotlib:** For generating financial charts.
 - **pytz:** For timezone handling.
 - **aiohttp:** For asynchronous HTTP server and client operations.
 - **python-dotenv:** For managing environment variables.
 - **Sentry:** For advanced error tracking and monitoring.
+- ~~**mplfinance & Matplotlib:**~~ Removed in Lite mode to save memory.
