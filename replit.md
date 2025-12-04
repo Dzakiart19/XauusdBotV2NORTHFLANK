@@ -59,6 +59,15 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **Timezone WIB:** Web dashboard menampilkan waktu dalam zona waktu WIB (UTC+7) untuk user Indonesia.
 
 ## Recent Changes (December 2024)
+- **[TERBARU] Perbaikan Unlimited Signal Trading:**
+  - Signal Quality Grade minimum diubah dari 'C' ke 'D' untuk membolehkan sinyal lebih banyak
+  - Ditambahkan BYPASS_SIGNAL_QUALITY_CHECK=true mode untuk menonaktifkan blocking signal quality sepenuhnya
+  - Sinyal trading sekarang benar-benar unlimited tanpa blocking berdasarkan grade
+- **[TERBARU] Perbaikan Auto-Monitoring:**
+  - Ditambahkan heartbeat logging setiap 30 detik untuk memantau kesehatan monitoring loop
+  - Ditambahkan exception handling catch-all untuk mencegah monitoring loop berhenti tiba-tiba
+  - Ditambahkan health check untuk auto-restart monitoring tasks yang mati (_check_and_restart_dead_monitoring_tasks)
+  - Enhanced logging untuk monitoring lifecycle (start/stop dengan detail iterasi dan reason)
 - Implementasi command `/status` untuk melihat posisi aktif dan status koneksi
 - Implementasi command `/optimize` untuk melihat status auto-optimizer dan parameter trading
 - Auto-monitor sekarang aktif otomatis untuk SEMUA user (AUTHORIZED_USER_IDS + ID_USER_PUBLIC) saat bot restart
