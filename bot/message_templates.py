@@ -236,6 +236,92 @@ class MessageFormatter:
         return msg
     
     @staticmethod
+    def trade_history_format(trades: list) -> str:
+        """Format recent trade history for /riwayat command"""
+        if not trades:
+            return (
+                "📜 *RIWAYAT TRADING*\n"
+                f"{'━' * 22}\n\n"
+                "Belum ada riwayat trade.\n"
+                "Gunakan /getsignal untuk memulai trading!"
+            )
+        
+        msg = (
+            "📜 *RIWAYAT TRADING*\n"
+            f"{'━' * 22}\n\n"
+        )
+        
+        for i, trade in enumerate(trades, 1):
+            signal_type = _safe_string(trade.get('signal_type'), 'N/A')
+            direction_icon = "🟢" if signal_type == 'BUY' else "🔴"
+            
+            entry = _safe_numeric(trade.get('entry_price', 0), 0)
+            exit_price = _safe_numeric(trade.get('exit_price', 0), 0)
+            pl = _safe_numeric(trade.get('actual_pl', 0), 0)
+            result = _safe_string(trade.get('result'), 'N/A')
+            
+            result_icon = "✅" if result == 'WIN' else "❌"
+            pl_text = f"+${pl:.2f}" if pl >= 0 else f"-${abs(pl):.2f}"
+            
+            close_time = trade.get('close_time', '')
+            if close_time:
+                try:
+                    dt = datetime.fromisoformat(close_time.replace('Z', '+00:00'))
+                    close_str = dt.strftime('%d/%m %H:%M')
+                except (ValueError, AttributeError):
+                    close_str = 'N/A'
+            else:
+                close_str = 'N/A'
+            
+            msg += (
+                f"{i}. {direction_icon} {signal_type} {result_icon}\n"
+                f"   Entry: ${entry:.2f} → Exit: ${exit_price:.2f}\n"
+                f"   P/L: `{pl_text}` | {close_str}\n\n"
+            )
+        
+        return msg
+    
+    @staticmethod  
+    def performance_summary_format(perf_7d: dict, perf_30d: dict, perf_all: dict) -> str:
+        """Format performance summary for /performa command with 7d, 30d, all-time stats"""
+        def format_period(data: dict, label: str) -> str:
+            if not data or 'error' in data:
+                return f"*{label}:* Data tidak tersedia\n"
+            
+            total = int(_safe_numeric(data.get('total_trades', 0), 0))
+            wins = int(_safe_numeric(data.get('wins', 0), 0))
+            losses = int(_safe_numeric(data.get('losses', 0), 0))
+            winrate = _safe_numeric(data.get('winrate', 0), 0)
+            total_pl = _safe_numeric(data.get('total_pl', 0), 0)
+            avg_pl = _safe_numeric(data.get('avg_pl', 0), 0)
+            profit_factor = _safe_numeric(data.get('profit_factor', 0), 0)
+            
+            pl_emoji = "💰" if total_pl >= 0 else "📉"
+            pl_text = f"+${total_pl:.2f}" if total_pl >= 0 else f"-${abs(total_pl):.2f}"
+            
+            return (
+                f"*{label}:*\n"
+                f"• Trades: {total} (W:{wins} L:{losses})\n"
+                f"• Winrate: {winrate:.1f}%\n"
+                f"• {pl_emoji} P/L: `{pl_text}`\n"
+                f"• Avg P/L: ${avg_pl:.2f}\n"
+                f"• Profit Factor: {profit_factor:.2f}\n\n"
+            )
+        
+        msg = (
+            "📊 *PERFORMA TRADING*\n"
+            f"{'━' * 22}\n\n"
+        )
+        
+        msg += format_period(perf_7d, "📅 7 Hari Terakhir")
+        msg += format_period(perf_30d, "📆 30 Hari Terakhir")
+        msg += format_period(perf_all, "📈 All-Time")
+        
+        msg += f"⏰ {datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%d/%m/%Y %H:%M WIB')}"
+        
+        return msg
+    
+    @staticmethod
     def waiting_for_signal(signal_source: str = 'auto') -> str:
         """Format pesan menunggu sinyal"""
         icon = "🤖" if signal_source == 'auto' else "👤"

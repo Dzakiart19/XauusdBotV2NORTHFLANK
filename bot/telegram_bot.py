@@ -4656,6 +4656,118 @@ class TradingBot:
             logger.error(f"Error resetting system: {e}")
             await update.message.reply_text("❌ Error reset sistem. Cek logs untuk detail.")
     
+    async def riwayat_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /riwayat command - Show last 10 completed trades"""
+        if self._is_shutting_down:
+            return
+        
+        message = update.message
+        if not message:
+            return
+        
+        chat = message.chat
+        if not chat:
+            return
+        
+        user_id = chat.id
+        
+        try:
+            if not self.analytics:
+                await message.reply_text("Modul analytics tidak tersedia.")
+                return
+            
+            trades = self.analytics.get_recent_trades(user_id=user_id, limit=10)
+            
+            from bot.message_templates import MessageFormatter
+            response = MessageFormatter.trade_history_format(trades)
+            
+            await message.reply_text(response, parse_mode='Markdown')
+            logger.info(f"Sent riwayat to user {user_id}: {len(trades)} trades")
+            
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except ChatMigrated as e:
+            await self._handle_chat_migrated(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network/timeout error pada riwayat command: {e}")
+            try:
+                await message.reply_text("Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except Conflict as e:
+            await self._handle_conflict_error(e)
+        except InvalidToken as e:
+            await self._handle_unauthorized_error(e)
+        except TelegramError as e:
+            logger.error(f"Telegram error pada riwayat command: {e}")
+            try:
+                await message.reply_text("Error mengambil riwayat.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Data error pada riwayat command: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await message.reply_text("Error mengambil riwayat.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+
+    async def performa_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /performa command - Show performance stats (7d, 30d, all-time)"""
+        if self._is_shutting_down:
+            return
+        
+        message = update.message
+        if not message:
+            return
+        
+        chat = message.chat
+        if not chat:
+            return
+        
+        user_id = chat.id
+        
+        try:
+            if not self.analytics:
+                await message.reply_text("Modul analytics tidak tersedia.")
+                return
+            
+            perf_7d = self.analytics.get_trading_performance(user_id=user_id, days=7)
+            perf_30d = self.analytics.get_trading_performance(user_id=user_id, days=30)
+            perf_all = self.analytics.get_trading_performance(user_id=user_id, days=3650)
+            
+            from bot.message_templates import MessageFormatter
+            response = MessageFormatter.performance_summary_format(perf_7d, perf_30d, perf_all)
+            
+            await message.reply_text(response, parse_mode='Markdown')
+            logger.info(f"Sent performa to user {user_id}")
+            
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except ChatMigrated as e:
+            await self._handle_chat_migrated(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network/timeout error pada performa command: {e}")
+            try:
+                await message.reply_text("Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except Conflict as e:
+            await self._handle_conflict_error(e)
+        except InvalidToken as e:
+            await self._handle_unauthorized_error(e)
+        except TelegramError as e:
+            logger.error(f"Telegram error pada performa command: {e}")
+            try:
+                await message.reply_text("Error mengambil performa.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Data error pada performa command: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await message.reply_text("Error mengambil performa.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+
     async def regime_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Tampilkan analisis market regime saat ini"""
         if update.effective_user is None or update.message is None:
@@ -5574,6 +5686,8 @@ class TradingBot:
         self.app.add_handler(CommandHandler("trialstatus", self.trialstatus_command))
         self.app.add_handler(CommandHandler("buyaccess", self.buyaccess_command))
         self.app.add_handler(CommandHandler("riset", self.riset_command))
+        self.app.add_handler(CommandHandler("riwayat", self.riwayat_command))
+        self.app.add_handler(CommandHandler("performa", self.performa_command))
         
         self.app.add_error_handler(self._handle_telegram_error)
         logger.info("✅ Global error handler registered for Telegram updates")

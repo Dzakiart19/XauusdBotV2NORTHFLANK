@@ -110,7 +110,42 @@ MEMORY_CRITICAL_THRESHOLD_MB=450
 SIGNAL_COOLDOWN_SECONDS=0
 OPPOSITE_SIGNAL_COOLDOWN_SECONDS=0
 MAX_TRADES_PER_DAY=0
+
+# ============================================
+# TRADING SETTINGS (Opsional)
+# ============================================
+ACCOUNT_BALANCE=1000
+RISK_PER_TRADE_PERCENT=1.0
 ```
+
+## Bot Commands (Telegram)
+
+| Command | Deskripsi |
+|---------|-----------|
+| `/start` | Memulai bot |
+| `/help` | Menampilkan bantuan |
+| `/monitor` | Memulai monitoring harga XAUUSD |
+| `/stopmonitor` | Menghentikan monitoring |
+| `/getsignal` | Mendapatkan sinyal trading terbaru |
+| `/riwayat` | Menampilkan 10 trade terakhir |
+| `/performa` | Statistik performa (7d, 30d, all-time) |
+| `/trialstatus` | Cek status akses trial |
+| `/buyaccess` | Informasi pembelian akses |
+| `/riset` | Mode riset/analisis pasar |
+
+## Web Dashboard
+
+Dashboard dapat diakses melalui Telegram WebApp atau URL langsung:
+```
+https://YOUR-DOMAIN.koyeb.app/
+```
+
+Fitur Dashboard:
+- Real-time harga XAUUSD
+- Grafik candlestick dengan indikator
+- Status posisi aktif
+- Riwayat trading
+- Sinkronisasi dengan Telegram Bot via SignalEventStore
 
 ## Troubleshooting
 

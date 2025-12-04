@@ -358,6 +358,50 @@ class TradingAnalytics:
             if session:
                 session.close()
     
+    def get_recent_trades(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get most recent completed trades for a user
+        
+        Args:
+            user_id: User ID to filter trades
+            limit: Maximum number of trades to return (default 10)
+        
+        Returns:
+            List of trade dicts with: signal_type, entry_price, exit_price, actual_pl, status, signal_time, close_time, result
+        """
+        session: Optional[Session] = None
+        try:
+            session = self.db.get_session()
+            assert session is not None, "Failed to create database session"
+            
+            trades = session.query(Trade).filter(
+                Trade.user_id == user_id,
+                Trade.status == 'CLOSED'
+            ).order_by(Trade.close_time.desc()).limit(limit).all()
+            
+            result = []
+            for trade in trades:
+                result.append({
+                    'id': trade.id,
+                    'signal_type': trade.signal_type,
+                    'entry_price': trade.entry_price,
+                    'exit_price': trade.exit_price,
+                    'stop_loss': trade.stop_loss,
+                    'take_profit': trade.take_profit,
+                    'actual_pl': trade.actual_pl,
+                    'status': trade.status,
+                    'signal_time': trade.signal_time.isoformat() if trade.signal_time else None,
+                    'close_time': trade.close_time.isoformat() if trade.close_time else None,
+                    'result': trade.result or ('WIN' if (trade.actual_pl or 0) > 0 else 'LOSS')
+                })
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting recent trades: {e}", exc_info=True)
+            return []
+        finally:
+            if session:
+                session.close()
+    
     @cached()
     def get_position_tracking_stats(self, user_id: Optional[int] = None, days: int = 30) -> Dict[str, Any]:
         """Get position tracking statistics
