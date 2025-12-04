@@ -4422,6 +4422,75 @@ class TradingBot:
             except (TelegramError, asyncio.CancelledError):
                 pass
 
+    async def optimize_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command untuk melihat status dan menjalankan optimasi parameter trading."""
+        if update.effective_user is None or update.message is None or update.effective_chat is None:
+            return
+        
+        user = update.effective_user
+        message = update.message
+        chat = update.effective_chat
+        
+        if not await self._check_user_rate_limit(user.id):
+            try:
+                await message.reply_text("⚠️ Anda mengirim terlalu banyak request. Silakan tunggu sebentar.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+            return
+        
+        try:
+            if self.user_manager:
+                self.user_manager.update_user_activity(user.id)
+            
+            if not self.auto_optimizer:
+                await message.reply_text(
+                    "⚠️ *Modul Auto-Optimizer Tidak Tersedia*\n\n"
+                    "Auto-Optimizer sedang dalam proses inisialisasi. "
+                    "Silakan coba lagi dalam beberapa saat.",
+                    parse_mode='Markdown'
+                )
+                return
+            
+            status = self.auto_optimizer.get_status()
+            report = self.auto_optimizer.get_status_report()
+            
+            await message.reply_text(report, parse_mode='Markdown')
+            logger.info(f"Optimize command executed for user {mask_user_id(user.id)}")
+                
+        except asyncio.CancelledError:
+            logger.info(f"Optimize command cancelled for user {mask_user_id(user.id)}")
+            raise
+        except RetryAfter as e:
+            logger.warning(f"Rate limit pada optimize command: retry setelah {e.retry_after}s")
+        except BadRequest as e:
+            await self._handle_bad_request(chat.id, e, context="optimize_command")
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except ChatMigrated as e:
+            await self._handle_chat_migrated(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network/timeout error pada optimize command: {e}")
+            try:
+                await message.reply_text("⏳ Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except Conflict as e:
+            await self._handle_conflict_error(e)
+        except InvalidToken as e:
+            await self._handle_unauthorized_error(e)
+        except TelegramError as e:
+            logger.error(f"Telegram error pada optimize command: {e}")
+            try:
+                await message.reply_text("❌ Error menampilkan status optimizer.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Data error pada optimize command: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await message.reply_text("❌ Error menampilkan status optimizer.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+
     async def initialize(self):
         self._is_shutting_down = False
         logger.info("🔄 Reset shutdown flag for fresh start")
@@ -4460,6 +4529,7 @@ class TradingBot:
         self.app.add_handler(CommandHandler("riset", self.riset_command))
         self.app.add_handler(CommandHandler("riwayat", self.riwayat_command))
         self.app.add_handler(CommandHandler("performa", self.performa_command))
+        self.app.add_handler(CommandHandler("optimize", self.optimize_command))
         
         self.app.add_error_handler(self._handle_telegram_error)
         logger.info("✅ Global error handler registered for Telegram updates")

@@ -1233,29 +1233,6 @@ class AutoOptimizer:
             
             return False
     
-    def should_run_optimization(self) -> Tuple[bool, str]:
-        """
-        Check apakah sudah waktunya menjalankan optimization.
-        
-        Returns:
-            Tuple (should_run, reason)
-        """
-        with self._lock:
-            if not self._is_enabled:
-                return False, "AutoOptimizer is disabled"
-            
-            if self._last_optimization_time is None:
-                return True, "First optimization run"
-            
-            time_since_last = datetime.now(pytz.UTC) - self._last_optimization_time
-            hours_since = time_since_last.total_seconds() / 3600
-            
-            if hours_since >= self.optimization_interval_hours:
-                return True, f"{hours_since:.1f} hours since last optimization"
-            
-            remaining = self.optimization_interval_hours - hours_since
-            return False, f"{remaining:.1f} hours until next optimization"
-    
     def is_market_closed(self) -> bool:
         """Check if market is closed (weekend)"""
         now = datetime.now(pytz.UTC)
