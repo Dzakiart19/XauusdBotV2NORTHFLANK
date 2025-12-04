@@ -681,8 +681,15 @@ class Config:
     HEALTH_CHECK_LONG_TIMEOUT = _get_int_env('HEALTH_CHECK_LONG_TIMEOUT', '35')
     
     SELF_PING_ENABLED = os.getenv('SELF_PING_ENABLED', 'true').lower() == 'true'
-    SELF_PING_INTERVAL = _get_int_env('SELF_PING_INTERVAL', '240')
-    SELF_PING_TIMEOUT = _get_int_env('SELF_PING_TIMEOUT', '5')
+    _koyeb_detected = bool(
+        os.getenv('KOYEB_PUBLIC_DOMAIN', '') or 
+        os.getenv('KOYEB_REGION', '') or 
+        os.getenv('KOYEB_SERVICE_NAME', '') or 
+        os.getenv('KOYEB_APP_NAME', '')
+    )
+    SELF_PING_INTERVAL = _get_int_env('SELF_PING_INTERVAL', '55' if _koyeb_detected else '240')
+    SELF_PING_TIMEOUT = _get_int_env('SELF_PING_TIMEOUT', '10' if _koyeb_detected else '5')
+    SELF_PING_AGGRESSIVE = os.getenv('SELF_PING_AGGRESSIVE', 'true' if _koyeb_detected else 'false').lower() == 'true'
     
     TRADING_HOURS_START = _get_int_env('TRADING_HOURS_START', '0')
     TRADING_HOURS_END = _get_int_env('TRADING_HOURS_END', '23')

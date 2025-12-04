@@ -685,37 +685,61 @@ class TradingBotOrchestrator:
     async def _self_ping_keep_alive(self):
         """Self-ping task to keep Koyeb service awake on free tier.
         
-        Koyeb free tier puts services to sleep after 5 minutes of inactivity.
-        This task sends HTTP requests to the health endpoint every SELF_PING_INTERVAL
+        Koyeb free tier puts services to sleep after 1 hour of inactivity.
+        This task sends HTTP requests to multiple endpoints every SELF_PING_INTERVAL
         seconds to keep the service active 24/7.
+        
+        Features (aggressive mode for Koyeb):
+        - Multiple endpoint ping (/health, /, /api/health)
+        - Faster interval (55s default on Koyeb, 240s on Replit)
+        - Retry on failure
+        - Multi-ping burst every 10 minutes
         """
         if not self.config.SELF_PING_ENABLED:
             logger.info("🔇 Self-ping keep-alive is DISABLED (SELF_PING_ENABLED=false)")
             return
         
+        is_koyeb = bool(
+            os.getenv('KOYEB_PUBLIC_DOMAIN', '') or 
+            os.getenv('KOYEB_REGION', '') or 
+            os.getenv('KOYEB_SERVICE_NAME', '') or 
+            os.getenv('KOYEB_APP_NAME', '')
+        )
+        aggressive_mode = getattr(self.config, 'SELF_PING_AGGRESSIVE', is_koyeb)
+        
+        if is_koyeb and not aggressive_mode:
+            logger.warning("⚠️ Koyeb detected but aggressive mode is disabled - self-ping may not prevent sleep effectively")
+        
         logger.info(f"🏓 Starting self-ping keep-alive task (interval: {self.config.SELF_PING_INTERVAL}s)")
+        if aggressive_mode:
+            logger.info(f"🔥 AGGRESSIVE MODE: Multi-endpoint ping enabled for Koyeb anti-sleep")
         
         ping_count = 0
         success_count = 0
         fail_count = 0
         
-        self_url = None
         koyeb_public_domain = os.getenv('KOYEB_PUBLIC_DOMAIN', '')
         replit_dev_domain = os.getenv('REPLIT_DEV_DOMAIN', '')
         
+        base_url = None
         if koyeb_public_domain:
-            self_url = f"https://{koyeb_public_domain.strip()}/health"
-            logger.info(f"🏓 Self-ping URL (Koyeb): {self_url}")
+            base_url = f"https://{koyeb_public_domain.strip()}"
+            logger.info(f"🏓 Self-ping URL (Koyeb): {base_url}/health")
         elif replit_dev_domain:
-            self_url = f"https://{replit_dev_domain.strip()}/health"
-            logger.info(f"🏓 Self-ping URL (Replit): {self_url}")
+            base_url = f"https://{replit_dev_domain.strip()}"
+            logger.info(f"🏓 Self-ping URL (Replit): {base_url}/health")
         else:
-            self_url = f"http://localhost:{self.config.HEALTH_CHECK_PORT}/health"
-            logger.info(f"🏓 Self-ping URL (localhost): {self_url}")
+            base_url = f"http://localhost:{self.config.HEALTH_CHECK_PORT}"
+            logger.info(f"🏓 Self-ping URL (localhost): {base_url}/health")
+        
+        endpoints = ["/health"]
+        if aggressive_mode:
+            endpoints = ["/health", "/", "/api/health"]
         
         try:
             import aiohttp
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(limit=5, force_close=True)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 while self.running and not self._shutdown_in_progress:
                     try:
                         await asyncio.sleep(self.config.SELF_PING_INTERVAL)
@@ -724,33 +748,57 @@ class TradingBotOrchestrator:
                             break
                         
                         ping_count += 1
+                        ping_success = False
                         
-                        try:
-                            async with session.get(
-                                self_url,
-                                timeout=aiohttp.ClientTimeout(total=self.config.SELF_PING_TIMEOUT),
-                                ssl=False
-                            ) as response:
-                                if response.status == 200:
-                                    success_count += 1
-                                    if ping_count % 15 == 0:
-                                        logger.info(
-                                            f"🏓 Self-ping #{ping_count} OK "
-                                            f"(success: {success_count}, fail: {fail_count})"
-                                        )
-                                    else:
-                                        logger.debug(f"🏓 Self-ping #{ping_count} OK (status: {response.status})")
-                                else:
-                                    fail_count += 1
-                                    logger.warning(f"⚠️ Self-ping #{ping_count} returned status {response.status}")
+                        for endpoint in endpoints:
+                            if not self.running or self._shutdown_in_progress:
+                                break
+                            
+                            url = f"{base_url}{endpoint}"
+                            try:
+                                async with session.get(
+                                    url,
+                                    timeout=aiohttp.ClientTimeout(total=self.config.SELF_PING_TIMEOUT),
+                                    ssl=False,
+                                    headers={"User-Agent": "TradingBot-KeepAlive/1.0", "Connection": "close"}
+                                ) as response:
+                                    if response.status in (200, 404):
+                                        ping_success = True
+                                        if ping_count % 20 == 0:
+                                            logger.info(
+                                                f"🏓 Self-ping #{ping_count} OK "
+                                                f"(success: {success_count}, fail: {fail_count}, mode: {'aggressive' if aggressive_mode else 'normal'})"
+                                            )
+                                        break
+                            
+                            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                                if aggressive_mode and endpoint != endpoints[-1]:
+                                    continue
+                                logger.debug(f"⚠️ Self-ping {endpoint} failed: {type(e).__name__}")
                         
-                        except asyncio.TimeoutError:
+                        if ping_success:
+                            success_count += 1
+                        else:
                             fail_count += 1
-                            logger.warning(f"⚠️ Self-ping #{ping_count} timeout after {self.config.SELF_PING_TIMEOUT}s")
+                            if fail_count % 5 == 0:
+                                logger.warning(f"⚠️ Self-ping #{ping_count} all endpoints failed (total fail: {fail_count})")
                         
-                        except aiohttp.ClientError as e:
-                            fail_count += 1
-                            logger.warning(f"⚠️ Self-ping #{ping_count} failed: {type(e).__name__}: {e}")
+                        if aggressive_mode and ping_count % 10 == 0:
+                            await asyncio.sleep(2)
+                            for endpoint in endpoints:
+                                if not self.running or self._shutdown_in_progress:
+                                    break
+                                try:
+                                    url = f"{base_url}{endpoint}"
+                                    async with session.get(
+                                        url,
+                                        timeout=aiohttp.ClientTimeout(total=5),
+                                        ssl=False,
+                                        headers={"User-Agent": "TradingBot-BurstPing/1.0"}
+                                    ) as _:
+                                        pass
+                                except Exception:
+                                    pass
                     
                     except asyncio.CancelledError:
                         logger.info(f"🏓 Self-ping cancelled after {ping_count} pings (success: {success_count}, fail: {fail_count})")
@@ -759,7 +807,7 @@ class TradingBotOrchestrator:
                     except Exception as e:
                         fail_count += 1
                         logger.error(f"❌ Self-ping error: {type(e).__name__}: {e}")
-                        await asyncio.sleep(30)
+                        await asyncio.sleep(15 if aggressive_mode else 30)
             
             logger.info(f"🏓 Self-ping stopped (total: {ping_count}, success: {success_count}, fail: {fail_count})")
         
@@ -2135,16 +2183,26 @@ class TradingBotOrchestrator:
                 
                 return ws
             
+            async def api_health_quick(request):
+                """Ultra-light health endpoint for Koyeb anti-sleep ping (minimal processing)"""
+                return web.json_response({
+                    'status': 'ok',
+                    'running': self.running,
+                    'ts': int(datetime.now().timestamp())
+                })
+            
             app = web.Application()
             app.router.add_get('/health', health_check)
             app.router.add_get('/', health_check)
+            app.router.add_get('/api/health', api_health_quick)
+            app.router.add_get('/ping', api_health_quick)
             app.router.add_get('/dashboard', dashboard_page)
             app.router.add_get('/static/{filename}', static_files)
             app.router.add_get('/api/dashboard', api_dashboard)
             app.router.add_get('/api/candles', api_candles)
             app.router.add_get('/api/trade-history', api_trade_history)
             app.router.add_get('/ws/dashboard', ws_dashboard)
-            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /api/candles, /api/trade-history, /ws/dashboard, /static/*")
+            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /api/health, /ping, /api/candles, /api/trade-history, /ws/dashboard, /static/*")
             
             webhook_path = None
             if self.config_valid and self.config.TELEGRAM_BOT_TOKEN:
