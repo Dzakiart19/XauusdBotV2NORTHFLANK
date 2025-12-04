@@ -45,6 +45,16 @@ The bot features a modular architecture for scalability and maintainability, des
 
 ## Recent Changes (December 2025)
 
+**Koyeb Deployment Environment Fix (Dec 4):**
+- Fixed critical bug where environment variables not loading correctly on Koyeb
+- Root cause: Config class attributes evaluated at import time before Koyeb injects env vars
+- Fix: `_refresh_secrets()` now aggressively re-reads ALL env vars, not just non-empty ones
+- Webhook routes now always register even in "limited mode" (prevents chicken-egg problem)
+- Health check always returns HTTP 200 (allows Koyeb health probe to pass during initialization)
+- Dockerfile HEALTHCHECK uses `${PORT:-8000}` for port flexibility
+- Webhook handler returns 200 to Telegram even on errors (prevents retry loops)
+- Updated KOYEB_ENV.md with improved troubleshooting documentation
+
 **Webhook URL Format Fix (Dec 4):**
 - Fixed Koyeb webhook not receiving Telegram updates
 - Changed auto-generated webhook URL from `/webhook` to `/bot{token}` format
