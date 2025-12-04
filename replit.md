@@ -45,6 +45,13 @@ The bot features a modular architecture for scalability and maintainability, des
 
 ## Recent Changes (December 2025)
 
+**Webhook URL Format Fix (Dec 4):**
+- Fixed Koyeb webhook not receiving Telegram updates
+- Changed auto-generated webhook URL from `/webhook` to `/bot{token}` format
+- This matches the standard Telegram webhook path and the aiohttp route exposed by the server
+- Now config.py generates `https://{KOYEB_PUBLIC_DOMAIN}/bot{TELEGRAM_BOT_TOKEN}` when both are available
+- Fallback to `/webhook` if token not available during config init
+
 **Critical Shutdown Flag Reset Fix (Dec 4):**
 - Fixed critical bug where `_is_shutting_down` flag was not reset in `initialize()` method
 - This caused bot to enter infinite restart loop after first restart

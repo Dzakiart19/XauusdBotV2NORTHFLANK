@@ -260,6 +260,8 @@ class Config:
         _webhook_url_env = os.getenv('WEBHOOK_URL', '')
         if _webhook_url_env:
             cls.WEBHOOK_URL = _webhook_url_env
+        elif cls.KOYEB_PUBLIC_DOMAIN and cls.TELEGRAM_BOT_TOKEN:
+            cls.WEBHOOK_URL = f"https://{cls.KOYEB_PUBLIC_DOMAIN}/bot{cls.TELEGRAM_BOT_TOKEN}"
         elif cls.KOYEB_PUBLIC_DOMAIN:
             cls.WEBHOOK_URL = f"https://{cls.KOYEB_PUBLIC_DOMAIN}/webhook"
         else:
@@ -290,9 +292,12 @@ class Config:
         TELEGRAM_WEBHOOK_MODE = IS_KOYEB
     
     # Auto-generate webhook URL for Koyeb if not explicitly set
+    # Prefer /bot<token> format as it's the standard Telegram webhook path
     _webhook_url_env = os.getenv('WEBHOOK_URL', '')
     if _webhook_url_env:
         WEBHOOK_URL = _webhook_url_env
+    elif KOYEB_PUBLIC_DOMAIN and TELEGRAM_BOT_TOKEN:
+        WEBHOOK_URL = f"https://{KOYEB_PUBLIC_DOMAIN}/bot{TELEGRAM_BOT_TOKEN}"
     elif KOYEB_PUBLIC_DOMAIN:
         WEBHOOK_URL = f"https://{KOYEB_PUBLIC_DOMAIN}/webhook"
     else:
