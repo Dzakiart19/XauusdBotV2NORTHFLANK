@@ -2315,6 +2315,17 @@ class TradingBot:
             
             logger.info(f"Start command executed successfully for user {mask_user_id(user.id)}")
             
+            chat_id = chat.id
+            if chat_id not in self.monitoring_chats and chat_id not in self.monitoring_tasks:
+                if len(self.monitoring_chats) >= self.MAX_MONITORING_CHATS:
+                    logger.warning(f"Cannot auto-start monitoring for user {mask_user_id(user.id)} - limit reached ({self.MAX_MONITORING_CHATS})")
+                else:
+                    await self.auto_start_monitoring([chat_id])
+                    await message.reply_text("✅ Auto-monitoring diaktifkan! Bot akan mendeteksi sinyal secara real-time.")
+                    logger.info(f"✅ Auto-monitoring started for user {mask_user_id(user.id)} on /start")
+            else:
+                logger.debug(f"Monitoring already active for user {mask_user_id(user.id)}")
+            
         except asyncio.CancelledError:
             logger.info(f"Start command dibatalkan untuk user {mask_user_id(user.id)}")
             raise
