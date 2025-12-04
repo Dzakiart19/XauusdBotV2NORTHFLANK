@@ -82,6 +82,17 @@ ADMIN_USER_ID=your_admin_telegram_id
 
 ## Recent Changes (December 2025)
 
+**Notifikasi Hasil Trade & Dashboard Sync Enhancement (Dec 4):**
+- Enhanced notifikasi WIN/LOSS dengan retry mechanism 3x dan fallback ke alert_system
+- Null-check untuk telegram_app.bot sebelum send_message untuk mencegah crash
+- Logging detail untuk setiap trade closure (entry, exit, P/L)
+- Stale session timeout dikurangi dari 600s ke 300s (5 menit) untuk respons lebih cepat
+- Opposite direction timeout dikurangi dari 300s ke 180s (3 menit)
+- Log detail saat force close session termasuk session ID, entry price, dan chart path
+- Dashboard update interval dikurangi dari 2s ke 1s untuk real-time sync
+- Visual indicator "SINKRONISASI..." saat fetch data (syncing state)
+- CSS animation untuk status syncing dengan pulse effect
+
 **Major Code Cleanup & Optimization (Dec 4):**
 - Removed 15 unused command handlers from telegram_bot.py (~1234 lines removed)
 - Deleted unused modules: bot/backtester.py, bot/pair_config.py
