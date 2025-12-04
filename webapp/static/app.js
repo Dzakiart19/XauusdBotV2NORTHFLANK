@@ -523,13 +523,16 @@
         try {
             var date = new Date(timestamp);
             if (isNaN(date.getTime())) return '--';
-            var day = String(date.getDate()).padStart(2, '0');
-            var month = String(date.getMonth() + 1).padStart(2, '0');
-            var year = date.getFullYear();
-            var hours = String(date.getHours()).padStart(2, '0');
-            var minutes = String(date.getMinutes()).padStart(2, '0');
-            var seconds = String(date.getSeconds()).padStart(2, '0');
-            return day + '.' + month + '.' + year + ' ' + hours + ':' + minutes + ':' + seconds;
+            
+            var wibDate = new Date(date.getTime() + (date.getTimezoneOffset() * 60 * 1000) + (7 * 60 * 60 * 1000));
+            
+            var day = String(wibDate.getDate()).padStart(2, '0');
+            var month = String(wibDate.getMonth() + 1).padStart(2, '0');
+            var year = wibDate.getFullYear();
+            var hours = String(wibDate.getHours()).padStart(2, '0');
+            var minutes = String(wibDate.getMinutes()).padStart(2, '0');
+            var seconds = String(wibDate.getSeconds()).padStart(2, '0');
+            return day + '.' + month + '.' + year + ' ' + hours + ':' + minutes + ':' + seconds + ' WIB';
         } catch (e) {
             return '--';
         }
@@ -537,10 +540,11 @@
 
     function formatTimeShort(date) {
         if (!date) return '--';
-        var hours = String(date.getHours()).padStart(2, '0');
-        var minutes = String(date.getMinutes()).padStart(2, '0');
-        var seconds = String(date.getSeconds()).padStart(2, '0');
-        return hours + ':' + minutes + ':' + seconds;
+        var wibDate = new Date(date.getTime() + (date.getTimezoneOffset() * 60 * 1000) + (7 * 60 * 60 * 1000));
+        var hours = String(wibDate.getHours()).padStart(2, '0');
+        var minutes = String(wibDate.getMinutes()).padStart(2, '0');
+        var seconds = String(wibDate.getSeconds()).padStart(2, '0');
+        return hours + ':' + minutes + ':' + seconds + ' WIB';
     }
 
     function updateConnectionStatus(connected) {

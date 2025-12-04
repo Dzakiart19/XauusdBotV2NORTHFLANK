@@ -9,6 +9,7 @@ import psutil
 import glob
 import re
 import threading
+import pytz
 from datetime import timedelta
 from aiohttp import web
 from typing import Optional, Dict, Set, Any, Callable
@@ -879,12 +880,24 @@ class TradingBotOrchestrator:
         This method is called from the health monitor to detect stuck tasks
         and force-restart them to prevent memory leaks and deadlocks.
         
+        Note: Background tasks (self_ping, health monitors, etc) are designed to run
+        continuously and have their own health checks. They are only restarted
+        if they show signs of being truly stuck (no activity for extended period).
+        
         Returns:
             Dict with check results including restarted and skipped tasks
         """
         self._stuck_task_check_count += 1
         threshold_seconds = self.config.TASK_AUTO_CANCEL_THRESHOLD
         now = datetime.now()
+        
+        # Background tasks yang memang berjalan terus-menerus - tidak perlu restart
+        # kecuali mereka benar-benar stuck (tidak responsif)
+        # Task dengan max_restarts = -1 (unlimited) biasanya background tasks
+        BACKGROUND_TASK_PREFIXES = [
+            'self_ping', 'health_check_long', 'memory_monitor', 
+            'task_rotation', 'telegram_bot_health'
+        ]
         
         result = {
             'checked_at': now.isoformat(),
@@ -928,6 +941,24 @@ class TradingBotOrchestrator:
                 task_age = (now - task_start_time).total_seconds()
                 
                 if task_age > threshold_seconds:
+                    # Check jika ini adalah background task yang memang berjalan terus-menerus
+                    is_background_task = any(task_name.startswith(prefix) for prefix in BACKGROUND_TASK_PREFIXES)
+                    is_unlimited_restart = task_info.max_restarts < 0  # -1 = unlimited
+                    
+                    # Background tasks dengan unlimited restart di-skip kecuali memory critical
+                    if (is_background_task or is_unlimited_restart) and result['memory_mb'] < self.config.MEMORY_CRITICAL_THRESHOLD_MB:
+                        # Jangan log setiap kali untuk mengurangi spam log
+                        if self._stuck_task_check_count % 10 == 0:
+                            logger.debug(
+                                f"⏭️ [STUCK-TASK] Skipping background task {task_name} "
+                                f"(age={task_age:.0f}s, background={is_background_task}, unlimited={is_unlimited_restart})"
+                            )
+                        result['skipped_tasks'].append({
+                            'name': task_name,
+                            'reason': 'background_task_healthy'
+                        })
+                        continue
+                    
                     result['stuck_tasks'].append({
                         'name': task_name,
                         'age_seconds': task_age,
@@ -1016,8 +1047,9 @@ class TradingBotOrchestrator:
             if active_positions:
                 state['active_positions'] = dict(active_positions)
             
-            if hasattr(self.position_tracker, '_pending_notifications'):
-                state['pending_notifications'] = list(self.position_tracker._pending_notifications)
+            pending_notifs = getattr(self.position_tracker, '_pending_notifications', None)
+            if pending_notifs is not None:
+                state['pending_notifications'] = list(pending_notifs)
             
             logger.info(
                 f"💾 [POSITION-TRACKER] State saved: "
@@ -1882,6 +1914,16 @@ class TradingBotOrchestrator:
             
             # Port should be available after stopping quick health server
             
+            def convert_datetimes(obj):
+                """Helper function untuk convert datetime objects ke string secara rekursif"""
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                elif isinstance(obj, dict):
+                    return {k: convert_datetimes(v) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return [convert_datetimes(item) for item in obj]
+                return obj
+            
             async def health_check(request):
                 missing_config = []
                 if not self.config.TELEGRAM_BOT_TOKEN:
@@ -1987,6 +2029,9 @@ class TradingBotOrchestrator:
                 # Status sebenarnya ada di response body (mode field)
                 # Koyeb akan restart container jika health check gagal, jadi harus selalu 200
                 status_code = 200
+                
+                # Convert datetime objects ke string agar JSON serializable
+                health_status = convert_datetimes(health_status)
                 
                 return web.json_response(health_status, status=status_code)
             
@@ -3171,13 +3216,27 @@ class TradingBotOrchestrator:
                         
                         threshold = LONG_RUNNING_THRESHOLD_CRITICAL if task_info.critical else LONG_RUNNING_THRESHOLD_NORMAL
                         
+                        # Background tasks yang memang berjalan terus-menerus tidak perlu di-warning
+                        BACKGROUND_TASKS = [
+                            'self_ping', 'health_check_long', 'memory_monitor', 
+                            'task_rotation', 'telegram_bot_health', 'telegram_bot',
+                            'position_tracker', 'market_data_websocket'
+                        ]
+                        is_background = any(task_name.startswith(prefix) for prefix in BACKGROUND_TASKS)
+                        is_unlimited_restart = task_info.max_restarts < 0
+                        
+                        # Skip warning untuk background tasks, hanya log setiap 10 menit sekali jika perlu
                         if task_age > WARNING_THRESHOLD and task_age <= threshold:
-                            max_restarts_str = "∞" if task_info.max_restarts < 0 else str(task_info.max_restarts)
-                            logger.warning(
-                                f"🔥 LONG TASK: {task_name} running for {task_age:.0f}s "
-                                f"(priority={task_info.priority.name}, critical={task_info.critical}, "
-                                f"restarts={task_info.restart_count}/{max_restarts_str})"
-                            )
+                            if is_background or is_unlimited_restart:
+                                # Background tasks tidak perlu warning (mereka memang berjalan terus)
+                                pass
+                            else:
+                                max_restarts_str = "∞" if task_info.max_restarts < 0 else str(task_info.max_restarts)
+                                logger.warning(
+                                    f"🔥 LONG TASK: {task_name} running for {task_age:.0f}s "
+                                    f"(priority={task_info.priority.name}, critical={task_info.critical}, "
+                                    f"restarts={task_info.restart_count}/{max_restarts_str})"
+                                )
                         
                         if task_age > threshold:
                             failure_count = self._task_failure_counts.get(task_name, 0)
