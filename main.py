@@ -1034,6 +1034,10 @@ class TradingBotOrchestrator:
                         if cleaned > 0:
                             chart_cleanup_count += cleaned
                             logger.info(f"🗑️ Cleaned up {cleaned} old chart files")
+                        
+                        log_cleaned = self._cleanup_old_log_files()
+                        if log_cleaned > 0:
+                            logger.info(f"🗑️ Bersihkan {log_cleaned} log files lama")
                     
                 except asyncio.CancelledError:
                     logger.info(
@@ -1085,6 +1089,10 @@ class TradingBotOrchestrator:
             gc.collect(generation=2)
             logger.info("   Full garbage collection (gen 2) completed")
             
+            log_cleaned = self._cleanup_old_log_files(days=3)
+            if log_cleaned > 0:
+                logger.info(f"   Log files lama (>3 hari) dibersihkan: {log_cleaned} files")
+            
         except Exception as e:
             logger.error(f"❌ Error clearing caches: {e}")
     
@@ -1120,6 +1128,61 @@ class TradingBotOrchestrator:
             
         except Exception as e:
             logger.error(f"Error during chart cleanup: {e}")
+        
+        return deleted_count
+    
+    def _cleanup_old_log_files(self, days: int = 7) -> int:
+        """Bersihkan log files yang lebih dari X hari.
+        
+        Scan folder 'logs' untuk file *.log dan *.log.* yang sudah lama.
+        Method ini dirancang untuk tidak blocking dan ringan.
+        
+        Args:
+            days: Umur maksimal file dalam hari (default 7)
+            
+        Returns:
+            Jumlah file yang berhasil dihapus
+        """
+        log_dir = 'logs'
+        if not os.path.exists(log_dir):
+            return 0
+        
+        cutoff_time = datetime.now() - timedelta(days=days)
+        deleted_count = 0
+        
+        try:
+            log_patterns = [
+                os.path.join(log_dir, '*.log'),
+                os.path.join(log_dir, '*.log.*')
+            ]
+            
+            log_files = []
+            for pattern in log_patterns:
+                log_files.extend(glob.glob(pattern))
+            
+            log_files = list(set(log_files))
+            
+            for log_file in log_files:
+                try:
+                    file_mtime = datetime.fromtimestamp(os.path.getmtime(log_file))
+                    
+                    if file_mtime < cutoff_time:
+                        file_size = os.path.getsize(log_file)
+                        os.remove(log_file)
+                        deleted_count += 1
+                        logger.debug(
+                            f"🗑️ Hapus log lama: {log_file} "
+                            f"(umur: {(datetime.now() - file_mtime).days} hari, "
+                            f"size: {file_size / 1024:.1f}KB)"
+                        )
+                        
+                except (OSError, IOError) as e:
+                    logger.debug(f"Tidak dapat hapus log {log_file}: {e}")
+                except Exception as e:
+                    logger.debug(f"Error saat proses log {log_file}: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error saat cleanup log files: {e}")
         
         return deleted_count
     
