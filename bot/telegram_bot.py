@@ -6124,7 +6124,6 @@ class TradingBot:
                     logger.info("🔄 Memulai keep-alive loop untuk polling mode...")
                     keep_alive_counter = 0
                     consecutive_errors = 0
-                    MAX_CONSECUTIVE_ERRORS = 5
                     HEALTH_CHECK_INTERVAL = 30
                     
                     while not self._is_shutting_down:
@@ -6149,28 +6148,19 @@ class TradingBot:
                             else:
                                 consecutive_errors += 1
                                 self._bot_healthy = False
-                                logger.warning(f"⚠️ Polling not running ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
-                                
-                                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                                    logger.error("❌ Polling terlalu banyak error - keluar untuk restart")
-                                    raise RuntimeError("Polling stopped unexpectedly after max errors")
+                                logger.warning(f"⚠️ Polling not running ({consecutive_errors})")
                             
                         except asyncio.CancelledError:
                             logger.info("🛑 Telegram bot polling keep-alive loop cancelled")
                             self._bot_healthy = False
                             raise
-                        except RuntimeError:
-                            raise
                         except Exception as e:
                             consecutive_errors += 1
-                            logger.error(f"❌ Error dalam polling keep-alive ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {type(e).__name__}: {e}")
-                            
-                            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                                logger.error("❌ Terlalu banyak error - keluar dari keep-alive loop")
-                                self._bot_healthy = False
-                                raise RuntimeError(f"Polling keep-alive failed after {MAX_CONSECUTIVE_ERRORS} errors")
-                            
-                            await asyncio.sleep(5)
+                            self._bot_healthy = False
+                            logger.error(f"❌ Error dalam polling keep-alive: {type(e).__name__}: {e}")
+                            import random
+                            jitter = random.uniform(0.5, 2.0)
+                            await asyncio.sleep(jitter)
                     
                     self._bot_healthy = False
                     logger.info("🛑 Telegram bot polling mode dihentikan (shutdown flag set)")

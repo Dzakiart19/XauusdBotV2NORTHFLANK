@@ -45,6 +45,12 @@ The bot features a modular architecture for scalability and maintainability, des
 
 ## Recent Changes (December 2025)
 
+**Polling Mode Keep-Alive Fix (Dec 4):**
+- Fixed critical bug where Telegram bot task completes unexpectedly in polling mode
+- Added keep-alive loop for polling mode similar to webhook mode implementation
+- Loop monitors updater health every 30 seconds with consecutive error tracking
+- Prevents premature task completion and ensures 24/7 bot availability
+
 **Bot Restart Fix:**
 - Fixed "Updater is already running" error in main.py restart logic
 - Restart now follows proper sequence: stop() -> wait -> initialize() -> start_background_cleanup_tasks() -> run()
