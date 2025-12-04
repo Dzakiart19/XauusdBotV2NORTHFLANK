@@ -45,6 +45,14 @@ The bot features a modular architecture for scalability and maintainability, des
 
 ## Recent Changes (December 2025)
 
+**Critical Shutdown Flag Reset Fix (Dec 4):**
+- Fixed critical bug where `_is_shutting_down` flag was not reset in `initialize()` method
+- This caused bot to enter infinite restart loop after first restart
+- Bot polling would start, keep-alive loop would immediately exit (flag still True from previous stop())
+- Main.py would detect task completion and restart, creating endless cycle
+- Fix: Added `self._is_shutting_down = False` reset at start of `initialize()`
+- Bot now properly restarts and maintains stable polling connection
+
 **Polling Mode Keep-Alive Fix (Dec 4):**
 - Fixed critical bug where Telegram bot task completes unexpectedly in polling mode
 - Added keep-alive loop for polling mode similar to webhook mode implementation

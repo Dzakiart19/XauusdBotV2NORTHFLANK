@@ -5596,8 +5596,7 @@ class TradingBot:
 
     async def initialize(self):
         self._is_shutting_down = False
-        self._bot_healthy = False
-        logger.info("🔄 Reset shutdown/health flags for fresh start")
+        logger.info("🔄 Reset shutdown flag for fresh start")
         
         if not self.config.TELEGRAM_BOT_TOKEN:
             logger.error("Telegram bot token not configured!")
