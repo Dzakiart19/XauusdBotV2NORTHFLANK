@@ -61,6 +61,8 @@ The bot features a modular architecture designed for scalability and maintainabi
 ## Recent Changes (December 2024)
 - Implementasi command `/status` untuk melihat posisi aktif dan status koneksi
 - Implementasi command `/optimize` untuk melihat status auto-optimizer dan parameter trading
+- Auto-monitor sekarang aktif otomatis untuk SEMUA user (AUTHORIZED_USER_IDS + ID_USER_PUBLIC) saat bot restart
+- Emergency brake drawdown dinonaktifkan (DRAWDOWN_EMERGENCY_BRAKE_ENABLED=false) untuk sinyal unlimited
 - Perbaikan duplicate method `should_run_optimization` di auto_optimizer.py
 - Optimasi ukuran log files untuk menghemat storage Koyeb (dari 2.2M ke 524K)
 - Update dokumentasi command (12 command tersedia)
