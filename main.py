@@ -8,6 +8,7 @@ import atexit
 import psutil
 import glob
 import re
+import threading
 from datetime import timedelta
 from aiohttp import web
 from typing import Optional, Dict, Set, Any, Callable
@@ -17,6 +18,125 @@ from datetime import datetime
 from sqlalchemy import text
 
 LOCK_FILE_PATH = '/tmp/xauusd_trading_bot.lock'
+
+# KOYEB FIX: Start minimal health server IMMEDIATELY before heavy imports
+# This ensures Koyeb health checks pass while bot initializes
+# The server runs in a separate thread with its own event loop
+_quick_health_loop = None
+_quick_health_thread = None
+_quick_health_runner = None
+_quick_health_started = False
+_quick_health_stop_event = None
+_initialization_status = {"phase": "starting", "ready": False, "error": None}
+
+def _run_quick_health_server_thread(port: int, stop_event: threading.Event):
+    """Run the quick health server in a separate thread with its own event loop."""
+    global _quick_health_runner, _quick_health_started, _quick_health_loop
+    
+    _quick_health_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_quick_health_loop)
+    
+    async def quick_health(request):
+        """Ultra-lightweight health check - responds instantly"""
+        return web.json_response({
+            'status': 'ok',
+            'phase': _initialization_status.get('phase', 'starting'),
+            'ready': _initialization_status.get('ready', False),
+            'message': 'Bot initializing...' if not _initialization_status.get('ready') else 'Bot ready'
+        }, status=200)
+    
+    async def quick_ping(request):
+        """Ultra-lightweight ping - responds instantly"""
+        return web.Response(text='pong', status=200)
+    
+    async def quick_root(request):
+        """Root endpoint"""
+        return web.json_response({'status': 'ok', 'service': 'xauusd-trading-bot'}, status=200)
+    
+    async def run_server():
+        global _quick_health_runner, _quick_health_started
+        
+        app = web.Application()
+        app.router.add_get('/health', quick_health)
+        app.router.add_get('/ping', quick_ping)
+        app.router.add_get('/', quick_root)
+        app.router.add_get('/api/health', quick_health)
+        
+        _quick_health_runner = web.AppRunner(app)
+        await _quick_health_runner.setup()
+        
+        site = web.TCPSite(_quick_health_runner, '0.0.0.0', port)
+        await site.start()
+        
+        _quick_health_started = True
+        print(f"[QUICK-START] Health server running on port {port} - ready for Koyeb health checks")
+        
+        # Keep running until stop event is set
+        while not stop_event.is_set():
+            await asyncio.sleep(0.5)
+        
+        # Cleanup
+        await _quick_health_runner.cleanup()
+        _quick_health_started = False
+    
+    try:
+        _quick_health_loop.run_until_complete(run_server())
+    except Exception as e:
+        print(f"[QUICK-START] Error in health server thread: {e}")
+    finally:
+        _quick_health_loop.close()
+
+def start_quick_health_server():
+    """Start the quick health server in a background thread."""
+    global _quick_health_thread, _quick_health_stop_event
+    
+    if _quick_health_thread is not None and _quick_health_thread.is_alive():
+        return
+    
+    port = int(os.getenv('PORT', '8000'))
+    _quick_health_stop_event = threading.Event()
+    
+    _quick_health_thread = threading.Thread(
+        target=_run_quick_health_server_thread,
+        args=(port, _quick_health_stop_event),
+        daemon=True,
+        name="quick-health-server"
+    )
+    _quick_health_thread.start()
+    
+    # Wait briefly for server to start
+    import time
+    for _ in range(20):  # Wait up to 2 seconds
+        if _quick_health_started:
+            break
+        time.sleep(0.1)
+
+def stop_quick_health_server():
+    """Stop the quick health server (when main server takes over)"""
+    global _quick_health_stop_event, _quick_health_thread
+    
+    if _quick_health_stop_event:
+        _quick_health_stop_event.set()
+    
+    if _quick_health_thread and _quick_health_thread.is_alive():
+        _quick_health_thread.join(timeout=3.0)
+    
+    _quick_health_thread = None
+    _quick_health_stop_event = None
+    print("[QUICK-START] Health server stopped")
+
+def update_init_status(phase: str, ready: bool = False, error=None):
+    """Update initialization status for health endpoint"""
+    global _initialization_status
+    _initialization_status = {"phase": phase, "ready": ready, "error": error}
+
+# Start quick health server immediately in background thread
+try:
+    start_quick_health_server()
+except Exception as e:
+    print(f"[QUICK-START] Warning: Could not start quick health server: {e}")
+
+update_init_status("importing")
 
 from config import Config, ConfigError
 from bot.logger import setup_logger, mask_token, sanitize_log_message
@@ -40,6 +160,7 @@ from bot.signal_quality_tracker import SignalQualityTracker
 from bot.auto_optimizer import AutoOptimizer
 from bot.indicators import IndicatorEngine
 
+update_init_status("imports_complete")
 logger = setup_logger('Main')
 
 
@@ -1259,25 +1380,18 @@ class TradingBotOrchestrator:
         try:
             import socket
             
-            def is_port_in_use(port: int) -> bool:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    return s.connect_ex(('localhost', port)) == 0
+            # KOYEB FIX: Stop quick health server first, then start main server
+            global _quick_health_started
+            if _quick_health_started:
+                logger.info("Stopping quick health server, starting main health server...")
+                stop_quick_health_server()  # Synchronous call
+                # Small delay to ensure port is released
+                await asyncio.sleep(0.5)
             
             port = self.config.HEALTH_CHECK_PORT
-            max_port_attempts = 5
+            logger.info(f"Starting main health server on port {port}...")
             
-            for attempt in range(max_port_attempts):
-                if is_port_in_use(port):
-                    logger.warning(f"Port {port} is already in use (attempt {attempt + 1}/{max_port_attempts})")
-                    port += 1
-                    logger.info(f"Trying alternative port: {port}")
-                else:
-                    logger.info(f"✅ Port {port} is available")
-                    self.config.HEALTH_CHECK_PORT = port
-                    break
-            else:
-                logger.error(f"Could not find available port after {max_port_attempts} attempts")
-                raise Exception(f"All ports from {self.config.HEALTH_CHECK_PORT} to {port} are in use")
+            # Port should be available after stopping quick health server
             
             async def health_check(request):
                 missing_config = []
@@ -1388,74 +1502,44 @@ class TradingBotOrchestrator:
                 return web.json_response(health_status, status=status_code)
             
             async def telegram_webhook(request):
-                # Quick response untuk Telegram - harus respond dalam 60 detik
-                # Telegram akan retry jika tidak ada response
+                """KOYEB-OPTIMIZED: Non-blocking webhook handler.
+                
+                Responds IMMEDIATELY with 200 OK and processes in background.
+                This is critical for Koyeb where slow responses cause timeouts.
+                """
                 
                 if not self.config.TELEGRAM_WEBHOOK_MODE:
-                    logger.warning("⚠️ Webhook endpoint called but webhook mode is disabled")
-                    return web.json_response({'ok': False, 'error': 'Webhook mode is disabled'}, status=200)
+                    return web.json_response({'ok': True}, status=200)
                 
                 if not self.telegram_bot or not self.telegram_bot.app:
-                    # Log detailed error untuk debugging
-                    logger.error("❌ Webhook called but telegram bot not initialized")
-                    logger.error(f"   config_valid={self.config_valid}")
-                    logger.error(f"   token_set={bool(self.config.TELEGRAM_BOT_TOKEN)}")
-                    logger.error(f"   users_count={len(self.config.AUTHORIZED_USER_IDS)}")
-                    logger.error("   Check if TELEGRAM_BOT_TOKEN and AUTHORIZED_USER_IDS are set correctly")
-                    
-                    # Return 200 OK agar Telegram tidak terus retry
-                    # Tapi log error agar kita tahu ada masalah
-                    return web.json_response({
-                        'ok': False, 
-                        'error': 'Bot not initialized - check environment variables',
-                        'debug': {
-                            'config_valid': self.config_valid,
-                            'token_set': bool(self.config.TELEGRAM_BOT_TOKEN),
-                            'users_count': len(self.config.AUTHORIZED_USER_IDS)
-                        }
-                    }, status=200)
+                    logger.warning("⚠️ Webhook called but bot not ready - will respond OK to prevent retries")
+                    return web.json_response({'ok': True}, status=200)
                 
                 try:
                     update_data = await request.json()
                     update_id = update_data.get('update_id', 'unknown')
+                    
+                    # Log minimal info
                     message = update_data.get('message', {})
                     callback_query = update_data.get('callback_query', {})
-                    
-                    # Extract info from message or callback_query
                     if message:
-                        message_text = message.get('text', 'no text')
-                        user_id = message.get('from', {}).get('id', 'unknown')
+                        msg_text = message.get('text', '')[:30] if message.get('text') else 'no text'
                     elif callback_query:
-                        message_text = f"callback:{callback_query.get('data', 'unknown')}"
-                        user_id = callback_query.get('from', {}).get('id', 'unknown')
+                        msg_text = f"callback:{callback_query.get('data', 'unknown')[:20]}"
                     else:
-                        message_text = 'unknown update type'
-                        user_id = 'unknown'
+                        msg_text = 'other'
                     
-                    logger.info(f"📨 Webhook received: update_id={update_id}, user={user_id}, message='{message_text[:50]}'")
+                    logger.info(f"📨 Webhook: {update_id} - {msg_text}")
                     
-                    try:
-                        # Timeout 20 detik (buffer dari 60 detik Telegram limit)
-                        await asyncio.wait_for(
-                            self.telegram_bot.process_update(update_data),
-                            timeout=20.0
-                        )
-                        logger.info(f"✅ Webhook processed: update_id={update_id}")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"⚠️ Webhook processing timeout (20s): update_id={update_id}")
-                        # Process di background tapi tetap return OK ke Telegram
-                        asyncio.create_task(self._process_update_background(update_data, update_id))
-                        return web.json_response({'ok': True, 'note': 'processing_async'})
+                    # KOYEB FIX: Process ALWAYS in background, respond immediately
+                    asyncio.create_task(self._process_update_background(update_data, update_id))
                     
+                    # Return immediately - critical for Koyeb performance
                     return web.json_response({'ok': True})
                     
                 except Exception as e:
-                    logger.error(f"❌ Error processing webhook request: {e}")
-                    logger.error(f"Request path: {request.path}, Method: {request.method}")
-                    if self.error_handler:
-                        self.error_handler.log_exception(e, "webhook_endpoint")
-                    # Return 200 OK agar Telegram tidak terus retry
-                    return web.json_response({'ok': False, 'error': str(e)}, status=200)
+                    logger.error(f"❌ Webhook error: {e}")
+                    return web.json_response({'ok': True}, status=200)
             
             async def dashboard_page(request):
                 """Serve dashboard web app HTML"""
@@ -3110,6 +3194,7 @@ class TradingBotOrchestrator:
 
 
 async def main():
+    update_init_status("creating_orchestrator")
     orchestrator = TradingBotOrchestrator()
     loop = asyncio.get_running_loop()
     
@@ -3148,13 +3233,16 @@ async def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     try:
+        update_init_status("starting_orchestrator")
         await orchestrator.start()
+        update_init_status("running", ready=True)
         return 0
     except KeyboardInterrupt:
         logger.info("[SIGNAL] KeyboardInterrupt received")
         return 0
     except Exception as e:
         logger.error(f"[MAIN] Unhandled exception: {e}")
+        update_init_status("error", ready=False, error=str(e))
         return 1
     finally:
         if not orchestrator.shutdown_in_progress:
