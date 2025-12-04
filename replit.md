@@ -174,6 +174,13 @@ ADMIN_USER_ID=your_admin_telegram_id
 - Burst ping mode: extra pings every 10 cycles for Koyeb anti-idle
 - Warning log when Koyeb detected but aggressive mode disabled
 
+**Signal Spam Prevention & Monitoring Improvements (Dec 4):**
+- CRITICAL FIX: Early check di `_check_position_eligibility` sekarang memeriksa `position_tracker.has_active_position_async()` SEBELUM `signal_session_manager.can_create_signal()` - mencegah session spam saat user sudah punya posisi aktif
+- Added `POSITION_MONITORING_INTERVAL` config (env var override) untuk flexibility interval monitoring (default: 5s FREE_TIER, 10s normal)
+- Volume warning log level diubah dari INFO ke DEBUG di strategy.py untuk mengurangi log spam
+- Enhanced force close logging dengan masked user_id, entry price, dan session ID untuk traceability
+- Candle availability verified: M1=60, M5=60, H1=60 loaded dari database saat startup
+
 ## External Dependencies
 - **Deriv WebSocket API:** For real-time XAUUSD market data.
 - **Telegram Bot API (`python-telegram-bot`):** For all Telegram interactions.
