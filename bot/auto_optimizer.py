@@ -1435,3 +1435,191 @@ class AutoOptimizer:
         with self._lock:
             self.strategy_update_callback = callback
             logger.info("Strategy update callback set for AutoOptimizer")
+    
+    async def run_optimization_async(self, signal_quality_data: Optional[Dict[str, Any]] = None) -> OptimizationResult:
+        """
+        Async wrapper untuk run_optimization.
+        
+        Menjalankan optimization di thread pool untuk tidak blocking event loop.
+        
+        Args:
+            signal_quality_data: Data kualitas signal (opsional)
+        
+        Returns:
+            OptimizationResult dengan detail adjustments
+        """
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, self.run_optimization, signal_quality_data)
+            
+            if result.status == OptimizationStatus.SUCCESS.value:
+                logger.info(f"✅ Async optimization completed successfully with {len(result.adjustments)} adjustments")
+            elif result.status == OptimizationStatus.SKIPPED.value:
+                logger.debug(f"⏭️ Async optimization skipped: {result.error_message or 'No adjustments needed'}")
+            else:
+                logger.warning(f"⚠️ Async optimization status: {result.status}")
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error in async optimization: {e}")
+            return OptimizationResult(
+                status=OptimizationStatus.FAILED.value,
+                error_message=f"Async optimization failed: {str(e)}"
+            )
+    
+    def schedule_next_optimization(self) -> datetime:
+        """
+        Jadwalkan optimization berikutnya.
+        
+        Returns:
+            datetime: Waktu optimization berikutnya
+        """
+        with self._lock:
+            if self.config:
+                interval_hours = getattr(self.config, 'OPTIMIZATION_INTERVAL_HOURS', self.optimization_interval_hours)
+            else:
+                interval_hours = self.optimization_interval_hours
+            
+            if self._last_optimization_time:
+                next_time = self._last_optimization_time + timedelta(hours=interval_hours)
+            else:
+                next_time = datetime.now(pytz.UTC) + timedelta(hours=interval_hours)
+            
+            logger.info(f"📅 Next optimization scheduled for: {next_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+            return next_time
+    
+    def get_next_optimization_time(self) -> Optional[datetime]:
+        """
+        Dapatkan waktu optimization berikutnya.
+        
+        Returns:
+            datetime atau None jika optimizer disabled
+        """
+        with self._lock:
+            if not self._is_enabled:
+                return None
+            
+            if self.config:
+                interval_hours = getattr(self.config, 'OPTIMIZATION_INTERVAL_HOURS', self.optimization_interval_hours)
+            else:
+                interval_hours = self.optimization_interval_hours
+            
+            if self._last_optimization_time:
+                return self._last_optimization_time + timedelta(hours=interval_hours)
+            else:
+                return datetime.now(pytz.UTC)
+    
+    def get_optimization_report(self, days: int = 7) -> str:
+        """
+        Generate laporan optimization untuk periode tertentu.
+        
+        Args:
+            days: Jumlah hari untuk analisis (default 7)
+        
+        Returns:
+            Formatted string untuk Telegram
+        """
+        with self._lock:
+            report = f"📊 *Optimization Report ({days} Days)*\n\n"
+            
+            cutoff = datetime.now(pytz.UTC) - timedelta(days=days)
+            recent_history = [
+                opt for opt in self._optimization_history 
+                if opt.timestamp >= cutoff
+            ]
+            
+            report += "📈 *Summary*\n"
+            report += f"• Total Optimizations: {len(recent_history)}\n"
+            
+            if recent_history:
+                success_count = sum(1 for opt in recent_history if opt.status == OptimizationStatus.SUCCESS.value)
+                skipped_count = sum(1 for opt in recent_history if opt.status == OptimizationStatus.SKIPPED.value)
+                failed_count = sum(1 for opt in recent_history if opt.status == OptimizationStatus.FAILED.value)
+                
+                report += f"• Successful: {success_count}\n"
+                report += f"• Skipped: {skipped_count}\n"
+                report += f"• Failed: {failed_count}\n"
+                
+                total_adjustments = sum(len(opt.adjustments) for opt in recent_history)
+                report += f"• Total Adjustments: {total_adjustments}\n\n"
+                
+                adjustment_types: Dict[str, int] = {}
+                for opt in recent_history:
+                    for adj in opt.adjustments:
+                        adj_type = adj.adjustment_type
+                        adjustment_types[adj_type] = adjustment_types.get(adj_type, 0) + 1
+                
+                if adjustment_types:
+                    report += "🔧 *Adjustment Types*\n"
+                    for adj_type, count in sorted(adjustment_types.items(), key=lambda x: x[1], reverse=True)[:5]:
+                        report += f"• {adj_type}: {count}x\n"
+                    report += "\n"
+                
+                avg_accuracy = sum(
+                    opt.analysis_summary.get('overall_accuracy', 0) 
+                    for opt in recent_history if opt.analysis_summary
+                ) / len([opt for opt in recent_history if opt.analysis_summary]) if recent_history else 0
+                
+                report += f"📊 *Average Accuracy*: {avg_accuracy*100:.1f}%\n\n"
+                
+                latest = recent_history[-1]
+                report += "📝 *Latest Optimization*\n"
+                report += f"• Time: {latest.timestamp.strftime('%Y-%m-%d %H:%M')} UTC\n"
+                report += f"• Status: {latest.status}\n"
+                report += f"• Signals Analyzed: {latest.signals_analyzed}\n"
+                if latest.adjustments:
+                    report += f"• Adjustments: {len(latest.adjustments)}\n"
+                    for adj in latest.adjustments[:3]:
+                        report += f"  └─ {adj.parameter_name}: {adj.old_value} → {adj.new_value}\n"
+                
+                if latest.recommendations:
+                    report += "\n💡 *Recommendations*\n"
+                    for rec in latest.recommendations[:3]:
+                        report += f"• {rec}\n"
+            else:
+                report += "\nNo optimizations performed in this period.\n"
+            
+            report += "\n📊 *Current Parameters*\n"
+            report += f"• Min Confluence: {self._current_parameters.min_confluence_required}\n"
+            report += f"• Volume Multiplier: {self._current_parameters.volume_threshold_multiplier:.2f}\n"
+            report += f"• EMA Strictness: {self._current_parameters.ema_strictness:.2f}\n"
+            report += f"• Signal Cooldown: {self._current_parameters.signal_cooldown}s\n"
+            
+            next_opt = self.get_next_optimization_time()
+            if next_opt:
+                time_until = next_opt - datetime.now(pytz.UTC)
+                hours_until = time_until.total_seconds() / 3600
+                if hours_until > 0:
+                    report += f"\n⏰ *Next Optimization*: in {hours_until:.1f}h\n"
+                else:
+                    report += f"\n⏰ *Next Optimization*: Soon\n"
+            
+            return report
+    
+    def should_run_optimization(self) -> Tuple[bool, str]:
+        """
+        Cek apakah optimization harus dijalankan.
+        
+        Returns:
+            Tuple (should_run: bool, reason: str)
+        """
+        with self._lock:
+            if not self._is_enabled:
+                return False, "Optimizer is disabled"
+            
+            if self.config:
+                interval_hours = getattr(self.config, 'OPTIMIZATION_INTERVAL_HOURS', self.optimization_interval_hours)
+            else:
+                interval_hours = self.optimization_interval_hours
+            
+            if self._last_optimization_time is None:
+                return True, "No previous optimization - running first optimization"
+            
+            time_since = datetime.now(pytz.UTC) - self._last_optimization_time
+            hours_since = time_since.total_seconds() / 3600
+            
+            if hours_since >= interval_hours:
+                return True, f"Interval passed ({hours_since:.1f}h >= {interval_hours}h)"
+            
+            return False, f"Not yet time ({hours_since:.1f}h < {interval_hours}h)"

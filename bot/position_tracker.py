@@ -1452,6 +1452,457 @@ class PositionTracker:
         
         return sl_adjusted, new_sl
     
+    async def auto_update_trailing_stop(self, user_id: int, position_id: int, 
+                                         current_price: float, unrealized_pl: float) -> tuple[bool, Optional[float]]:
+        """Auto-update trailing stop dengan database persistence dan audit logging.
+        
+        Method ini dipanggil dari update_position() setiap tick.
+        - Cek profit >= TRAILING_STOP_MOVE_PIPS (default 5 pips)
+        - Move SL dengan distance TRAILING_STOP_TRAIL_DISTANCE_PIPS (default 3 pips) dari current price
+        - Update Position.stop_loss di database
+        - Log semua trailing stop updates untuk audit trail
+        - Respect DRY_RUN_TRAILING_STOP flag
+        
+        Args:
+            user_id: User ID
+            position_id: Position ID
+            current_price: Current market price
+            unrealized_pl: Unrealized P/L in dollars
+            
+        Returns:
+            tuple[bool, Optional[float]]: (sl_adjusted, new_stop_loss)
+        """
+        async with self._position_lock:
+            if user_id not in self.active_positions or position_id not in self.active_positions[user_id]:
+                return False, None
+            
+            pos = self.active_positions[user_id][position_id].copy()
+        
+        pos = self._normalize_position_dict(pos)
+        signal_type = pos['signal_type']
+        entry_price = pos['entry_price']
+        stop_loss = pos['stop_loss']
+        
+        profit_pips = unrealized_pl * self.config.XAUUSD_PIP_VALUE
+        
+        move_threshold_pips = getattr(self.config, 'TRAILING_STOP_MOVE_PIPS', 5.0)
+        trail_distance_pips = getattr(self.config, 'TRAILING_STOP_TRAIL_DISTANCE_PIPS', 3.0)
+        
+        if profit_pips < move_threshold_pips:
+            return False, None
+        
+        trail_distance = trail_distance_pips / self.config.XAUUSD_PIP_VALUE
+        
+        new_trailing_sl = None
+        sl_adjusted = False
+        old_stop_loss = stop_loss
+        
+        if signal_type == 'BUY':
+            new_trailing_sl = current_price - trail_distance
+            if new_trailing_sl > stop_loss:
+                sl_adjusted = True
+        else:
+            new_trailing_sl = current_price + trail_distance
+            if new_trailing_sl < stop_loss:
+                sl_adjusted = True
+        
+        if not sl_adjusted:
+            return False, None
+        
+        dry_run = getattr(self.config, 'DRY_RUN_TRAILING_STOP', False)
+        
+        logger.info(
+            f"📊 [TRAILING_STOP_AUDIT] Position:{position_id} User:{user_id} | "
+            f"Mode:{'DRY_RUN' if dry_run else 'LIVE'} | "
+            f"Type:{signal_type} | Entry:${entry_price:.2f} | "
+            f"Price:${current_price:.2f} | Profit:{profit_pips:.1f}pips (${unrealized_pl:.2f}) | "
+            f"SL:${old_stop_loss:.2f}→${new_trailing_sl:.2f}"
+        )
+        
+        if dry_run:
+            logger.info(f"🧪 [DRY_RUN] Trailing stop TIDAK di-update karena DRY_RUN_TRAILING_STOP=true")
+            return False, None
+        
+        async with self._position_lock:
+            if user_id in self.active_positions and position_id in self.active_positions[user_id]:
+                self.active_positions[user_id][position_id]['stop_loss'] = new_trailing_sl
+                self.active_positions[user_id][position_id]['sl_adjustment_count'] = \
+                    self.active_positions[user_id][position_id].get('sl_adjustment_count', 0) + 1
+                
+                max_profit = self.active_positions[user_id][position_id].get('max_profit_reached', 0.0)
+                if max_profit is None:
+                    max_profit = 0.0
+                if unrealized_pl > max_profit:
+                    self.active_positions[user_id][position_id]['max_profit_reached'] = unrealized_pl
+        
+        db_session = None
+        db_commit_success = False
+        max_retry_attempts = 3
+        
+        try:
+            db_session = self.db.get_session()
+            if db_session is None:
+                logger.error(f"❌ [TRAILING_STOP_DB] Failed to get database session for position {position_id}")
+            else:
+                position = db_session.query(Position).filter(
+                    Position.id == position_id, 
+                    Position.user_id == user_id
+                ).first()
+                
+                if position:
+                    old_db_sl = position.stop_loss
+                    position.stop_loss = new_trailing_sl
+                    position.sl_adjustment_count = (position.sl_adjustment_count or 0) + 1
+                    position.last_price_update = datetime.now(pytz.UTC)
+                    
+                    current_max = position.max_profit_reached if position.max_profit_reached is not None else 0.0
+                    if unrealized_pl > current_max:
+                        position.max_profit_reached = unrealized_pl
+                    
+                    last_commit_error = None
+                    for attempt in range(1, max_retry_attempts + 1):
+                        try:
+                            logger.info(
+                                f"🔄 [TRAILING_STOP_DB_RETRY] Position:{position_id} | "
+                                f"Attempt {attempt}/{max_retry_attempts} | Committing SL update..."
+                            )
+                            db_session.commit()
+                            db_commit_success = True
+                            
+                            logger.info(
+                                f"✅ [TRAILING_STOP_DB_COMMIT] Position:{position_id} | "
+                                f"SL: ${old_db_sl:.2f} → ${new_trailing_sl:.2f} | "
+                                f"Adjustment count: {position.sl_adjustment_count} | "
+                                f"Commit: SUCCESS (attempt {attempt}/{max_retry_attempts})"
+                            )
+                            break
+                            
+                        except (IntegrityError, OperationalError, SQLAlchemyError) as commit_err:
+                            last_commit_error = commit_err
+                            logger.warning(
+                                f"⚠️ [TRAILING_STOP_DB_RETRY] Position:{position_id} | "
+                                f"Attempt {attempt}/{max_retry_attempts} FAILED: {type(commit_err).__name__}: {commit_err}"
+                            )
+                            
+                            try:
+                                db_session.rollback()
+                                logger.info(
+                                    f"🔄 [TRAILING_STOP_DB_RETRY] Position:{position_id} | "
+                                    f"Rollback executed after attempt {attempt}"
+                                )
+                            except Exception as rb_err:
+                                logger.error(
+                                    f"❌ [TRAILING_STOP_DB_RETRY] Position:{position_id} | "
+                                    f"Rollback failed after attempt {attempt}: {rb_err}"
+                                )
+                            
+                            if attempt < max_retry_attempts:
+                                retry_delay = 0.5 * attempt
+                                logger.info(
+                                    f"⏳ [TRAILING_STOP_DB_RETRY] Position:{position_id} | "
+                                    f"Waiting {retry_delay}s before retry {attempt + 1}..."
+                                )
+                                await asyncio.sleep(retry_delay)
+                                
+                                position = db_session.query(Position).filter(
+                                    Position.id == position_id, 
+                                    Position.user_id == user_id
+                                ).first()
+                                if position:
+                                    position.stop_loss = new_trailing_sl
+                                    position.sl_adjustment_count = (position.sl_adjustment_count or 0) + 1
+                                    position.last_price_update = datetime.now(pytz.UTC)
+                                    if unrealized_pl > (position.max_profit_reached or 0.0):
+                                        position.max_profit_reached = unrealized_pl
+                    
+                    if not db_commit_success and last_commit_error:
+                        logger.error(
+                            f"❌ [TRAILING_STOP_DB_RETRY] Position:{position_id} | "
+                            f"All {max_retry_attempts} attempts FAILED | "
+                            f"Last error: {type(last_commit_error).__name__}: {last_commit_error}"
+                        )
+                else:
+                    logger.warning(f"⚠️ Position {position_id} tidak ditemukan di database untuk trailing stop update")
+                
+        except (IntegrityError, OperationalError, SQLAlchemyError) as e:
+            logger.error(f"❌ [TRAILING_STOP_DB_ERROR] Database error updating position {position_id}: {e}")
+            if db_session:
+                try:
+                    db_session.rollback()
+                    logger.info(f"🔄 [TRAILING_STOP_DB] Rollback executed for position {position_id}")
+                except Exception as rb_err:
+                    logger.error(f"❌ [TRAILING_STOP_DB] Rollback failed: {rb_err}")
+        except Exception as e:
+            logger.error(f"❌ [TRAILING_STOP_DB_ERROR] Unexpected error for position {position_id}: {e}")
+            if db_session:
+                try:
+                    db_session.rollback()
+                except Exception:
+                    pass
+        finally:
+            if db_session:
+                try:
+                    db_session.close()
+                    logger.debug(f"🔒 [TRAILING_STOP_DB] Session closed for position {position_id}")
+                except Exception as close_err:
+                    logger.error(f"❌ [TRAILING_STOP_DB] Session close error: {close_err}")
+        
+        if not db_commit_success:
+            logger.warning(f"⚠️ [TRAILING_STOP_DB] Database commit was NOT successful for position {position_id}")
+        
+        should_notify = self._check_trailing_stop_notify_cooldown(user_id, position_id)
+        
+        if should_notify:
+            msg = (
+                f"💎 *Trailing Stop Auto-Update*\n\n"
+                f"Position ID: {position_id}\n"
+                f"Type: {signal_type}\n"
+                f"Profit Saat Ini: +{profit_pips:.1f} pips (${unrealized_pl:.2f})\n"
+                f"SL Diperbarui: ${old_stop_loss:.2f} → ${new_trailing_sl:.2f}\n"
+                f"Jarak Trail: {trail_distance_pips} pips\n"
+                f"Status: Profit terkunci! ✅"
+            )
+            if await self._safe_send_notification(user_id, msg, parse_mode='Markdown'):
+                self._update_trailing_stop_notify_time(user_id, position_id)
+        
+        return True, new_trailing_sl
+    
+    async def check_and_execute_partial_exit(self, user_id: int, position_id: int,
+                                              current_price: float, unrealized_pl: float) -> Optional[str]:
+        """Check dan execute partial exit saat TP1 (1.0x risk) dan TP2 (1.5x risk).
+        
+        Strategy:
+        - TP1 (1.0x risk): Close 40% posisi, move SL ke breakeven
+        - TP2 (1.5x risk): Close 35% posisi
+        - Remaining 25%: Trailing stop aktif sampai TP full atau SL hit
+        
+        Args:
+            user_id: User ID
+            position_id: Position ID
+            current_price: Current market price
+            unrealized_pl: Unrealized P/L in dollars
+            
+        Returns:
+            Optional[str]: Partial exit reason if triggered, None otherwise
+        """
+        if not getattr(self.config, 'PARTIAL_EXIT_ENABLED', False):
+            return None
+        
+        async with self._position_lock:
+            if user_id not in self.active_positions or position_id not in self.active_positions[user_id]:
+                return None
+            
+            pos = self.active_positions[user_id][position_id].copy()
+        
+        pos = self._normalize_position_dict(pos)
+        signal_type = pos['signal_type']
+        entry_price = pos['entry_price']
+        stop_loss = pos['stop_loss']
+        original_sl = pos.get('original_sl', stop_loss)
+        
+        tp1_triggered = pos.get('tp1_triggered', False)
+        tp2_triggered = pos.get('tp2_triggered', False)
+        
+        if tp1_triggered and tp2_triggered:
+            return None
+        
+        risk_distance = abs(entry_price - original_sl)
+        profit_distance = abs(current_price - entry_price)
+        
+        if risk_distance <= 0:
+            return None
+        
+        risk_reward_ratio = profit_distance / risk_distance
+        
+        tp1_rr = getattr(self.config, 'PARTIAL_EXIT_TP1_RR', 1.0)
+        tp2_rr = getattr(self.config, 'PARTIAL_EXIT_TP2_RR', 1.5)
+        tp1_percent = getattr(self.config, 'PARTIAL_EXIT_TP1_PERCENT', 40.0)
+        tp2_percent = getattr(self.config, 'PARTIAL_EXIT_TP2_PERCENT', 35.0)
+        
+        if signal_type == 'BUY':
+            is_in_profit = current_price > entry_price
+        else:
+            is_in_profit = current_price < entry_price
+        
+        if not is_in_profit:
+            return None
+        
+        partial_exit_reason = None
+        
+        if not tp1_triggered and risk_reward_ratio >= tp1_rr:
+            partial_exit_reason = 'PARTIAL_TP1'
+            
+            logger.info(
+                f"🎯 [PARTIAL_EXIT_TP1] Position:{position_id} User:{user_id} | "
+                f"RR={risk_reward_ratio:.2f}x >= TP1={tp1_rr}x | "
+                f"Exit {tp1_percent}% posisi | Move SL ke breakeven"
+            )
+            
+            async with self._position_lock:
+                if user_id in self.active_positions and position_id in self.active_positions[user_id]:
+                    self.active_positions[user_id][position_id]['tp1_triggered'] = True
+                    
+                    old_sl = self.active_positions[user_id][position_id]['stop_loss']
+                    if signal_type == 'BUY' and entry_price > old_sl:
+                        self.active_positions[user_id][position_id]['stop_loss'] = entry_price
+                        logger.info(f"🛡️ SL moved to breakeven: ${old_sl:.2f} → ${entry_price:.2f}")
+                    elif signal_type == 'SELL' and entry_price < old_sl:
+                        self.active_positions[user_id][position_id]['stop_loss'] = entry_price
+                        logger.info(f"🛡️ SL moved to breakeven: ${old_sl:.2f} → ${entry_price:.2f}")
+            
+            partial_pl = unrealized_pl * (tp1_percent / 100)
+            
+            db_session = None
+            try:
+                db_session = self.db.get_session()
+                if db_session is None:
+                    logger.error(f"❌ [PARTIAL_TP1] Failed to get database session")
+                else:
+                    position = db_session.query(Position).filter(
+                        Position.id == position_id,
+                        Position.user_id == user_id
+                    ).first()
+                    
+                    if position:
+                        position.stop_loss = entry_price
+                        position.sl_adjustment_count = (position.sl_adjustment_count or 0) + 1
+                        position.last_price_update = datetime.now(pytz.UTC)
+                        
+                        partial_trade = Trade(
+                            user_id=user_id,
+                            ticker='XAUUSD',
+                            signal_type=signal_type,
+                            signal_source='partial_tp1',
+                            entry_price=entry_price,
+                            stop_loss=original_sl,
+                            take_profit=pos.get('take_profit', 0),
+                            exit_price=current_price,
+                            actual_pl=partial_pl,
+                            status='CLOSED',
+                            signal_time=pos.get('opened_at', datetime.now(pytz.UTC)),
+                            close_time=datetime.now(pytz.UTC),
+                            result='WIN' if partial_pl > 0 else 'LOSS',
+                            timeframe='M1'
+                        )
+                        db_session.add(partial_trade)
+                        db_session.commit()
+                        
+                        logger.info(
+                            f"✅ [PARTIAL_TP1_DB_COMMIT] Position:{position_id} | "
+                            f"Trade recorded: ${partial_pl:.2f} ({tp1_percent}%) | "
+                            f"SL moved to breakeven=${entry_price:.2f}"
+                        )
+            except Exception as e:
+                logger.error(f"❌ [PARTIAL_TP1] Database error: {e}")
+                if db_session:
+                    try:
+                        db_session.rollback()
+                    except Exception:
+                        pass
+            finally:
+                if db_session:
+                    try:
+                        db_session.close()
+                    except Exception:
+                        pass
+            
+            msg = (
+                f"🎯 *Partial Take Profit - TP1*\n\n"
+                f"Position ID: {position_id}\n"
+                f"Type: {signal_type}\n"
+                f"Risk/Reward: {risk_reward_ratio:.2f}x (target: {tp1_rr}x)\n"
+                f"Profit Partial: ${partial_pl:.2f} ({tp1_percent}%)\n"
+                f"Total Unrealized: ${unrealized_pl:.2f}\n\n"
+                f"✅ Exit {tp1_percent}% posisi\n"
+                f"🛡️ SL dipindah ke breakeven: ${entry_price:.2f}\n"
+                f"📊 Sisa {100 - tp1_percent}% dengan trailing stop"
+            )
+            notification_sent = await self._safe_send_notification(user_id, msg, parse_mode='Markdown')
+            logger.info(f"📤 [PARTIAL_TP1] Notification sent: {notification_sent}")
+            
+        elif tp1_triggered and not tp2_triggered and risk_reward_ratio >= tp2_rr:
+            partial_exit_reason = 'PARTIAL_TP2'
+            
+            logger.info(
+                f"🎯 [PARTIAL_EXIT_TP2] Position:{position_id} User:{user_id} | "
+                f"RR={risk_reward_ratio:.2f}x >= TP2={tp2_rr}x | "
+                f"Exit {tp2_percent}% posisi"
+            )
+            
+            async with self._position_lock:
+                if user_id in self.active_positions and position_id in self.active_positions[user_id]:
+                    self.active_positions[user_id][position_id]['tp2_triggered'] = True
+            
+            remaining_percent = 100 - tp1_percent - tp2_percent
+            partial_pl = unrealized_pl * (tp2_percent / 100)
+            
+            db_session = None
+            try:
+                db_session = self.db.get_session()
+                if db_session is None:
+                    logger.error(f"❌ [PARTIAL_TP2] Failed to get database session")
+                else:
+                    position = db_session.query(Position).filter(
+                        Position.id == position_id,
+                        Position.user_id == user_id
+                    ).first()
+                    
+                    if position:
+                        position.last_price_update = datetime.now(pytz.UTC)
+                        
+                        partial_trade = Trade(
+                            user_id=user_id,
+                            ticker='XAUUSD',
+                            signal_type=signal_type,
+                            signal_source='partial_tp2',
+                            entry_price=entry_price,
+                            stop_loss=original_sl,
+                            take_profit=pos.get('take_profit', 0),
+                            exit_price=current_price,
+                            actual_pl=partial_pl,
+                            status='CLOSED',
+                            signal_time=pos.get('opened_at', datetime.now(pytz.UTC)),
+                            close_time=datetime.now(pytz.UTC),
+                            result='WIN' if partial_pl > 0 else 'LOSS',
+                            timeframe='M1'
+                        )
+                        db_session.add(partial_trade)
+                        db_session.commit()
+                        
+                        logger.info(
+                            f"✅ [PARTIAL_TP2_DB_COMMIT] Position:{position_id} | "
+                            f"Trade recorded: ${partial_pl:.2f} ({tp2_percent}%) | "
+                            f"Remaining: {remaining_percent}%"
+                        )
+            except Exception as e:
+                logger.error(f"❌ [PARTIAL_TP2] Database error: {e}")
+                if db_session:
+                    try:
+                        db_session.rollback()
+                    except Exception:
+                        pass
+            finally:
+                if db_session:
+                    try:
+                        db_session.close()
+                    except Exception:
+                        pass
+            
+            msg = (
+                f"🎯 *Partial Take Profit - TP2*\n\n"
+                f"Position ID: {position_id}\n"
+                f"Type: {signal_type}\n"
+                f"Risk/Reward: {risk_reward_ratio:.2f}x (target: {tp2_rr}x)\n"
+                f"Profit Partial: ${partial_pl:.2f} ({tp2_percent}%)\n"
+                f"Total Unrealized: ${unrealized_pl:.2f}\n\n"
+                f"✅ Exit tambahan {tp2_percent}% posisi\n"
+                f"📊 Sisa {remaining_percent}% dengan trailing stop aktif"
+            )
+            notification_sent = await self._safe_send_notification(user_id, msg, parse_mode='Markdown')
+            logger.info(f"📤 [PARTIAL_TP2] Notification sent: {notification_sent}")
+        
+        return partial_exit_reason
+    
     async def _check_grade_based_auto_close(self, user_id: int, position_id: int, 
                                             pos: Dict, unrealized_pl: float) -> Optional[str]:
         """Check if position should be auto-closed based on signal grade and duration.
@@ -1598,12 +2049,27 @@ class PositionTracker:
             
             if not dynamic_sl_applied:
                 try:
-                    trailing_applied, new_sl = await self.apply_trailing_stop(user_id, position_id, current_price, unrealized_pl)
-                    if trailing_applied:
+                    auto_trailing_applied, new_sl = await self.auto_update_trailing_stop(
+                        user_id, position_id, current_price, unrealized_pl
+                    )
+                    if auto_trailing_applied:
                         sl_adjusted = True
                         stop_loss = new_sl
                 except (asyncio.TimeoutError, asyncio.CancelledError, KeyError, ValueError, AttributeError) as e:
-                    logger.error(f"Error applying trailing stop for position {position_id}: {e}")
+                    logger.error(f"Error applying auto trailing stop for position {position_id}: {e}")
+            
+            try:
+                partial_exit_reason = await self.check_and_execute_partial_exit(
+                    user_id, position_id, current_price, unrealized_pl
+                )
+                if partial_exit_reason:
+                    logger.info(f"📊 Partial exit triggered: {partial_exit_reason} for position {position_id}")
+                    async with self._position_lock:
+                        if user_id in self.active_positions and position_id in self.active_positions[user_id]:
+                            stop_loss = self.active_positions[user_id][position_id]['stop_loss']
+                            sl_adjusted = True
+            except (asyncio.TimeoutError, asyncio.CancelledError, KeyError, ValueError, AttributeError) as e:
+                logger.error(f"Error checking partial exit for position {position_id}: {e}")
             
             async with self._position_lock:
                 if user_id in self.active_positions and position_id in self.active_positions[user_id]:

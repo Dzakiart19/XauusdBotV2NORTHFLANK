@@ -1056,3 +1056,175 @@ class SignalQualityTracker:
                 logger.info(f"Cleared {count} blocked signals for user {user_id}")
                 return count
             return 0
+    
+    def get_quality_grade(self, signal_params: Dict[str, Any]) -> str:
+        """
+        Dapatkan quality grade untuk signal berdasarkan parameter.
+        
+        Grade ditentukan berdasarkan:
+        - Confluence level
+        - Confidence score
+        - Historical win rate untuk rule_name
+        - Market regime suitability
+        
+        Args:
+            signal_params: Dict dengan parameter signal:
+                - rule_name: Nama rule (M1_SCALP, M5_SWING, etc)
+                - confluence_level: Jumlah confluence
+                - confidence: Tingkat keyakinan (0.0-1.0)
+                - market_regime: Kondisi pasar saat ini
+        
+        Returns:
+            Grade string: 'A', 'B', 'C', 'D', atau 'F'
+        """
+        try:
+            confluence_level = signal_params.get('confluence_level', 2)
+            confidence = signal_params.get('confidence', 0.0)
+            rule_name = signal_params.get('rule_name', 'UNKNOWN')
+            
+            base_score = 0.0
+            
+            if confluence_level >= 4:
+                base_score += 40
+            elif confluence_level >= 3:
+                base_score += 30
+            elif confluence_level >= 2:
+                base_score += 20
+            else:
+                base_score += 10
+            
+            confidence_score = confidence * 30
+            base_score += confidence_score
+            
+            historical_accuracy = self.get_accuracy_by_type(rule_name, last_n_signals=30)
+            if historical_accuracy >= 0:
+                if historical_accuracy >= 0.60:
+                    base_score += 30
+                elif historical_accuracy >= 0.50:
+                    base_score += 20
+                elif historical_accuracy >= 0.40:
+                    base_score += 10
+                else:
+                    base_score -= 10
+            else:
+                base_score += 15
+            
+            if base_score >= 85:
+                grade = 'A'
+            elif base_score >= 70:
+                grade = 'B'
+            elif base_score >= 55:
+                grade = 'C'
+            elif base_score >= 40:
+                grade = 'D'
+            else:
+                grade = 'F'
+            
+            logger.debug(
+                f"📊 Quality grade for {rule_name}: {grade} "
+                f"(score={base_score:.1f}, conf={confluence_level}, confidence={confidence:.2f})"
+            )
+            
+            return grade
+            
+        except Exception as e:
+            logger.error(f"Error calculating quality grade: {e}")
+            return 'C'
+    
+    def should_block_signal(self, signal_params: Dict[str, Any], 
+                           min_grade: str = 'C', 
+                           min_win_rate: float = 40.0) -> Tuple[bool, str]:
+        """
+        Cek apakah signal harus di-block berdasarkan quality grade dan win rate.
+        
+        Args:
+            signal_params: Dict dengan parameter signal
+            min_grade: Minimum grade yang diperbolehkan (default 'C')
+            min_win_rate: Minimum win rate persen (default 40.0)
+        
+        Returns:
+            Tuple (should_block: bool, reason: str)
+        """
+        try:
+            if self.config:
+                min_grade = getattr(self.config, 'MIN_SIGNAL_QUALITY_GRADE', 'C')
+                min_win_rate = getattr(self.config, 'MIN_WIN_RATE_PERCENT', 40.0)
+            
+            grade = self.get_quality_grade(signal_params)
+            signal_params['grade'] = grade
+            
+            grade_order = {'A': 5, 'B': 4, 'C': 3, 'D': 2, 'F': 1}
+            signal_grade_value = grade_order.get(grade, 0)
+            min_grade_value = grade_order.get(min_grade, 3)
+            
+            if signal_grade_value < min_grade_value:
+                reason = f"LOW_QUALITY_GRADE: Signal grade {grade} < minimum {min_grade}"
+                logger.info(f"🚫 Signal blocked - {reason}")
+                return True, reason
+            
+            rule_name = signal_params.get('rule_name', 'UNKNOWN')
+            historical_accuracy = self.get_accuracy_by_type(rule_name, last_n_signals=30)
+            
+            if historical_accuracy >= 0:
+                win_rate_percent = historical_accuracy * 100
+                if win_rate_percent < min_win_rate:
+                    reason = f"LOW_WIN_RATE: {rule_name} win rate {win_rate_percent:.1f}% < minimum {min_win_rate}%"
+                    logger.info(f"🚫 Signal blocked - {reason}")
+                    return True, reason
+            
+            logger.debug(
+                f"✅ Signal passed quality check: grade={grade}, "
+                f"win_rate={historical_accuracy*100:.1f}% (min={min_win_rate}%)"
+            )
+            return False, ""
+            
+        except Exception as e:
+            logger.error(f"Error in should_block_signal: {e}")
+            return False, ""
+    
+    def get_all_blocking_stats(self, minutes: int = 60) -> Dict[str, Any]:
+        """
+        Get aggregate blocking statistics untuk semua users.
+        
+        Args:
+            minutes: Window waktu untuk analisis
+        
+        Returns:
+            Dict dengan aggregate blocking stats
+        """
+        now = datetime.now(pytz.UTC)
+        window_start = now - timedelta(minutes=minutes)
+        
+        total_blocked = 0
+        by_reason: Dict[str, int] = {}
+        by_type: Dict[str, int] = {}
+        by_grade: Dict[str, int] = {}
+        high_quality_blocked = 0
+        
+        with self._blocked_signals_lock:
+            for user_id, blocked_list in self._blocked_signals.items():
+                for entry in blocked_list:
+                    if entry.get('timestamp', now) >= window_start:
+                        total_blocked += 1
+                        
+                        reason = entry.get('blocking_reason', 'unknown')
+                        by_reason[reason] = by_reason.get(reason, 0) + 1
+                        
+                        sig_type = entry.get('signal_type', 'unknown')
+                        by_type[sig_type] = by_type.get(sig_type, 0) + 1
+                        
+                        grade = entry.get('grade', 'N/A')
+                        by_grade[grade] = by_grade.get(grade, 0) + 1
+                        
+                        if grade in ['A', 'Grade A'] or entry.get('confidence', 0) >= 0.9:
+                            high_quality_blocked += 1
+        
+        return {
+            'total_blocked': total_blocked,
+            'window_minutes': minutes,
+            'by_reason': by_reason,
+            'by_type': by_type,
+            'by_grade': by_grade,
+            'high_quality_blocked': high_quality_blocked,
+            'timestamp': now.isoformat()
+        }

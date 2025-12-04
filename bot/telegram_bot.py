@@ -396,7 +396,11 @@ class TradingBot:
         self._dashboard_cleanup_task: Optional[asyncio.Task] = None
         self._auto_optimization_task: Optional[asyncio.Task] = None
         self._chart_cleanup_task: Optional[asyncio.Task] = None
+        self._aggressive_chart_cleanup_task: Optional[asyncio.Task] = None
         self._cleanup_tasks_running: bool = False
+        
+        self._chart_cleanup_interval_minutes = getattr(self.config, 'CHART_CLEANUP_INTERVAL_MINUTES', 5)
+        logger.info(f"✅ Aggressive chart cleanup interval: {self._chart_cleanup_interval_minutes} minutes")
         
         self._cache_telemetry = {
             'hits': 0,
@@ -1062,6 +1066,10 @@ class TradingBot:
             self._chart_cleanup_task = asyncio.create_task(self._pending_chart_cleanup_loop())
             logger.info("✅ Pending chart cleanup background task started")
         
+        if self._aggressive_chart_cleanup_task is None or self._aggressive_chart_cleanup_task.done():
+            self._aggressive_chart_cleanup_task = asyncio.create_task(self._aggressive_chart_cleanup_loop())
+            logger.info(f"✅ Aggressive chart cleanup background task started (interval: {self._chart_cleanup_interval_minutes}min)")
+        
         if self.auto_optimizer and (self._auto_optimization_task is None or self._auto_optimization_task.done()):
             self._auto_optimization_task = asyncio.create_task(self._auto_optimization_loop())
             logger.info("✅ Auto-optimization background task started")
@@ -1097,6 +1105,15 @@ class TradingBot:
                 pass
             self._chart_cleanup_task = None
             logger.info("Pending chart cleanup task stopped")
+        
+        if self._aggressive_chart_cleanup_task and not self._aggressive_chart_cleanup_task.done():
+            self._aggressive_chart_cleanup_task.cancel()
+            try:
+                await asyncio.wait_for(self._aggressive_chart_cleanup_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            self._aggressive_chart_cleanup_task = None
+            logger.info("Aggressive chart cleanup task stopped")
         
         if self._auto_optimization_task and not self._auto_optimization_task.done():
             self._auto_optimization_task.cancel()
@@ -1567,6 +1584,55 @@ class TradingBot:
                     
         except asyncio.CancelledError:
             logger.info("Pending chart cleanup loop cancelled")
+    
+    async def _aggressive_chart_cleanup_loop(self):
+        """Background task for aggressive chart cleanup using ChartGenerator.
+        
+        Runs every CHART_CLEANUP_INTERVAL_MINUTES (default 5 min) to:
+        - Clean up old charts from filesystem
+        - Evict expired charts from LRU cache
+        - Free up disk space and memory
+        
+        This complements the pending chart cleanup with more thorough 
+        filesystem scanning and cleanup.
+        """
+        cleanup_interval_seconds = self._chart_cleanup_interval_minutes * 60
+        expiry_minutes = getattr(self.config, 'CHART_EXPIRY_MINUTES', 15)
+        
+        logger.info(f"🧹 Aggressive chart cleanup loop started (interval: {self._chart_cleanup_interval_minutes}min, expiry: {expiry_minutes}min)")
+        
+        try:
+            while self._cleanup_tasks_running:
+                await asyncio.sleep(cleanup_interval_seconds)
+                
+                if not self._cleanup_tasks_running:
+                    break
+                
+                try:
+                    if self.chart_generator and hasattr(self.chart_generator, 'cleanup_charts_aggressive_async'):
+                        cleaned = await self.chart_generator.cleanup_charts_aggressive_async(max_age_minutes=expiry_minutes)
+                        
+                        if cleaned > 0:
+                            logger.info(f"🧹 Aggressive cleanup: deleted {cleaned} expired chart(s)")
+                        
+                        stats = self.chart_generator.get_stats()
+                        lru_stats = stats.get('lru_cache', {})
+                        current_memory = stats.get('current_memory_mb', 0)
+                        
+                        logger.debug(
+                            f"Chart cleanup stats - tracked: {stats.get('tracked_charts', 0)}, "
+                            f"LRU size: {lru_stats.get('size', 0)}/{lru_stats.get('max_size', 0)}, "
+                            f"memory: {current_memory:.1f}MB, "
+                            f"total_deleted: {stats.get('cleanup_stats', {}).get('total_deleted', 0)}"
+                        )
+                    else:
+                        logger.debug("ChartGenerator does not have aggressive cleanup method")
+                        
+                except (asyncio.TimeoutError, OSError, IOError, AttributeError, KeyError, ValueError) as e:
+                    logger.error(f"Error in aggressive chart cleanup: {e}")
+                    
+        except asyncio.CancelledError:
+            logger.info("Aggressive chart cleanup loop cancelled")
     
     async def _cleanup_stale_pending_charts(self, max_age_seconds: int = 120) -> int:
         """Cleanup stale pending charts with time decay.
@@ -2665,9 +2731,48 @@ class TradingBot:
     
     async def _dispatch_signal(self, ctx: MonitoringContext, signal: Dict, 
                                df_m1: pd.DataFrame, now: datetime) -> bool:
-        """Dispatch signal ke user. Returns True jika berhasil."""
+        """Dispatch signal ke user. Returns True jika berhasil.
+        
+        FALLBACK DEFENSE: Quality check dilakukan di sini sebagai last line of defense
+        untuk memastikan tidak ada signal yang bypass quality gate dari _process_signal_detection().
+        """
         signal_direction = signal.get('signal')
         signal_price = signal.get('entry_price')
+        
+        if hasattr(self, 'signal_quality_tracker') and self.signal_quality_tracker:
+            try:
+                signal_params = {
+                    'rule_name': signal.get('rule_type', 'UNKNOWN'),
+                    'signal_type': signal.get('signal', 'UNKNOWN'),
+                    'confluence_level': signal.get('confluence_score', 0) // 25 if signal.get('confluence_score') else 2,
+                    'confidence': signal.get('confidence', 0.5),
+                    'market_regime': signal.get('market_regime', 'unknown')
+                }
+                
+                should_block, blocking_reason = self.signal_quality_tracker.should_block_signal(signal_params)
+                
+                if should_block:
+                    logger.info(
+                        f"🛡️ [DISPATCH_FALLBACK_BLOCK] User:{mask_user_id(ctx.chat_id)} | "
+                        f"Rule:{signal_params['rule_name']} | Type:{signal_params['signal_type']} | "
+                        f"Reason: {blocking_reason} (fallback defense)"
+                    )
+                    self.signal_quality_tracker.track_blocked_signal(
+                        user_id=ctx.chat_id,
+                        signal_data=signal_params,
+                        blocking_reason=f"DISPATCH_FALLBACK: {blocking_reason}"
+                    )
+                    return False
+                
+                logger.debug(
+                    f"✅ [DISPATCH_QUALITY_PASSED] User:{mask_user_id(ctx.chat_id)} | "
+                    f"Rule:{signal_params['rule_name']} | Passed fallback quality check"
+                )
+            except Exception as quality_check_error:
+                logger.warning(
+                    f"⚠️ [DISPATCH_QUALITY_CHECK] Error in fallback check: {quality_check_error} - "
+                    f"proceeding with signal (fail-open)"
+                )
         
         async with self.signal_lock:
             global_time_since_signal = (datetime.now() - self.global_last_signal_time).total_seconds()
@@ -2805,9 +2910,64 @@ class TradingBot:
         if not can_trade:
             return False
         
+        trading_allowed = self.risk_manager.is_trading_allowed(ctx.chat_id)
+        if not trading_allowed:
+            drawdown_status = self.risk_manager.get_drawdown_status(ctx.chat_id)
+            drawdown_level = drawdown_status.get('level', 'UNKNOWN')
+            drawdown_percent = drawdown_status.get('drawdown_percent', 0)
+            
+            logger.warning(f"[DRAWDOWN] 🛑 Signal DIBLOKIR untuk user {mask_user_id(ctx.chat_id)}: "
+                         f"Drawdown {drawdown_percent:.1f}% (Level: {drawdown_level}) - Emergency brake aktif")
+            
+            try:
+                await self.risk_manager.check_and_alert_drawdown(ctx.chat_id)
+            except Exception as alert_error:
+                logger.error(f"[DRAWDOWN] Error sending alert: {alert_error}")
+            
+            return False
+        
+        drawdown_level = self.risk_manager.check_drawdown_level(ctx.chat_id)
+        if drawdown_level in ('WARNING', 'CRITICAL'):
+            try:
+                await self.risk_manager.check_and_alert_drawdown(ctx.chat_id)
+            except Exception as alert_error:
+                logger.debug(f"[DRAWDOWN] Alert error (non-blocking): {alert_error}")
+        
         is_valid, validation_msg = self.strategy.validate_signal(signal, spread)
         if not is_valid:
             return False
+        
+        if hasattr(self, 'signal_quality_tracker') and self.signal_quality_tracker:
+            try:
+                signal_params = {
+                    'rule_name': signal.get('rule_type', 'UNKNOWN'),
+                    'signal_type': signal.get('signal', 'UNKNOWN'),
+                    'confluence_level': signal.get('confluence_score', 0) // 25 if signal.get('confluence_score') else 2,
+                    'confidence': signal.get('confidence', 0.5),
+                    'market_regime': signal.get('market_regime', 'unknown')
+                }
+                
+                should_block, blocking_reason = self.signal_quality_tracker.should_block_signal(signal_params)
+                
+                if should_block:
+                    logger.info(
+                        f"🚫 [SIGNAL_BLOCKED] User:{mask_user_id(ctx.chat_id)} | "
+                        f"Rule:{signal_params['rule_name']} | Type:{signal_params['signal_type']} | "
+                        f"Reason: {blocking_reason}"
+                    )
+                    self.signal_quality_tracker.track_blocked_signal(
+                        user_id=ctx.chat_id,
+                        signal_data=signal_params,
+                        blocking_reason=blocking_reason
+                    )
+                    return False
+                
+                logger.debug(
+                    f"✅ [SIGNAL_PASSED_QUALITY] User:{mask_user_id(ctx.chat_id)} | "
+                    f"Grade:{signal_params.get('grade', 'N/A')} | Rule:{signal_params['rule_name']}"
+                )
+            except Exception as quality_check_error:
+                logger.warning(f"⚠️ [SIGNAL_QUALITY_CHECK] Error: {quality_check_error} - proceeding with signal")
         
         return await self._dispatch_signal(ctx, signal, df_m1, now)
     
@@ -3306,11 +3466,12 @@ class TradingBot:
                                         if self.signal_session_manager:
                                             await self.signal_session_manager.update_session(user_id, photo_sent=True)
                                     finally:
-                                        # Chart cleanup handled by session end, but also auto-delete if enabled
-                                        if self.config.CHART_AUTO_DELETE and not self.signal_session_manager:
-                                            await asyncio.sleep(2)
-                                            self.chart_generator.delete_chart(chart_path)
-                                            logger.debug(f"Auto-deleted chart: {chart_path}")
+                                        if chart_path:
+                                            try:
+                                                await self.chart_generator.immediate_delete_chart_async(chart_path)
+                                                logger.debug(f"🗑️ Immediate delete chart after send: {chart_path}")
+                                            except (OSError, IOError, AttributeError) as cleanup_error:
+                                                logger.warning(f"Failed to immediately delete chart: {cleanup_error}")
                                 else:
                                     logger.warning(f"Chart generation returned None for {signal['signal']} signal")
                             except asyncio.TimeoutError:
@@ -4066,6 +4227,124 @@ class TradingBot:
             except (TelegramError, asyncio.CancelledError):
                 pass
 
+    async def optimize_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Handle /optimize command - Manual trigger untuk optimization.
+        
+        Usage:
+            /optimize - Run optimization dan tampilkan report
+            /optimize status - Tampilkan status optimizer
+            /optimize report - Tampilkan optimization report (7 hari)
+        """
+        if self._is_shutting_down:
+            return
+        
+        message = update.message
+        if not message:
+            return
+        
+        chat = message.chat
+        if not chat:
+            return
+        
+        user_id = chat.id
+        
+        if user_id not in self.config.AUTHORIZED_USER_IDS:
+            try:
+                await message.reply_text("⛔ Anda tidak memiliki akses ke perintah ini.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+            return
+        
+        try:
+            args = context.args if context.args else []
+            subcommand = args[0].lower() if args else ''
+            
+            if not self.auto_optimizer:
+                await message.reply_text(
+                    "⚠️ *Auto-Optimizer Tidak Tersedia*\n\n"
+                    "Modul auto-optimizer tidak diinisialisasi.",
+                    parse_mode='Markdown'
+                )
+                return
+            
+            if subcommand == 'status':
+                status_report = self.auto_optimizer.get_status_report()
+                await message.reply_text(status_report, parse_mode='Markdown')
+                logger.info(f"Sent optimizer status to user {user_id}")
+                
+            elif subcommand == 'report':
+                opt_report = self.auto_optimizer.get_optimization_report(days=7)
+                await message.reply_text(opt_report, parse_mode='Markdown')
+                logger.info(f"Sent optimization report to user {user_id}")
+                
+            else:
+                await message.reply_text(
+                    "🔧 *Menjalankan Optimization...*\n\n"
+                    "Proses ini mungkin membutuhkan beberapa detik.",
+                    parse_mode='Markdown'
+                )
+                
+                result = await self.auto_optimizer.run_optimization_async()
+                
+                if result.status == 'SUCCESS':
+                    response = "✅ *Optimization Berhasil*\n\n"
+                    response += f"📊 Signals Analyzed: {result.signals_analyzed}\n"
+                    response += f"🔧 Adjustments: {len(result.adjustments)}\n\n"
+                    
+                    if result.adjustments:
+                        response += "*Parameter Changes:*\n"
+                        for adj in result.adjustments[:5]:
+                            response += f"• {adj.parameter_name}: {adj.old_value} → {adj.new_value}\n"
+                    
+                    if result.recommendations:
+                        response += "\n💡 *Recommendations:*\n"
+                        for rec in result.recommendations[:3]:
+                            response += f"• {rec}\n"
+                    
+                elif result.status == 'SKIPPED':
+                    response = "⏭️ *Optimization Skipped*\n\n"
+                    response += f"Reason: {result.error_message or 'No adjustments needed'}\n"
+                    if result.recommendations:
+                        response += "\n💡 *Recommendations:*\n"
+                        for rec in result.recommendations[:3]:
+                            response += f"• {rec}\n"
+                    
+                else:
+                    response = f"⚠️ *Optimization Status: {result.status}*\n\n"
+                    if result.error_message:
+                        response += f"Error: {result.error_message}\n"
+                
+                await message.reply_text(response, parse_mode='Markdown')
+                logger.info(f"Optimization triggered manually by user {user_id}: {result.status}")
+                
+        except Forbidden as e:
+            await self._handle_forbidden_error(chat.id, e)
+        except ChatMigrated as e:
+            await self._handle_chat_migrated(chat.id, e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning(f"Network/timeout error pada optimize command: {e}")
+            try:
+                await message.reply_text("Koneksi timeout, silakan coba lagi.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except Conflict as e:
+            await self._handle_conflict_error(e)
+        except InvalidToken as e:
+            await self._handle_unauthorized_error(e)
+        except TelegramError as e:
+            logger.error(f"Telegram error pada optimize command: {e}")
+            try:
+                await message.reply_text("Error menjalankan optimization.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            logger.error(f"Data error pada optimize command: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                await message.reply_text("Error menjalankan optimization.")
+            except (TelegramError, asyncio.CancelledError):
+                pass
+
     async def trialstatus_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Command untuk melihat status trial user."""
         if update.effective_user is None or update.message is None or update.effective_chat is None:
@@ -4299,6 +4578,7 @@ class TradingBot:
         self.app.add_handler(CommandHandler("riset", self.riset_command))
         self.app.add_handler(CommandHandler("riwayat", self.riwayat_command))
         self.app.add_handler(CommandHandler("performa", self.performa_command))
+        self.app.add_handler(CommandHandler("optimize", self.optimize_command))
         
         self.app.add_error_handler(self._handle_telegram_error)
         logger.info("✅ Global error handler registered for Telegram updates")

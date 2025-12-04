@@ -1081,6 +1081,261 @@ class RiskManager:
         """Update exposure after trade using dynamic risk calculator."""
         if self.dynamic_risk:
             self.dynamic_risk.update_exposure(user_id, trade_result)
+    
+    def calculate_drawdown(self, user_id: int) -> float:
+        """
+        Calculate current drawdown percentage untuk user.
+        
+        Drawdown dihitung sebagai persentase kerugian harian relatif terhadap
+        account balance atau daily threshold.
+        
+        Args:
+            user_id: ID user untuk mendapatkan data drawdown
+            
+        Returns:
+            float: Drawdown percentage (0.0 - 100.0)
+        """
+        try:
+            if self.dynamic_risk:
+                return self.dynamic_risk.get_daily_drawdown_percent(user_id)
+            
+            session = self.db.get_session()
+            if session is None:
+                logger.warning("[DRAWDOWN] Database session tidak tersedia")
+                return 0.0
+                
+            try:
+                from bot.database import Trade
+                
+                utc_now = datetime.now(pytz.UTC)
+                jakarta_tz = pytz.timezone('Asia/Jakarta')
+                jakarta_time = utc_now.astimezone(jakarta_tz)
+                today_start = jakarta_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                today_start_utc = today_start.astimezone(pytz.UTC)
+                
+                daily_pl = session.query(Trade).filter(
+                    Trade.user_id == user_id,
+                    Trade.signal_time >= today_start_utc,
+                    Trade.actual_pl.isnot(None)
+                ).with_entities(Trade.actual_pl).all()
+                
+                total_daily_pl = sum([pl[0] for pl in daily_pl if pl[0] is not None])
+                
+                account_balance = getattr(self.config, 'ACCOUNT_BALANCE', 1000.0)
+                
+                if total_daily_pl < 0 and account_balance > 0:
+                    drawdown_percent = (abs(total_daily_pl) / account_balance) * 100.0
+                else:
+                    drawdown_percent = 0.0
+                
+                drawdown_percent = max(0.0, min(drawdown_percent, 100.0))
+                
+                logger.debug(f"[DRAWDOWN] User {user_id}: Daily P/L=${total_daily_pl:.2f}, "
+                           f"Drawdown={drawdown_percent:.2f}%")
+                
+                return round(drawdown_percent, 2)
+                
+            except SQLAlchemyError as e:
+                logger.error(f"[DRAWDOWN] Database error: {e}")
+                return 0.0
+            finally:
+                session.close()
+                
+        except Exception as e:
+            logger.error(f"[DRAWDOWN] Error calculating drawdown for user {user_id}: {e}")
+            return 0.0
+    
+    def check_drawdown_level(self, user_id: int) -> str:
+        """
+        Check drawdown level dan return status level.
+        
+        Level berdasarkan threshold:
+        - NORMAL: drawdown < WARNING_THRESHOLD (25%)
+        - WARNING: drawdown >= 25% dan < 50%
+        - CRITICAL: drawdown >= 50% dan < 100%
+        - EMERGENCY: drawdown >= 100% (total account wipeout)
+        
+        Args:
+            user_id: ID user untuk check drawdown
+            
+        Returns:
+            str: Level drawdown ('NORMAL', 'WARNING', 'CRITICAL', 'EMERGENCY')
+        """
+        try:
+            drawdown_percent = self.calculate_drawdown(user_id)
+            
+            warning_threshold = getattr(self.config, 'DRAWDOWN_WARNING_THRESHOLD', 25.0)
+            critical_threshold = getattr(self.config, 'DRAWDOWN_CRITICAL_THRESHOLD', 50.0)
+            
+            if drawdown_percent >= 100.0:
+                level = 'EMERGENCY'
+                logger.warning(f"[DRAWDOWN] 🚨 EMERGENCY: User {user_id} drawdown {drawdown_percent:.1f}% >= 100%")
+            elif drawdown_percent >= critical_threshold:
+                level = 'CRITICAL'
+                logger.warning(f"[DRAWDOWN] 🔴 CRITICAL: User {user_id} drawdown {drawdown_percent:.1f}% >= {critical_threshold}%")
+            elif drawdown_percent >= warning_threshold:
+                level = 'WARNING'
+                logger.info(f"[DRAWDOWN] ⚠️ WARNING: User {user_id} drawdown {drawdown_percent:.1f}% >= {warning_threshold}%")
+            else:
+                level = 'NORMAL'
+                logger.debug(f"[DRAWDOWN] ✅ NORMAL: User {user_id} drawdown {drawdown_percent:.1f}%")
+            
+            return level
+            
+        except Exception as e:
+            logger.error(f"[DRAWDOWN] Error checking level for user {user_id}: {e}")
+            return 'NORMAL'
+    
+    def get_drawdown_status(self, user_id: int) -> Dict[str, Any]:
+        """
+        Get complete drawdown status untuk user.
+        
+        Returns:
+            Dict dengan informasi lengkap:
+            - drawdown_percent: Persentase drawdown saat ini
+            - level: Level status ('NORMAL', 'WARNING', 'CRITICAL', 'EMERGENCY')
+            - trading_allowed: Boolean apakah trading diperbolehkan
+            - warning_threshold: Threshold warning dari config
+            - critical_threshold: Threshold critical dari config
+            - emergency_brake_enabled: Status emergency brake dari config
+        """
+        try:
+            drawdown_percent = self.calculate_drawdown(user_id)
+            level = self.check_drawdown_level(user_id)
+            trading_allowed = self.is_trading_allowed(user_id)
+            
+            return {
+                'user_id': user_id,
+                'drawdown_percent': drawdown_percent,
+                'level': level,
+                'trading_allowed': trading_allowed,
+                'warning_threshold': getattr(self.config, 'DRAWDOWN_WARNING_THRESHOLD', 25.0),
+                'critical_threshold': getattr(self.config, 'DRAWDOWN_CRITICAL_THRESHOLD', 50.0),
+                'emergency_brake_enabled': getattr(self.config, 'DRAWDOWN_EMERGENCY_BRAKE_ENABLED', True)
+            }
+        except Exception as e:
+            logger.error(f"[DRAWDOWN] Error getting status for user {user_id}: {e}")
+            return {
+                'user_id': user_id,
+                'drawdown_percent': 0.0,
+                'level': 'UNKNOWN',
+                'trading_allowed': True,
+                'error': str(e)
+            }
+    
+    def is_trading_allowed(self, user_id: int) -> bool:
+        """
+        Check apakah trading diperbolehkan berdasarkan drawdown level.
+        
+        Trading akan di-block jika:
+        - Emergency brake enabled DAN drawdown >= CRITICAL_THRESHOLD (50%)
+        
+        Args:
+            user_id: ID user untuk check trading allowance
+            
+        Returns:
+            bool: True jika trading diperbolehkan, False jika di-block
+        """
+        try:
+            emergency_brake_enabled = getattr(self.config, 'DRAWDOWN_EMERGENCY_BRAKE_ENABLED', True)
+            
+            if not emergency_brake_enabled:
+                logger.debug(f"[DRAWDOWN] Emergency brake disabled, trading allowed for user {user_id}")
+                return True
+            
+            drawdown_percent = self.calculate_drawdown(user_id)
+            critical_threshold = getattr(self.config, 'DRAWDOWN_CRITICAL_THRESHOLD', 50.0)
+            
+            if drawdown_percent >= critical_threshold:
+                logger.warning(f"[DRAWDOWN] 🛑 Trading BLOCKED untuk user {user_id}: "
+                             f"Drawdown {drawdown_percent:.1f}% >= {critical_threshold}% (emergency brake aktif)")
+                return False
+            
+            logger.debug(f"[DRAWDOWN] Trading allowed for user {user_id}: "
+                        f"Drawdown {drawdown_percent:.1f}% < {critical_threshold}%")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[DRAWDOWN] Error checking trading allowed for user {user_id}: {e}")
+            return True
+    
+    async def check_and_alert_drawdown(self, user_id: int) -> Optional[str]:
+        """
+        Check drawdown level dan kirim alert jika perlu.
+        
+        Alert dikirim dengan cooldown untuk mencegah spam:
+        - Hanya kirim alert sekali per level change
+        - Cooldown 5 menit antar alert untuk level yang sama
+        
+        Args:
+            user_id: ID user untuk check dan alert
+            
+        Returns:
+            Optional[str]: Pesan alert yang dikirim, atau None jika tidak ada alert
+        """
+        try:
+            drawdown_percent = self.calculate_drawdown(user_id)
+            current_level = self.check_drawdown_level(user_id)
+            
+            if current_level == 'NORMAL':
+                return None
+            
+            alert_cooldown = getattr(self.config, 'DRAWDOWN_ALERT_COOLDOWN_SECONDS', 300)
+            cache_key = f"drawdown_alert_{user_id}_{current_level}"
+            utc_now = datetime.now(pytz.UTC)
+            
+            if cache_key in self.risk_warning_sent_today:
+                last_alert_time = self.risk_warning_sent_today[cache_key]
+                time_since_last = (utc_now - last_alert_time).total_seconds()
+                
+                if time_since_last < alert_cooldown:
+                    logger.debug(f"[DRAWDOWN] Alert cooldown active for user {user_id} "
+                               f"({time_since_last:.0f}s < {alert_cooldown}s)")
+                    return None
+            
+            if current_level == 'EMERGENCY':
+                alert_message = (
+                    f"🚨 *EMERGENCY - DRAWDOWN MAKSIMUM*\n\n"
+                    f"Drawdown harian: {drawdown_percent:.1f}%\n"
+                    f"Status: TRADING DIHENTIKAN TOTAL\n\n"
+                    f"⚠️ Akun mengalami kerugian besar.\n"
+                    f"Trading otomatis dihentikan untuk melindungi modal."
+                )
+            elif current_level == 'CRITICAL':
+                alert_message = (
+                    f"🔴 *PERINGATAN CRITICAL - DRAWDOWN TINGGI*\n\n"
+                    f"Drawdown harian: {drawdown_percent:.1f}%\n"
+                    f"Status: SINYAL BARU DIBLOKIR\n\n"
+                    f"⚠️ Emergency brake aktif.\n"
+                    f"Sinyal baru tidak akan dikirim sampai drawdown berkurang."
+                )
+            elif current_level == 'WARNING':
+                alert_message = (
+                    f"⚠️ *PERINGATAN - DRAWDOWN MENINGKAT*\n\n"
+                    f"Drawdown harian: {drawdown_percent:.1f}%\n"
+                    f"Status: WASPADA\n\n"
+                    f"📊 Trading masih berjalan, tetapi harap perhatikan risiko.\n"
+                    f"Jika mencapai 50%, sinyal akan diblokir otomatis."
+                )
+            else:
+                return None
+            
+            self.risk_warning_sent_today[cache_key] = utc_now
+            
+            if self.alert_system:
+                await self.alert_system.send_risk_warning(
+                    warning_type=f"DRAWDOWN_{current_level}",
+                    details=alert_message
+                )
+                logger.info(f"[DRAWDOWN] Alert terkirim untuk user {user_id}: Level {current_level}")
+            else:
+                logger.warning(f"[DRAWDOWN] Alert system tidak tersedia, alert tidak terkirim")
+            
+            return alert_message
+            
+        except Exception as e:
+            logger.error(f"[DRAWDOWN] Error sending alert for user {user_id}: {e}")
+            return None
         
     def can_trade(self, user_id: int, signal_type: str, spread: Optional[float] = None) -> tuple[bool, Optional[str]]:
         utc_now = datetime.now(pytz.UTC)

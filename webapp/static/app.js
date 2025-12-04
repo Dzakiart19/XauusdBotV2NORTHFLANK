@@ -69,12 +69,14 @@
     var ACTIVE_DATA_INTERVAL = 1000;
     var HISTORY_DATA_INTERVAL = 10000;
     var CHART_UPDATE_INTERVAL = 5000;
+    var BLOCKING_STATS_INTERVAL = 30000;
     var WS_RECONNECT_TIMEOUT = 2000;
     var SYNC_RETRY_COUNT = 3;
     var SYNC_RETRY_DELAY = 2000;
     var REGIME_TIMEOUT = 5000;
     var MAX_VISIBLE_TRADES = 50;
     var TRADES_PER_PAGE = 20;
+    var blockingStatsInterval = null;
     
     var currentUserId = null;
     var currentUserFirstName = null;
@@ -1289,16 +1291,132 @@
         }
     }
     
+    function fetchBlockingStats() {
+        var url = '/api/blocking-stats';
+        if (currentUserId) {
+            url += '?user_id=' + currentUserId;
+        }
+        
+        fetch(url)
+            .then(function(response) {
+                if (!response.ok) throw new Error('Network response was not ok');
+                return response.json();
+            })
+            .then(function(data) {
+                debugLog('Blocking stats received: ' + JSON.stringify(data));
+                updateBlockingStatsUI(data);
+            })
+            .catch(function(error) {
+                debugLog('Error fetching blocking stats: ' + error.message);
+            });
+    }
+    
+    function updateBlockingStatsUI(data) {
+        var totalEl = document.getElementById('blocking-total');
+        var rateValueEl = document.getElementById('blocking-rate-value');
+        var byQualityEl = document.getElementById('blocking-by-quality');
+        var byWinRateEl = document.getElementById('blocking-by-winrate');
+        var progressEl = document.getElementById('blocking-progress');
+        var ratePercentEl = document.getElementById('blocking-rate-percent');
+        var alertEl = document.getElementById('blocking-alert');
+        
+        var gradeAEl = document.getElementById('grade-a-count');
+        var gradeBEl = document.getElementById('grade-b-count');
+        var gradeCEl = document.getElementById('grade-c-count');
+        var gradeDEl = document.getElementById('grade-d-count');
+        var gradeFEl = document.getElementById('grade-f-count');
+        
+        if (totalEl) {
+            animateValue(totalEl, parseInt(totalEl.textContent) || 0, data.total_blocked || 0);
+        }
+        if (rateValueEl) {
+            var rateVal = (data.blocking_rate || 0).toFixed(1) + '%';
+            rateValueEl.textContent = rateVal;
+            rateValueEl.classList.remove('high-rate', 'medium-rate', 'low-rate');
+            if (data.blocking_rate > 70) {
+                rateValueEl.classList.add('high-rate');
+            } else if (data.blocking_rate > 40) {
+                rateValueEl.classList.add('medium-rate');
+            } else {
+                rateValueEl.classList.add('low-rate');
+            }
+        }
+        if (byQualityEl) {
+            animateValue(byQualityEl, parseInt(byQualityEl.textContent) || 0, data.blocked_by_quality || 0);
+        }
+        if (byWinRateEl) {
+            animateValue(byWinRateEl, parseInt(byWinRateEl.textContent) || 0, data.blocked_by_win_rate || 0);
+        }
+        
+        if (progressEl) {
+            var rate = Math.min(data.blocking_rate || 0, 100);
+            progressEl.style.width = rate + '%';
+            progressEl.classList.remove('high', 'medium', 'low');
+            if (rate > 70) {
+                progressEl.classList.add('high');
+            } else if (rate > 40) {
+                progressEl.classList.add('medium');
+            } else {
+                progressEl.classList.add('low');
+            }
+        }
+        if (ratePercentEl) {
+            ratePercentEl.textContent = (data.blocking_rate || 0).toFixed(1) + '%';
+        }
+        
+        if (alertEl) {
+            if (data.blocking_rate > 70) {
+                alertEl.classList.remove('hidden');
+            } else {
+                alertEl.classList.add('hidden');
+            }
+        }
+        
+        var breakdown = data.quality_breakdown || {};
+        if (gradeAEl) gradeAEl.textContent = breakdown.A || 0;
+        if (gradeBEl) gradeBEl.textContent = breakdown.B || 0;
+        if (gradeCEl) gradeCEl.textContent = breakdown.C || 0;
+        if (gradeDEl) gradeDEl.textContent = breakdown.D || 0;
+        if (gradeFEl) gradeFEl.textContent = breakdown.F || 0;
+    }
+    
+    function animateValue(element, start, end) {
+        if (start === end) return;
+        var duration = 500;
+        var startTime = null;
+        
+        function step(timestamp) {
+            if (!startTime) startTime = timestamp;
+            var progress = Math.min((timestamp - startTime) / duration, 1);
+            var current = Math.floor(progress * (end - start) + start);
+            element.textContent = current;
+            element.classList.add('value-changed');
+            
+            if (progress < 1) {
+                window.requestAnimationFrame(step);
+            } else {
+                element.textContent = end;
+                setTimeout(function() {
+                    element.classList.remove('value-changed');
+                }, 300);
+            }
+        }
+        
+        window.requestAnimationFrame(step);
+    }
+    
     function startPolling() {
         debugLog('Starting polling with auto-refresh');
         
         if (updateInterval) clearInterval(updateInterval);
         if (chartUpdateInterval) clearInterval(chartUpdateInterval);
         if (historyUpdateInterval) clearInterval(historyUpdateInterval);
+        if (blockingStatsInterval) clearInterval(blockingStatsInterval);
         
         refreshData();
         updateCandleChart(true);
         fetchTradeHistory();
+        fetchBlockingStats();
         
         updateInterval = setInterval(function() {
             refreshData();
@@ -1312,7 +1430,11 @@
             fetchTradeHistory();
         }, HISTORY_DATA_INTERVAL);
         
-        debugLog('Polling started - data: ' + ACTIVE_DATA_INTERVAL + 'ms, chart: ' + CHART_UPDATE_INTERVAL + 'ms, history: ' + HISTORY_DATA_INTERVAL + 'ms');
+        blockingStatsInterval = setInterval(function() {
+            fetchBlockingStats();
+        }, BLOCKING_STATS_INTERVAL);
+        
+        debugLog('Polling started - data: ' + ACTIVE_DATA_INTERVAL + 'ms, chart: ' + CHART_UPDATE_INTERVAL + 'ms, history: ' + HISTORY_DATA_INTERVAL + 'ms, blocking: ' + BLOCKING_STATS_INTERVAL + 'ms');
     }
 
     function startAutoRefresh() {
@@ -1334,6 +1456,10 @@
         if (historyUpdateInterval) {
             clearInterval(historyUpdateInterval);
             historyUpdateInterval = null;
+        }
+        if (blockingStatsInterval) {
+            clearInterval(blockingStatsInterval);
+            blockingStatsInterval = null;
         }
     }
 

@@ -344,6 +344,18 @@ class TradingBotOrchestrator:
         self._task_failure_counts: Dict[str, int] = {}
         self._task_restart_callbacks: Dict[str, Callable] = {}
         
+        self._task_start_times: Dict[str, datetime] = {}
+        self._last_market_data_restart: Optional[datetime] = None
+        self._last_position_tracker_restart: Optional[datetime] = None
+        self._position_tracker_saved_state: Optional[Dict[str, Any]] = None
+        self._stuck_task_check_count: int = 0
+        self._rotation_stats: Dict[str, int] = {
+            'market_data_rotations': 0,
+            'position_tracker_rotations': 0,
+            'stuck_task_restarts': 0,
+            'skipped_due_to_memory': 0
+        }
+        
         self.db_manager = DatabaseManager(
             db_path=self.config.DATABASE_PATH,
             database_url=self.config.DATABASE_URL
@@ -495,6 +507,7 @@ class TradingBotOrchestrator:
                 max_restarts=max_restarts
             )
             self._task_registry[name] = task_info
+            self._task_start_times[name] = datetime.now()
             logger.debug(f"Task registered: {name} (priority={priority.name}, critical={critical}, max_restarts={max_restarts})")
             return task_info
     
@@ -732,6 +745,15 @@ class TradingBotOrchestrator:
                 logger.info(f"✅ telegram_bot_health_monitor restarted successfully")
                 return True
             
+            elif task_name == "task_rotation_monitor":
+                logger.warning(f"🔄 Restarting task_rotation_monitor (attempt {task_info.restart_count}/{task_info.max_restarts})")
+                new_task = asyncio.create_task(self._task_rotation_monitor())
+                task_info.task = new_task
+                task_info.created_at = datetime.now()
+                task_info.status = TaskStatus.RUNNING
+                logger.info(f"✅ task_rotation_monitor restarted successfully")
+                return True
+            
             else:
                 logger.warning(f"⚠️ No restart handler for task: {task_name}")
                 return False
@@ -816,6 +838,410 @@ class TradingBotOrchestrator:
         except Exception as e:
             logger.error(f"Error checking market data health: {e}")
             return True
+    
+    def _get_current_memory_mb(self) -> float:
+        """Get current process memory usage in MB.
+        
+        Returns:
+            Memory usage in megabytes
+        """
+        try:
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            return memory_info.rss / (1024 * 1024)
+        except Exception as e:
+            logger.warning(f"Failed to get memory usage: {e}")
+            return 0.0
+    
+    def _has_active_positions(self) -> bool:
+        """Check if there are any active trading positions.
+        
+        Returns:
+            True if there are active positions, False otherwise
+        """
+        if not self.position_tracker:
+            return False
+        
+        try:
+            active_positions = self.position_tracker.get_active_positions()
+            if active_positions:
+                for user_id, positions in active_positions.items():
+                    if isinstance(positions, dict) and len(positions) > 0:
+                        return True
+            return False
+        except Exception as e:
+            logger.warning(f"Error checking active positions: {e}")
+            return False
+    
+    async def _check_and_restart_stuck_tasks(self) -> Dict[str, Any]:
+        """Check for and restart tasks that exceed TASK_AUTO_CANCEL_THRESHOLD.
+        
+        This method is called from the health monitor to detect stuck tasks
+        and force-restart them to prevent memory leaks and deadlocks.
+        
+        Returns:
+            Dict with check results including restarted and skipped tasks
+        """
+        self._stuck_task_check_count += 1
+        threshold_seconds = self.config.TASK_AUTO_CANCEL_THRESHOLD
+        now = datetime.now()
+        
+        result = {
+            'checked_at': now.isoformat(),
+            'threshold_seconds': threshold_seconds,
+            'stuck_tasks': [],
+            'restarted_tasks': [],
+            'skipped_tasks': [],
+            'memory_mb': self._get_current_memory_mb()
+        }
+        
+        memory_was_high = False
+        if result['memory_mb'] >= self.config.TASK_ROTATION_MEMORY_THRESHOLD_MB:
+            memory_was_high = True
+            logger.warning(
+                f"⚠️ [STUCK-TASK-CHECK] Memory high ({result['memory_mb']:.1f}MB >= "
+                f"{self.config.TASK_ROTATION_MEMORY_THRESHOLD_MB}MB) - forcing cleanup before restart"
+            )
+            
+            gc.collect()
+            result['memory_cleanup_performed'] = True
+            
+            new_memory = self._get_current_memory_mb()
+            memory_freed = result['memory_mb'] - new_memory
+            
+            logger.info(
+                f"🧹 [STUCK-TASK-CHECK] Memory cleanup completed: "
+                f"{result['memory_mb']:.1f}MB → {new_memory:.1f}MB (freed {memory_freed:.1f}MB)"
+            )
+            
+            result['memory_after_cleanup_mb'] = new_memory
+            result['memory_freed_mb'] = memory_freed
+        
+        tasks_to_restart = []
+        
+        async with self._task_registry_lock:
+            for task_name, task_info in list(self._task_registry.items()):
+                if task_info.is_done():
+                    continue
+                
+                task_start_time = self._task_start_times.get(task_name, task_info.created_at)
+                task_age = (now - task_start_time).total_seconds()
+                
+                if task_age > threshold_seconds:
+                    result['stuck_tasks'].append({
+                        'name': task_name,
+                        'age_seconds': task_age,
+                        'critical': task_info.critical,
+                        'can_restart': task_info.can_restart()
+                    })
+                    
+                    logger.warning(
+                        f"🔥 [STUCK-TASK] {task_name} running for {task_age:.0f}s > {threshold_seconds}s threshold "
+                        f"(critical={task_info.critical}, restarts={task_info.restart_count})"
+                    )
+                    
+                    if task_info.critical:
+                        logger.info(f"⏭️ [STUCK-TASK] Skipping critical task {task_name} - monitoring only")
+                        result['skipped_tasks'].append({
+                            'name': task_name,
+                            'reason': 'critical_task'
+                        })
+                        continue
+                    
+                    if not task_info.can_restart():
+                        logger.error(f"❌ [STUCK-TASK] {task_name} cannot restart - max restarts exceeded")
+                        result['skipped_tasks'].append({
+                            'name': task_name,
+                            'reason': 'max_restarts_exceeded'
+                        })
+                        continue
+                    
+                    tasks_to_restart.append((task_name, task_info))
+        
+        for task_name, task_info in tasks_to_restart:
+            logger.info(f"🔄 [STUCK-TASK] Force-restarting stuck task: {task_name}")
+            
+            try:
+                restart_success = await self._restart_task(task_name, task_info)
+                
+                if restart_success:
+                    self._task_start_times[task_name] = datetime.now()
+                    self._rotation_stats['stuck_task_restarts'] += 1
+                    result['restarted_tasks'].append({
+                        'name': task_name,
+                        'success': True
+                    })
+                    logger.info(f"✅ [STUCK-TASK] {task_name} restarted successfully")
+                else:
+                    result['restarted_tasks'].append({
+                        'name': task_name,
+                        'success': False,
+                        'reason': 'restart_failed'
+                    })
+                    logger.error(f"❌ [STUCK-TASK] {task_name} restart failed")
+                    
+            except Exception as e:
+                logger.error(f"❌ [STUCK-TASK] Error restarting {task_name}: {e}")
+                result['restarted_tasks'].append({
+                    'name': task_name,
+                    'success': False,
+                    'reason': str(e)
+                })
+        
+        if self._stuck_task_check_count % 30 == 0:
+            logger.info(
+                f"📊 [STUCK-TASK] Stats after {self._stuck_task_check_count} checks: "
+                f"restarts={self._rotation_stats['stuck_task_restarts']}, "
+                f"skipped_memory={self._rotation_stats['skipped_due_to_memory']}"
+            )
+        
+        return result
+    
+    def _save_position_tracker_state(self) -> Optional[Dict[str, Any]]:
+        """Save position tracker state before restart.
+        
+        Returns:
+            Dict with saved state, or None if save failed
+        """
+        if not self.position_tracker:
+            return None
+        
+        try:
+            state = {
+                'active_positions': {},
+                'saved_at': datetime.now().isoformat()
+            }
+            
+            active_positions = self.position_tracker.get_active_positions()
+            if active_positions:
+                state['active_positions'] = dict(active_positions)
+            
+            if hasattr(self.position_tracker, '_pending_notifications'):
+                state['pending_notifications'] = list(self.position_tracker._pending_notifications)
+            
+            logger.info(
+                f"💾 [POSITION-TRACKER] State saved: "
+                f"{len(state['active_positions'])} user(s) with positions"
+            )
+            return state
+            
+        except Exception as e:
+            logger.error(f"❌ [POSITION-TRACKER] Failed to save state: {e}")
+            return None
+    
+    async def _restore_position_tracker_state(self, state: Optional[Dict[str, Any]]) -> bool:
+        """Restore position tracker state after restart.
+        
+        Args:
+            state: Previously saved state dict
+            
+        Returns:
+            True if restore was successful
+        """
+        if not state or not self.position_tracker:
+            return False
+        
+        try:
+            await self.position_tracker.reload_active_positions()
+            
+            logger.info(
+                f"✅ [POSITION-TRACKER] State restored: reloaded positions from database"
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ [POSITION-TRACKER] Failed to restore state: {e}")
+            return False
+    
+    async def _graceful_restart_market_data(self) -> bool:
+        """Graceful restart of market_data_websocket task.
+        
+        Checks:
+        1. Memory is not too high
+        2. No active positions (or respects them)
+        3. Properly disconnects before reconnecting
+        
+        Returns:
+            True if restart was successful, False otherwise
+        """
+        memory_mb = self._get_current_memory_mb()
+        if memory_mb >= self.config.TASK_ROTATION_MEMORY_THRESHOLD_MB:
+            logger.warning(
+                f"⚠️ [MARKET-DATA-ROTATION] Skipping restart - memory too high "
+                f"({memory_mb:.1f}MB >= {self.config.TASK_ROTATION_MEMORY_THRESHOLD_MB}MB)"
+            )
+            self._rotation_stats['skipped_due_to_memory'] += 1
+            return False
+        
+        if self._has_active_positions():
+            logger.info(
+                f"⏸️ [MARKET-DATA-ROTATION] Active positions detected - "
+                f"restart will proceed carefully to not interrupt monitoring"
+            )
+        
+        async with self._task_registry_lock:
+            if "market_data_websocket" not in self._task_registry:
+                logger.warning("⚠️ [MARKET-DATA-ROTATION] market_data_websocket task not found")
+                return False
+            
+            task_info = self._task_registry["market_data_websocket"]
+            
+            logger.info(
+                f"🔄 [MARKET-DATA-ROTATION] Starting graceful restart "
+                f"(running for {(datetime.now() - task_info.created_at).total_seconds():.0f}s)"
+            )
+            
+            restart_success = await self._restart_task("market_data_websocket", task_info)
+            
+            if restart_success:
+                self._task_start_times["market_data_websocket"] = datetime.now()
+                self._last_market_data_restart = datetime.now()
+                self._rotation_stats['market_data_rotations'] += 1
+                logger.info(
+                    f"✅ [MARKET-DATA-ROTATION] Graceful restart completed "
+                    f"(total rotations: {self._rotation_stats['market_data_rotations']})"
+                )
+                return True
+            else:
+                logger.error("❌ [MARKET-DATA-ROTATION] Graceful restart failed")
+                return False
+    
+    async def _graceful_restart_position_tracker(self) -> bool:
+        """Graceful restart of position_tracker task with state preservation.
+        
+        Flow:
+        1. Check memory is not too high
+        2. Save current state
+        3. Stop monitoring
+        4. Restart task
+        5. Restore state
+        
+        Returns:
+            True if restart was successful, False otherwise
+        """
+        memory_mb = self._get_current_memory_mb()
+        if memory_mb >= self.config.TASK_ROTATION_MEMORY_THRESHOLD_MB:
+            logger.warning(
+                f"⚠️ [POSITION-TRACKER-ROTATION] Skipping restart - memory too high "
+                f"({memory_mb:.1f}MB >= {self.config.TASK_ROTATION_MEMORY_THRESHOLD_MB}MB)"
+            )
+            self._rotation_stats['skipped_due_to_memory'] += 1
+            return False
+        
+        saved_state = self._save_position_tracker_state()
+        self._position_tracker_saved_state = saved_state
+        
+        async with self._task_registry_lock:
+            if "position_tracker" not in self._task_registry:
+                logger.warning("⚠️ [POSITION-TRACKER-ROTATION] position_tracker task not found")
+                return False
+            
+            task_info = self._task_registry["position_tracker"]
+            
+            logger.info(
+                f"🔄 [POSITION-TRACKER-ROTATION] Starting graceful restart "
+                f"(running for {(datetime.now() - task_info.created_at).total_seconds():.0f}s, "
+                f"saved state: {saved_state is not None})"
+            )
+            
+            restart_success = await self._restart_task("position_tracker", task_info)
+            
+            if restart_success:
+                self._task_start_times["position_tracker"] = datetime.now()
+                self._last_position_tracker_restart = datetime.now()
+                self._rotation_stats['position_tracker_rotations'] += 1
+                
+                await self._restore_position_tracker_state(saved_state)
+                
+                logger.info(
+                    f"✅ [POSITION-TRACKER-ROTATION] Graceful restart completed "
+                    f"(total rotations: {self._rotation_stats['position_tracker_rotations']})"
+                )
+                return True
+            else:
+                logger.error("❌ [POSITION-TRACKER-ROTATION] Graceful restart failed")
+                return False
+    
+    async def _task_rotation_monitor(self):
+        """Background task to monitor and rotate long-running tasks.
+        
+        Rotations:
+        - market_data_websocket: every MARKET_DATA_RESTART_INTERVAL_SECONDS (30 min)
+        - position_tracker: every POSITION_TRACKER_RESTART_INTERVAL_SECONDS (15 min)
+        
+        Also checks for stuck tasks periodically.
+        """
+        CHECK_INTERVAL = 60
+        
+        logger.info(
+            f"🔄 [TASK-ROTATION] Starting rotation monitor "
+            f"(market_data: {self.config.MARKET_DATA_RESTART_INTERVAL_SECONDS}s, "
+            f"position_tracker: {self.config.POSITION_TRACKER_RESTART_INTERVAL_SECONDS}s)"
+        )
+        
+        self._last_market_data_restart = datetime.now()
+        self._last_position_tracker_restart = datetime.now()
+        
+        rotation_check_count = 0
+        
+        try:
+            while self.running and not self._shutdown_in_progress:
+                try:
+                    await asyncio.sleep(CHECK_INTERVAL)
+                    
+                    if not self.running or self._shutdown_in_progress:
+                        break
+                    
+                    rotation_check_count += 1
+                    now = datetime.now()
+                    
+                    await self._check_and_restart_stuck_tasks()
+                    
+                    if self._last_market_data_restart:
+                        market_data_age = (now - self._last_market_data_restart).total_seconds()
+                        if market_data_age >= self.config.MARKET_DATA_RESTART_INTERVAL_SECONDS:
+                            logger.info(
+                                f"⏰ [TASK-ROTATION] market_data_websocket rotation due "
+                                f"({market_data_age:.0f}s >= {self.config.MARKET_DATA_RESTART_INTERVAL_SECONDS}s)"
+                            )
+                            await self._graceful_restart_market_data()
+                    
+                    if self._last_position_tracker_restart:
+                        position_tracker_age = (now - self._last_position_tracker_restart).total_seconds()
+                        if position_tracker_age >= self.config.POSITION_TRACKER_RESTART_INTERVAL_SECONDS:
+                            logger.info(
+                                f"⏰ [TASK-ROTATION] position_tracker rotation due "
+                                f"({position_tracker_age:.0f}s >= {self.config.POSITION_TRACKER_RESTART_INTERVAL_SECONDS}s)"
+                            )
+                            await self._graceful_restart_position_tracker()
+                    
+                    if rotation_check_count % 30 == 0:
+                        memory_mb = self._get_current_memory_mb()
+                        logger.info(
+                            f"📊 [TASK-ROTATION] Stats: "
+                            f"checks={rotation_check_count}, "
+                            f"market_data={self._rotation_stats['market_data_rotations']}, "
+                            f"position_tracker={self._rotation_stats['position_tracker_rotations']}, "
+                            f"stuck_restarts={self._rotation_stats['stuck_task_restarts']}, "
+                            f"memory={memory_mb:.1f}MB"
+                        )
+                    
+                except asyncio.CancelledError:
+                    logger.info("🛑 [TASK-ROTATION] Rotation monitor cancelled")
+                    raise
+                except Exception as e:
+                    logger.error(f"❌ [TASK-ROTATION] Error in rotation monitor: {e}")
+                    await asyncio.sleep(30)
+            
+            logger.info(
+                f"🔄 [TASK-ROTATION] Monitor stopped (checks: {rotation_check_count}, "
+                f"stats: {self._rotation_stats})"
+            )
+            
+        except asyncio.CancelledError:
+            logger.info("🔄 [TASK-ROTATION] Monitor task cancelled")
+        except Exception as e:
+            logger.error(f"❌ [TASK-ROTATION] Monitor fatal error: {e}")
     
     async def _self_ping_keep_alive(self):
         """Self-ping task to keep Koyeb service awake on free tier.
@@ -2442,6 +2868,74 @@ class TradingBotOrchestrator:
                     'ts': int(datetime.now().timestamp())
                 })
             
+            async def api_blocking_stats(request):
+                """API endpoint untuk Signal Blocking Statistics"""
+                try:
+                    stats = {
+                        'total_blocked': 0,
+                        'blocked_by_quality': 0,
+                        'blocked_by_win_rate': 0,
+                        'blocking_rate': 0.0,
+                        'last_hour_blocked': 0,
+                        'quality_breakdown': {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'F': 0}
+                    }
+                    
+                    if self.config_valid and self.signal_quality_tracker:
+                        try:
+                            raw_stats = self.signal_quality_tracker.get_all_blocking_stats(minutes=60)
+                            
+                            stats['total_blocked'] = raw_stats.get('total_blocked', 0)
+                            stats['last_hour_blocked'] = raw_stats.get('total_blocked', 0)
+                            
+                            by_reason = raw_stats.get('by_reason', {})
+                            stats['blocked_by_quality'] = by_reason.get('LOW_QUALITY_GRADE', 0)
+                            stats['blocked_by_win_rate'] = by_reason.get('LOW_WIN_RATE', 0)
+                            
+                            by_grade = raw_stats.get('by_grade', {})
+                            stats['quality_breakdown'] = {
+                                'A': by_grade.get('A', 0),
+                                'B': by_grade.get('B', 0),
+                                'C': by_grade.get('C', 0),
+                                'D': by_grade.get('D', 0),
+                                'F': by_grade.get('F', 0)
+                            }
+                            
+                            if self.db_manager:
+                                try:
+                                    session = self.db_manager.get_session()
+                                    if session:
+                                        from datetime import timedelta
+                                        wib = pytz.timezone('Asia/Jakarta')
+                                        now = datetime.now(wib)
+                                        hour_ago = now - timedelta(hours=1)
+                                        
+                                        result = session.execute(text(
+                                            "SELECT COUNT(*) FROM signal_quality WHERE signal_time >= :hour_ago"
+                                        ), {'hour_ago': hour_ago})
+                                        total_signals = result.scalar() or 0
+                                        session.close()
+                                        
+                                        if total_signals > 0:
+                                            stats['blocking_rate'] = round((stats['total_blocked'] / (stats['total_blocked'] + total_signals)) * 100, 1)
+                                except Exception as db_err:
+                                    logger.debug(f"Error getting total signals for blocking rate: {db_err}")
+                            
+                        except Exception as e:
+                            logger.error(f"Error getting blocking stats: {e}")
+                    
+                    return web.json_response(stats)
+                    
+                except Exception as e:
+                    logger.error(f"Error in api_blocking_stats: {e}")
+                    return web.json_response({
+                        'total_blocked': 0,
+                        'blocked_by_quality': 0,
+                        'blocked_by_win_rate': 0,
+                        'blocking_rate': 0.0,
+                        'last_hour_blocked': 0,
+                        'quality_breakdown': {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'F': 0}
+                    })
+            
             app = web.Application()
             app.router.add_get('/health', health_check)
             app.router.add_get('/', health_check)
@@ -2452,8 +2946,9 @@ class TradingBotOrchestrator:
             app.router.add_get('/api/dashboard', api_dashboard)
             app.router.add_get('/api/candles', api_candles)
             app.router.add_get('/api/trade-history', api_trade_history)
+            app.router.add_get('/api/blocking-stats', api_blocking_stats)
             app.router.add_get('/ws/dashboard', ws_dashboard)
-            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /api/health, /ping, /api/candles, /api/trade-history, /ws/dashboard, /static/*")
+            logger.info("Dashboard web app endpoints registered: /dashboard, /api/dashboard, /api/health, /ping, /api/candles, /api/trade-history, /api/blocking-stats, /ws/dashboard, /static/*")
             
             webhook_path = None
             
@@ -2881,6 +3376,22 @@ class TradingBotOrchestrator:
                 max_restarts=-1
             )
             logger.info(f"✅ Memory monitor started (interval: {self.config.MEMORY_MONITOR_INTERVAL_SECONDS}s)")
+            
+            logger.info("Starting task rotation monitor (memory leak prevention)...")
+            task_rotation_task = asyncio.create_task(self._task_rotation_monitor())
+            await self.register_task(
+                name="task_rotation_monitor",
+                task=task_rotation_task,
+                priority=TaskPriority.LOW,
+                critical=False,
+                cancel_timeout=3.0,
+                max_restarts=-1
+            )
+            logger.info(
+                f"✅ Task rotation monitor started "
+                f"(market_data: {self.config.MARKET_DATA_RESTART_INTERVAL_SECONDS}s, "
+                f"position_tracker: {self.config.POSITION_TRACKER_RESTART_INTERVAL_SECONDS}s)"
+            )
             
             logger.info("Loading candles from database...")
             await self.market_data.load_candles_from_db(self.db_manager)

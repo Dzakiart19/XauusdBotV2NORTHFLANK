@@ -229,6 +229,73 @@
             </div>
         </div>
         
+        <div class="card" id="blocking-stats-card">
+            <div class="card-header">
+                <span class="card-title">Statistik Blocking Sinyal</span>
+                <span class="card-badge">30 DETIK</span>
+            </div>
+            
+            <div id="blocking-alert" class="blocking-alert hidden">
+                <span class="alert-icon">⚠️</span>
+                <span class="alert-text">Perhatian! Tingkat blocking sinyal sangat tinggi (>70%)</span>
+            </div>
+            
+            <div class="blocking-stats-grid">
+                <div class="blocking-stat-item">
+                    <div class="blocking-stat-label">Total Diblokir</div>
+                    <div class="blocking-stat-value" id="blocking-total">0</div>
+                </div>
+                <div class="blocking-stat-item">
+                    <div class="blocking-stat-label">Tingkat Blocking</div>
+                    <div class="blocking-stat-value" id="blocking-rate-value">0%</div>
+                </div>
+                <div class="blocking-stat-item">
+                    <div class="blocking-stat-label">Oleh Kualitas</div>
+                    <div class="blocking-stat-value" id="blocking-by-quality">0</div>
+                </div>
+                <div class="blocking-stat-item">
+                    <div class="blocking-stat-label">Oleh Win Rate</div>
+                    <div class="blocking-stat-value" id="blocking-by-winrate">0</div>
+                </div>
+            </div>
+            
+            <div class="blocking-progress-container">
+                <div class="blocking-progress-label">
+                    <span>Tingkat Blocking (1 Jam Terakhir)</span>
+                    <span id="blocking-rate-percent">0%</span>
+                </div>
+                <div class="blocking-progress-bar">
+                    <div class="blocking-progress-fill" id="blocking-progress" style="width: 0%;"></div>
+                </div>
+            </div>
+            
+            <div class="quality-breakdown">
+                <div class="quality-breakdown-title">Breakdown Per Grade</div>
+                <div class="quality-breakdown-grid">
+                    <div class="quality-item grade-a">
+                        <span class="quality-label">A</span>
+                        <span class="quality-value" id="grade-a-count">0</span>
+                    </div>
+                    <div class="quality-item grade-b">
+                        <span class="quality-label">B</span>
+                        <span class="quality-value" id="grade-b-count">0</span>
+                    </div>
+                    <div class="quality-item grade-c">
+                        <span class="quality-label">C</span>
+                        <span class="quality-value" id="grade-c-count">0</span>
+                    </div>
+                    <div class="quality-item grade-d">
+                        <span class="quality-label">D</span>
+                        <span class="quality-value" id="grade-d-count">0</span>
+                    </div>
+                    <div class="quality-item grade-f">
+                        <span class="quality-label">F</span>
+                        <span class="quality-value" id="grade-f-count">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <button class="refresh-btn" id="refresh-btn">
             Refresh Manual
         </button>

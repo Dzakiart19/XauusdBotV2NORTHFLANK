@@ -983,6 +983,204 @@ body {
     color: var(--color-loss);
 }
 
+.blocking-alert {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(239, 68, 68, 0.1));
+    border: 1px solid var(--color-loss);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    animation: alertPulse 2s infinite;
+}
+
+.blocking-alert.hidden {
+    display: none;
+}
+
+.blocking-alert .alert-icon {
+    font-size: 20px;
+}
+
+.blocking-alert .alert-text {
+    color: var(--color-loss);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+@keyframes alertPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+.blocking-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.blocking-stat-item {
+    background: var(--tg-theme-secondary-bg-color);
+    border-radius: 10px;
+    padding: 14px;
+    text-align: center;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.blocking-stat-item:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.blocking-stat-label {
+    font-size: 11px;
+    color: var(--tg-theme-hint-color);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+}
+
+.blocking-stat-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--tg-theme-text-color);
+    transition: color 0.3s ease, transform 0.3s ease;
+}
+
+.blocking-stat-value.value-changed {
+    transform: scale(1.1);
+    color: var(--color-gold);
+}
+
+.blocking-stat-value.high-rate {
+    color: var(--color-loss);
+}
+
+.blocking-stat-value.medium-rate {
+    color: var(--color-connecting);
+}
+
+.blocking-stat-value.low-rate {
+    color: var(--color-profit);
+}
+
+.blocking-progress-container {
+    background: var(--tg-theme-secondary-bg-color);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 16px;
+}
+
+.blocking-progress-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: var(--tg-theme-hint-color);
+    margin-bottom: 10px;
+}
+
+.blocking-progress-label span:last-child {
+    font-weight: 700;
+    color: var(--tg-theme-text-color);
+}
+
+.blocking-progress-bar {
+    height: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.blocking-progress-fill {
+    height: 100%;
+    border-radius: 5px;
+    transition: width 0.5s ease, background 0.3s ease;
+    background: var(--color-profit);
+}
+
+.blocking-progress-fill.low {
+    background: var(--color-profit);
+}
+
+.blocking-progress-fill.medium {
+    background: var(--color-connecting);
+}
+
+.blocking-progress-fill.high {
+    background: var(--color-loss);
+}
+
+.quality-breakdown {
+    background: var(--tg-theme-secondary-bg-color);
+    border-radius: 10px;
+    padding: 14px;
+}
+
+.quality-breakdown-title {
+    font-size: 12px;
+    color: var(--tg-theme-hint-color);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+    text-align: center;
+}
+
+.quality-breakdown-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+}
+
+.quality-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 10px 6px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    transition: transform 0.2s ease;
+}
+
+.quality-item:hover {
+    transform: scale(1.05);
+}
+
+.quality-label {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 4px;
+}
+
+.quality-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--tg-theme-text-color);
+    transition: transform 0.3s ease;
+}
+
+.quality-item.grade-a .quality-label {
+    color: #22c55e;
+}
+
+.quality-item.grade-b .quality-label {
+    color: #84cc16;
+}
+
+.quality-item.grade-c .quality-label {
+    color: #fbbf24;
+}
+
+.quality-item.grade-d .quality-label {
+    color: #f97316;
+}
+
+.quality-item.grade-f .quality-label {
+    color: #ef4444;
+}
+
 html, body {
     max-width: 100%;
     overflow-x: hidden;
@@ -1055,6 +1253,34 @@ html, body {
     
     .toast {
         width: 100%;
+    }
+    
+    .blocking-stats-grid {
+        gap: 8px;
+    }
+    
+    .blocking-stat-item {
+        padding: 10px;
+    }
+    
+    .blocking-stat-value {
+        font-size: 18px;
+    }
+    
+    .quality-breakdown-grid {
+        gap: 4px;
+    }
+    
+    .quality-item {
+        padding: 8px 4px;
+    }
+    
+    .quality-label {
+        font-size: 12px;
+    }
+    
+    .quality-value {
+        font-size: 14px;
     }
 }
 
@@ -1177,6 +1403,66 @@ html, body {
         left: 10px;
         right: 10px;
         max-width: none;
+    }
+    
+    .blocking-stats-grid {
+        gap: 6px;
+    }
+    
+    .blocking-stat-item {
+        padding: 10px 8px;
+    }
+    
+    .blocking-stat-label {
+        font-size: 10px;
+    }
+    
+    .blocking-stat-value {
+        font-size: 16px;
+    }
+    
+    .blocking-progress-container {
+        padding: 10px;
+    }
+    
+    .blocking-progress-label {
+        font-size: 11px;
+    }
+    
+    .quality-breakdown {
+        padding: 10px;
+    }
+    
+    .quality-breakdown-title {
+        font-size: 11px;
+    }
+    
+    .quality-breakdown-grid {
+        gap: 4px;
+    }
+    
+    .quality-item {
+        padding: 6px 4px;
+    }
+    
+    .quality-label {
+        font-size: 11px;
+    }
+    
+    .quality-value {
+        font-size: 13px;
+    }
+    
+    .blocking-alert {
+        padding: 10px 12px;
+    }
+    
+    .blocking-alert .alert-icon {
+        font-size: 16px;
+    }
+    
+    .blocking-alert .alert-text {
+        font-size: 11px;
     }
 }
 
