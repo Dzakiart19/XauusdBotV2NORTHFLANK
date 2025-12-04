@@ -2493,7 +2493,33 @@ class TradingBotOrchestrator:
         try:
             async with asyncio.timeout(1):
                 mem_status = self.config.check_memory_status()
-                return {'status': 'ok', **mem_status}
+                memory_level = mem_status.get('status', 'unknown')
+                mem_mb = mem_status.get('memory_mb', 0)
+                
+                if memory_level == 'normal':
+                    return {
+                        'status': 'ok',
+                        'message': f'Memory normal: {mem_mb:.1f}MB',
+                        **{k: v for k, v in mem_status.items() if k != 'status'}
+                    }
+                elif memory_level == 'warning':
+                    return {
+                        'status': 'warning',
+                        'message': f'Memory warning: {mem_mb:.1f}MB (threshold: {mem_status.get("warning_threshold", 400)}MB)',
+                        **{k: v for k, v in mem_status.items() if k != 'status'}
+                    }
+                elif memory_level == 'critical':
+                    return {
+                        'status': 'critical',
+                        'message': f'Memory critical: {mem_mb:.1f}MB (threshold: {mem_status.get("critical_threshold", 450)}MB)',
+                        **{k: v for k, v in mem_status.items() if k != 'status'}
+                    }
+                else:
+                    return {
+                        'status': 'warning',
+                        'message': f'Memory status unknown: {memory_level}',
+                        **mem_status
+                    }
         except asyncio.TimeoutError:
             return {'status': 'timeout', 'message': 'Memory check timed out'}
         except Exception as e:

@@ -331,6 +331,10 @@ class TradingBot:
         self.signal_rules = signal_rules
         self.signal_quality_tracker = signal_quality_tracker
         self.auto_optimizer = auto_optimizer
+        
+        from bot.analytics import TradingAnalytics
+        self.analytics = TradingAnalytics(db_manager, config)
+        
         self.app = None
         self.monitoring = False
         self.monitoring_chats = []

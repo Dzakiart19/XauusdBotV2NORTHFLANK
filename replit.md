@@ -5,7 +5,7 @@ This project is a lightweight Telegram-based trading bot for XAUUSD, optimized f
 
 **Mode:** LITE (Koyeb Free Tier Compatible)
 **Chart Generation:** Disabled (available in webapp)
-**Commands:** 8 essential commands only
+**Commands:** 10 essential commands
 
 ## User Preferences
 - Bahasa komunikasi: **Bahasa Indonesia** (100% tidak ada bahasa Inggris)
@@ -17,12 +17,14 @@ This project is a lightweight Telegram-based trading bot for XAUUSD, optimized f
 - Akurasi: Strategi multi-indicator dengan validasi ketat
 - Akses Bot: **Privat** - hanya untuk user yang terdaftar di AUTHORIZED_USER_IDS atau ID_USER_PUBLIC
 
-## Available Commands (8 total)
+## Available Commands (10 total)
 - `/start` - Mulai bot
 - `/help` - Bantuan
 - `/monitor` - Mulai monitoring sinyal
 - `/stopmonitor` - Stop monitoring
 - `/getsignal` - Dapatkan sinyal manual
+- `/riwayat` - Lihat 10 trade terakhir (entry/exit/P/L)
+- `/performa` - Statistik performa 7 hari, 30 hari, dan all-time
 - `/trialstatus` - Status trial Anda
 - `/buyaccess` - Info beli akses
 - `/riset` - Reset database (Admin only)

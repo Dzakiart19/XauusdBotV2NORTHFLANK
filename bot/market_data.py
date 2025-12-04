@@ -2909,7 +2909,7 @@ class MarketDataClient:
                     if emergency_price > 0:
                         logger.warning(f"🚨 Using emergency price from M1 builder: ${emergency_price:.2f}")
                         return emergency_price
-            except:
+            except (ValueError, TypeError, KeyError, IndexError, AttributeError):
                 pass
             
             logger.warning("No valid current price available (all fallbacks failed)")

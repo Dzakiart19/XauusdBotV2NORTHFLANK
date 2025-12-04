@@ -1615,7 +1615,7 @@ class PositionTracker:
                                     if parsed_dt.tzinfo is None:
                                         parsed_dt = pytz.UTC.localize(parsed_dt)
                                     duration_seconds = (datetime.now(pytz.UTC) - parsed_dt).total_seconds()
-                                except:
+                                except (ValueError, TypeError, AttributeError):
                                     duration_seconds = 0
                         
                         exit_data = {
@@ -1762,7 +1762,7 @@ class PositionTracker:
                     )
                     if last_candle is not None and len(last_candle) > 0:
                         current_price = float(last_candle.iloc[-1]['close']) if 'close' in last_candle.columns else None
-                except:
+                except (asyncio.TimeoutError, asyncio.CancelledError, ValueError, TypeError, KeyError, IndexError, AttributeError):
                     pass
             
             if not current_price or current_price <= 0:
