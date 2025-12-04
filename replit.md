@@ -59,11 +59,19 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **Timezone WIB:** Web dashboard menampilkan waktu dalam zona waktu WIB (UTC+7) untuk user Indonesia.
 
 ## Recent Changes (December 2024)
+- **[TERBARU - 4 Des] Perbaikan Bug Auto-Monitor Mati Sendiri:**
+  - ROOT CAUSE: Duplicate `end_session` call di `position_tracker.py` menyebabkan event handler dipanggil 2x
+  - FIX: Hapus duplicate `end_session` di method `_close_position_internal` - sekarang hanya dipanggil sekali
+  - Tambah dokumentasi jelas di `_resolve_session_state` bahwa cleanup session TIDAK menghentikan monitoring
+  - Perbaiki `_on_session_end_handler` dengan logging detail - HANYA stop dashboard dan clear cache, TIDAK stop monitoring
+  - Tambah logging detail saat monitoring loop exit untuk diagnosa kondisi yang menyebabkan exit
+  - Perbaiki `_on_monitoring_task_done` dengan logging lengkap untuk debug
+  - PENTING: Monitoring sekarang TETAP BERJALAN setelah posisi ditutup (session end)
 - **[TERBARU] Perbaikan Unlimited Signal Trading:**
   - Signal Quality Grade minimum diubah dari 'C' ke 'D' untuk membolehkan sinyal lebih banyak
   - Ditambahkan BYPASS_SIGNAL_QUALITY_CHECK=true mode untuk menonaktifkan blocking signal quality sepenuhnya
   - Sinyal trading sekarang benar-benar unlimited tanpa blocking berdasarkan grade
-- **[TERBARU] Perbaikan Auto-Monitoring:**
+- **Perbaikan Auto-Monitoring Sebelumnya:**
   - Ditambahkan heartbeat logging setiap 30 detik untuk memantau kesehatan monitoring loop
   - Ditambahkan exception handling catch-all untuk mencegah monitoring loop berhenti tiba-tiba
   - Ditambahkan health check untuk auto-restart monitoring tasks yang mati (_check_and_restart_dead_monitoring_tasks)
