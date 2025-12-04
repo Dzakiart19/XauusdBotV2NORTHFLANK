@@ -279,9 +279,12 @@ class Config:
         if _webhook_url_env:
             cls.WEBHOOK_URL = _webhook_url_env.strip()
         elif cls.KOYEB_PUBLIC_DOMAIN and cls.TELEGRAM_BOT_TOKEN:
-            cls.WEBHOOK_URL = f"https://{cls.KOYEB_PUBLIC_DOMAIN}/bot{cls.TELEGRAM_BOT_TOKEN}"
+            # Remove trailing slash from domain to prevent double slash
+            domain = cls.KOYEB_PUBLIC_DOMAIN.rstrip('/')
+            cls.WEBHOOK_URL = f"https://{domain}/bot{cls.TELEGRAM_BOT_TOKEN}"
         elif cls.KOYEB_PUBLIC_DOMAIN:
-            cls.WEBHOOK_URL = f"https://{cls.KOYEB_PUBLIC_DOMAIN}/webhook"
+            domain = cls.KOYEB_PUBLIC_DOMAIN.rstrip('/')
+            cls.WEBHOOK_URL = f"https://{domain}/webhook"
         else:
             cls.WEBHOOK_URL = ''
         
@@ -338,11 +341,14 @@ class Config:
     # Prefer /bot<token> format as it's the standard Telegram webhook path
     _webhook_url_env = os.getenv('WEBHOOK_URL', '')
     if _webhook_url_env:
-        WEBHOOK_URL = _webhook_url_env
+        WEBHOOK_URL = _webhook_url_env.strip()
     elif KOYEB_PUBLIC_DOMAIN and TELEGRAM_BOT_TOKEN:
-        WEBHOOK_URL = f"https://{KOYEB_PUBLIC_DOMAIN}/bot{TELEGRAM_BOT_TOKEN}"
+        # Remove trailing slash to prevent double slash
+        _domain = KOYEB_PUBLIC_DOMAIN.rstrip('/')
+        WEBHOOK_URL = f"https://{_domain}/bot{TELEGRAM_BOT_TOKEN}"
     elif KOYEB_PUBLIC_DOMAIN:
-        WEBHOOK_URL = f"https://{KOYEB_PUBLIC_DOMAIN}/webhook"
+        _domain = KOYEB_PUBLIC_DOMAIN.rstrip('/')
+        WEBHOOK_URL = f"https://{_domain}/webhook"
     else:
         WEBHOOK_URL = ''
     FREE_TIER_MODE = os.getenv('FREE_TIER_MODE', 'true').lower() == 'true'
