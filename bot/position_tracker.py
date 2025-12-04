@@ -18,6 +18,198 @@ logger = setup_logger('PositionTracker')
 DEFAULT_OPERATION_TIMEOUT = 30.0
 NOTIFICATION_TIMEOUT = 10.0
 FALLBACK_NOTIFICATION_TIMEOUT = 5.0
+
+MAX_NOTIFICATION_RETRIES = 3
+NOTIFICATION_RETRY_BASE_DELAY = 1.0
+NOTIFICATION_RETRY_MAX_DELAY = 8.0
+
+
+class NotificationError(Exception):
+    """Base exception for notification errors"""
+    pass
+
+
+class RetryableNotificationError(NotificationError):
+    """Error yang bisa di-retry (network, timeout)"""
+    pass
+
+
+class NonRetryableNotificationError(NotificationError):
+    """Error yang tidak bisa di-retry (bad request, forbidden)"""
+    pass
+
+
+class NotificationService:
+    """Service untuk mengirim notifikasi Telegram dengan robust error handling.
+    
+    Features:
+    - Retry mechanism dengan exponential backoff
+    - Initialization check sebelum kirim
+    - Fallback ke simple text jika Markdown fail
+    - Timeout handling
+    - Error categorization (retryable vs non-retryable)
+    """
+    
+    RETRYABLE_ERRORS = (NetworkError, TimedOut, RetryAfter, asyncio.TimeoutError)
+    NON_RETRYABLE_ERRORS = (BadRequest, Forbidden)
+    
+    def __init__(self, telegram_app=None, max_retries: int = MAX_NOTIFICATION_RETRIES,
+                 base_delay: float = NOTIFICATION_RETRY_BASE_DELAY,
+                 max_delay: float = NOTIFICATION_RETRY_MAX_DELAY,
+                 timeout: float = NOTIFICATION_TIMEOUT):
+        self.telegram_app = telegram_app
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.timeout = timeout
+        self._pending_queue: asyncio.Queue = asyncio.Queue()
+        self._stats = {
+            'sent': 0,
+            'failed': 0,
+            'retried': 0,
+            'fallback_used': 0
+        }
+    
+    def is_initialized(self) -> bool:
+        """Check apakah telegram_app dan bot sudah siap."""
+        if self.telegram_app is None:
+            return False
+        if not hasattr(self.telegram_app, 'bot') or self.telegram_app.bot is None:
+            return False
+        return True
+    
+    def _categorize_error(self, error: Exception) -> str:
+        """Kategorikan error sebagai retryable atau non-retryable."""
+        if isinstance(error, self.RETRYABLE_ERRORS):
+            return 'retryable'
+        elif isinstance(error, self.NON_RETRYABLE_ERRORS):
+            return 'non-retryable'
+        elif isinstance(error, TelegramError):
+            error_msg = str(error).lower()
+            if 'timed out' in error_msg or 'network' in error_msg:
+                return 'retryable'
+            return 'non-retryable'
+        elif isinstance(error, RuntimeError):
+            error_msg = str(error).lower()
+            if 'not initialized' in error_msg or 'httpxrequest' in error_msg:
+                return 'retryable'
+            return 'non-retryable'
+        return 'unknown'
+    
+    def _calculate_backoff(self, attempt: int) -> float:
+        """Calculate exponential backoff delay."""
+        delay = self.base_delay * (2 ** attempt)
+        return min(delay, self.max_delay)
+    
+    async def send_notification(self, user_id: int, message: str, 
+                                 parse_mode: str = 'Markdown') -> bool:
+        """Kirim notifikasi dengan retry dan fallback.
+        
+        Args:
+            user_id: Telegram user ID
+            message: Pesan yang akan dikirim
+            parse_mode: Format parsing ('Markdown', 'HTML', atau None)
+            
+        Returns:
+            bool: True jika berhasil, False jika gagal
+        """
+        if not self.is_initialized():
+            logger.warning(f"📵 NotificationService tidak terinisialisasi - notifikasi ke user {user_id} diabaikan")
+            return False
+        
+        last_error = None
+        
+        for attempt in range(self.max_retries):
+            try:
+                await asyncio.wait_for(
+                    self.telegram_app.bot.send_message(
+                        chat_id=user_id,
+                        text=message,
+                        parse_mode=parse_mode
+                    ),
+                    timeout=self.timeout
+                )
+                self._stats['sent'] += 1
+                logger.debug(f"✅ Notifikasi terkirim ke user {user_id} (attempt {attempt + 1})")
+                return True
+                
+            except self.NON_RETRYABLE_ERRORS as e:
+                logger.error(f"❌ Non-retryable error mengirim notifikasi ke user {user_id}: {type(e).__name__}: {e}")
+                self._stats['failed'] += 1
+                
+                if parse_mode and attempt == 0:
+                    logger.info(f"🔄 Mencoba fallback ke plain text untuk user {user_id}")
+                    try:
+                        plain_message = message.replace('*', '').replace('_', '').replace('`', '')
+                        await asyncio.wait_for(
+                            self.telegram_app.bot.send_message(
+                                chat_id=user_id,
+                                text=plain_message
+                            ),
+                            timeout=FALLBACK_NOTIFICATION_TIMEOUT
+                        )
+                        self._stats['fallback_used'] += 1
+                        logger.info(f"✅ Fallback notification berhasil ke user {user_id}")
+                        return True
+                    except Exception as fallback_err:
+                        logger.error(f"❌ Fallback juga gagal: {fallback_err}")
+                return False
+                
+            except self.RETRYABLE_ERRORS as e:
+                last_error = e
+                self._stats['retried'] += 1
+                
+                if attempt < self.max_retries - 1:
+                    backoff = self._calculate_backoff(attempt)
+                    logger.warning(
+                        f"⚠️ Retryable error (attempt {attempt + 1}/{self.max_retries}) "
+                        f"mengirim notifikasi ke user {user_id}: {type(e).__name__}. "
+                        f"Retry dalam {backoff:.1f}s..."
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    logger.error(
+                        f"❌ Gagal mengirim notifikasi ke user {user_id} setelah {self.max_retries} percobaan: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    
+            except RuntimeError as e:
+                error_msg = str(e).lower()
+                if 'not initialized' in error_msg or 'httpxrequest' in error_msg:
+                    last_error = e
+                    self._stats['retried'] += 1
+                    
+                    if attempt < self.max_retries - 1:
+                        backoff = self._calculate_backoff(attempt)
+                        logger.warning(
+                            f"⚠️ HTTPXRequest not initialized (attempt {attempt + 1}/{self.max_retries}) "
+                            f"untuk user {user_id}. Retry dalam {backoff:.1f}s..."
+                        )
+                        await asyncio.sleep(backoff)
+                    else:
+                        logger.error(f"❌ HTTPXRequest masih belum siap setelah {self.max_retries} percobaan")
+                else:
+                    logger.error(f"❌ RuntimeError mengirim notifikasi: {e}")
+                    self._stats['failed'] += 1
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"❌ Unexpected error mengirim notifikasi ke user {user_id}: {type(e).__name__}: {e}")
+                self._stats['failed'] += 1
+                return False
+        
+        self._stats['failed'] += 1
+        return False
+    
+    def get_stats(self) -> Dict[str, int]:
+        """Get notification statistics."""
+        return self._stats.copy()
+    
+    def reset_stats(self) -> None:
+        """Reset notification statistics."""
+        self._stats = {'sent': 0, 'failed': 0, 'retried': 0, 'fallback_used': 0}
+
+
 TICK_QUEUE_TIMEOUT = 5.0
 TASK_CLEANUP_TIMEOUT = 10.0
 LONG_RUNNING_TASK_THRESHOLD = 60.0
@@ -152,8 +344,10 @@ class PositionTracker:
         self.auto_cancel_threshold = TASK_AUTO_CANCEL_THRESHOLD
         self.slow_task_alert_count = SLOW_TASK_ALERT_COUNT
         
-        self._trailing_stop_last_notify: Dict[int, datetime] = {}
+        self._trailing_stop_last_notify: Dict[int, Dict[int, datetime]] = {}
         self._trailing_stop_notify_cooldown = getattr(config, 'TRAILING_STOP_NOTIFY_COOLDOWN', 30.0)
+        
+        self._notification_service = NotificationService(telegram_app=telegram_app)
     
     def _on_task_done(self, task: asyncio.Task, task_name: Optional[str] = None) -> None:
         """Callback invoked when a tracked task completes.
@@ -281,6 +475,100 @@ class PositionTracker:
     def get_slow_task_stats(self) -> Dict[str, int]:
         """Get statistics on slow tasks"""
         return dict(self._slow_task_counts)
+    
+    async def _safe_send_notification(self, user_id: int, message: str, 
+                                       parse_mode: str = 'Markdown') -> bool:
+        """Helper method untuk mengirim notifikasi Telegram dengan aman.
+        
+        Method ini menggunakan NotificationService untuk:
+        - Check initialization sebelum kirim
+        - Retry mechanism dengan exponential backoff
+        - Fallback ke plain text jika Markdown fail
+        - Timeout handling
+        
+        Args:
+            user_id: Telegram user ID
+            message: Pesan yang akan dikirim
+            parse_mode: Format parsing ('Markdown', 'HTML', atau None)
+            
+        Returns:
+            bool: True jika berhasil, False jika gagal
+        """
+        if self.telegram_app is None:
+            logger.warning(f"📵 telegram_app is None - notifikasi ke user {user_id} diabaikan")
+            return False
+        
+        if not hasattr(self.telegram_app, 'bot') or self.telegram_app.bot is None:
+            logger.warning(f"📵 telegram_app.bot is None - notifikasi ke user {user_id} diabaikan")
+            return False
+        
+        self._notification_service.telegram_app = self.telegram_app
+        
+        try:
+            result = await self._notification_service.send_notification(
+                user_id=user_id,
+                message=message,
+                parse_mode=parse_mode
+            )
+            if result:
+                logger.debug(f"✅ Notifikasi berhasil dikirim ke user {user_id}")
+            else:
+                logger.warning(f"⚠️ Notifikasi gagal dikirim ke user {user_id}")
+            return result
+        except Exception as e:
+            logger.error(f"❌ Exception saat mengirim notifikasi ke user {user_id}: {type(e).__name__}: {e}")
+            return False
+    
+    def _check_trailing_stop_notify_cooldown(self, user_id: int, position_id: int) -> bool:
+        """Check apakah sudah waktunya untuk kirim trailing stop notification.
+        
+        Args:
+            user_id: User ID
+            position_id: Position ID
+            
+        Returns:
+            bool: True jika boleh kirim notifikasi, False jika masih dalam cooldown
+        """
+        now = datetime.now(pytz.UTC)
+        
+        if user_id not in self._trailing_stop_last_notify:
+            self._trailing_stop_last_notify[user_id] = {}
+            return True
+        
+        user_notify_times = self._trailing_stop_last_notify[user_id]
+        last_notify = user_notify_times.get(position_id)
+        
+        if last_notify is None:
+            return True
+        
+        elapsed = (now - last_notify).total_seconds()
+        return elapsed >= self._trailing_stop_notify_cooldown
+    
+    def _update_trailing_stop_notify_time(self, user_id: int, position_id: int) -> None:
+        """Update waktu terakhir kirim trailing stop notification.
+        
+        Args:
+            user_id: User ID
+            position_id: Position ID
+        """
+        now = datetime.now(pytz.UTC)
+        
+        if user_id not in self._trailing_stop_last_notify:
+            self._trailing_stop_last_notify[user_id] = {}
+        
+        self._trailing_stop_last_notify[user_id][position_id] = now
+    
+    def _cleanup_trailing_stop_notify(self, user_id: int, position_id: int) -> None:
+        """Cleanup trailing stop notification tracking untuk posisi yang ditutup.
+        
+        Args:
+            user_id: User ID
+            position_id: Position ID
+        """
+        if user_id in self._trailing_stop_last_notify:
+            self._trailing_stop_last_notify[user_id].pop(position_id, None)
+            if not self._trailing_stop_last_notify[user_id]:
+                del self._trailing_stop_last_notify[user_id]
     
     def _create_tracked_task(self, coro, name: Optional[str] = None, 
                              on_complete: Optional[Callable] = None,
@@ -1000,24 +1288,15 @@ class PositionTracker:
                 sl_adjusted = True
                 logger.info(f"🛡️ Dynamic SL activated! Loss ${abs(unrealized_pl):.2f} >= ${self.config.DYNAMIC_SL_LOSS_THRESHOLD}. SL tightened from ${stop_loss:.2f} → ${new_stop_loss:.2f} (protect capital)")
                 
-                if self.telegram_app:
-                    try:
-                        msg = (
-                            f"🛡️ *Dynamic SL Activated*\n\n"
-                            f"Position ID: {position_id}\n"
-                            f"Type: {signal_type}\n"
-                            f"Current Loss: ${abs(unrealized_pl):.2f}\n"
-                            f"SL Updated: ${stop_loss:.2f} → ${new_stop_loss:.2f}\n"
-                            f"Protection: Capital preservation mode"
-                        )
-                        await asyncio.wait_for(
-                            self.telegram_app.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown'),
-                            timeout=NOTIFICATION_TIMEOUT
-                        )
-                    except asyncio.TimeoutError:
-                        logger.error(f"Timeout sending dynamic SL notification to user {user_id}")
-                    except (RetryAfter, TimedOut, BadRequest, Forbidden, NetworkError, TelegramError) as e:
-                        logger.error(f"Failed to send dynamic SL notification: {e}")
+                msg = (
+                    f"🛡️ *Dynamic SL Activated*\n\n"
+                    f"Position ID: {position_id}\n"
+                    f"Type: {signal_type}\n"
+                    f"Current Loss: ${abs(unrealized_pl):.2f}\n"
+                    f"SL Updated: ${stop_loss:.2f} → ${new_stop_loss:.2f}\n"
+                    f"Protection: Capital preservation mode"
+                )
+                await self._safe_send_notification(user_id, msg, parse_mode='Markdown')
         else:
             new_stop_loss = entry_price + new_sl_distance
             if new_stop_loss < stop_loss:
@@ -1026,24 +1305,15 @@ class PositionTracker:
                 sl_adjusted = True
                 logger.info(f"🛡️ Dynamic SL activated! Loss ${abs(unrealized_pl):.2f} >= ${self.config.DYNAMIC_SL_LOSS_THRESHOLD}. SL tightened from ${stop_loss:.2f} → ${new_stop_loss:.2f} (protect capital)")
                 
-                if self.telegram_app:
-                    try:
-                        msg = (
-                            f"🛡️ *Dynamic SL Activated*\n\n"
-                            f"Position ID: {position_id}\n"
-                            f"Type: {signal_type}\n"
-                            f"Current Loss: ${abs(unrealized_pl):.2f}\n"
-                            f"SL Updated: ${stop_loss:.2f} → ${new_stop_loss:.2f}\n"
-                            f"Protection: Capital preservation mode"
-                        )
-                        await asyncio.wait_for(
-                            self.telegram_app.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown'),
-                            timeout=NOTIFICATION_TIMEOUT
-                        )
-                    except asyncio.TimeoutError:
-                        logger.error(f"Timeout sending dynamic SL notification to user {user_id}")
-                    except (RetryAfter, TimedOut, BadRequest, Forbidden, NetworkError, TelegramError) as e:
-                        logger.error(f"Failed to send dynamic SL notification: {e}")
+                msg = (
+                    f"🛡️ *Dynamic SL Activated*\n\n"
+                    f"Position ID: {position_id}\n"
+                    f"Type: {signal_type}\n"
+                    f"Current Loss: ${abs(unrealized_pl):.2f}\n"
+                    f"SL Updated: ${stop_loss:.2f} → ${new_stop_loss:.2f}\n"
+                    f"Protection: Capital preservation mode"
+                )
+                await self._safe_send_notification(user_id, msg, parse_mode='Markdown')
         
         return sl_adjusted, new_stop_loss if sl_adjusted else None, pos
     
@@ -1113,30 +1383,20 @@ class PositionTracker:
                 sl_adjusted = True
                 logger.info(f"💎 Trailing stop activated! Profit ${unrealized_pl:.2f}. SL moved to ${new_trailing_sl:.2f} (lock-in profit)")
                 
-                now = datetime.now(pytz.UTC)
-                last_notify = self._trailing_stop_last_notify.get(position_id)
-                should_notify = last_notify is None or (now - last_notify).total_seconds() >= self._trailing_stop_notify_cooldown
+                should_notify = self._check_trailing_stop_notify_cooldown(user_id, position_id)
                 
-                if should_notify and self.telegram_app:
-                    try:
-                        msg = (
-                            f"💎 *Trailing Stop Active*\n\n"
-                            f"Position ID: {position_id}\n"
-                            f"Type: {signal_type}\n"
-                            f"Current Profit: ${unrealized_pl:.2f}\n"
-                            f"Max Profit: ${pos['max_profit_reached']:.2f}\n"
-                            f"SL Updated: ${stop_loss:.2f} → ${new_trailing_sl:.2f}\n"
-                            f"Status: Profit locked-in!"
-                        )
-                        await asyncio.wait_for(
-                            self.telegram_app.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown'),
-                            timeout=NOTIFICATION_TIMEOUT
-                        )
-                        self._trailing_stop_last_notify[position_id] = now
-                    except asyncio.TimeoutError:
-                        logger.error(f"Timeout sending trailing stop notification to user {user_id}")
-                    except (RetryAfter, TimedOut, BadRequest, Forbidden, NetworkError, TelegramError) as e:
-                        logger.error(f"Failed to send trailing stop notification: {e}")
+                if should_notify:
+                    msg = (
+                        f"💎 *Trailing Stop Active*\n\n"
+                        f"Position ID: {position_id}\n"
+                        f"Type: {signal_type}\n"
+                        f"Current Profit: ${unrealized_pl:.2f}\n"
+                        f"Max Profit: ${pos['max_profit_reached']:.2f}\n"
+                        f"SL Updated: ${stop_loss:.2f} → ${new_trailing_sl:.2f}\n"
+                        f"Status: Profit locked-in!"
+                    )
+                    if await self._safe_send_notification(user_id, msg, parse_mode='Markdown'):
+                        self._update_trailing_stop_notify_time(user_id, position_id)
         else:
             new_trailing_sl = current_price + trailing_distance
             if new_trailing_sl < stop_loss:
@@ -1145,30 +1405,20 @@ class PositionTracker:
                 sl_adjusted = True
                 logger.info(f"💎 Trailing stop activated! Profit ${unrealized_pl:.2f}. SL moved to ${new_trailing_sl:.2f} (lock-in profit)")
                 
-                now = datetime.now(pytz.UTC)
-                last_notify = self._trailing_stop_last_notify.get(position_id)
-                should_notify = last_notify is None or (now - last_notify).total_seconds() >= self._trailing_stop_notify_cooldown
+                should_notify = self._check_trailing_stop_notify_cooldown(user_id, position_id)
                 
-                if should_notify and self.telegram_app:
-                    try:
-                        msg = (
-                            f"💎 *Trailing Stop Active*\n\n"
-                            f"Position ID: {position_id}\n"
-                            f"Type: {signal_type}\n"
-                            f"Current Profit: ${unrealized_pl:.2f}\n"
-                            f"Max Profit: ${pos['max_profit_reached']:.2f}\n"
-                            f"SL Updated: ${stop_loss:.2f} → ${new_trailing_sl:.2f}\n"
-                            f"Status: Profit locked-in!"
-                        )
-                        await asyncio.wait_for(
-                            self.telegram_app.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown'),
-                            timeout=NOTIFICATION_TIMEOUT
-                        )
-                        self._trailing_stop_last_notify[position_id] = now
-                    except asyncio.TimeoutError:
-                        logger.error(f"Timeout sending trailing stop notification to user {user_id}")
-                    except (RetryAfter, TimedOut, BadRequest, Forbidden, NetworkError, TelegramError) as e:
-                        logger.error(f"Failed to send trailing stop notification: {e}")
+                if should_notify:
+                    msg = (
+                        f"💎 *Trailing Stop Active*\n\n"
+                        f"Position ID: {position_id}\n"
+                        f"Type: {signal_type}\n"
+                        f"Current Profit: ${unrealized_pl:.2f}\n"
+                        f"Max Profit: ${pos['max_profit_reached']:.2f}\n"
+                        f"SL Updated: ${stop_loss:.2f} → ${new_trailing_sl:.2f}\n"
+                        f"Status: Profit locked-in!"
+                    )
+                    if await self._safe_send_notification(user_id, msg, parse_mode='Markdown'):
+                        self._update_trailing_stop_notify_time(user_id, position_id)
         
         return sl_adjusted, new_trailing_sl if sl_adjusted else None, pos
     
@@ -1245,22 +1495,15 @@ class PositionTracker:
                         f"🔴 [GRADE_AUTO_CLOSE] Grade C position {position_id} closing: "
                         f"Duration={duration_minutes:.1f}min (>20min), P/L=${unrealized_pl:.2f} (<=0)"
                     )
-                    if self.telegram_app:
-                        try:
-                            msg = (
-                                f"🔴 *Auto-Close: Grade C Signal*\n\n"
-                                f"Position ID: {position_id}\n"
-                                f"Grade: C (Low confidence)\n"
-                                f"Duration: {duration_minutes:.1f} menit\n"
-                                f"P/L: ${unrealized_pl:.2f}\n"
-                                f"Reason: No profit after 20 minutes"
-                            )
-                            await asyncio.wait_for(
-                                self.telegram_app.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown'),
-                                timeout=NOTIFICATION_TIMEOUT
-                            )
-                        except (asyncio.TimeoutError, TelegramError) as e:
-                            logger.error(f"Failed to send Grade C auto-close notification: {e}")
+                    msg = (
+                        f"🔴 *Auto-Close: Grade C Signal*\n\n"
+                        f"Position ID: {position_id}\n"
+                        f"Grade: C (Low confidence)\n"
+                        f"Duration: {duration_minutes:.1f} menit\n"
+                        f"P/L: ${unrealized_pl:.2f}\n"
+                        f"Reason: No profit after 20 minutes"
+                    )
+                    await self._safe_send_notification(user_id, msg, parse_mode='Markdown')
                     return 'GRADE_C_TIMEOUT'
             
             elif signal_grade == 'B':
@@ -1269,23 +1512,16 @@ class PositionTracker:
                         f"🟡 [GRADE_AUTO_CLOSE] Grade B position {position_id} closing: "
                         f"Duration={duration_minutes:.1f}min (>45min), TP Progress={tp_progress*100:.1f}% (<25%)"
                     )
-                    if self.telegram_app:
-                        try:
-                            msg = (
-                                f"🟡 *Auto-Close: Grade B Signal*\n\n"
-                                f"Position ID: {position_id}\n"
-                                f"Grade: B (Medium confidence)\n"
-                                f"Duration: {duration_minutes:.1f} menit\n"
-                                f"P/L: ${unrealized_pl:.2f}\n"
-                                f"TP Progress: {tp_progress*100:.1f}%\n"
-                                f"Reason: Minimal profit after 45 minutes"
-                            )
-                            await asyncio.wait_for(
-                                self.telegram_app.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown'),
-                                timeout=NOTIFICATION_TIMEOUT
-                            )
-                        except (asyncio.TimeoutError, TelegramError) as e:
-                            logger.error(f"Failed to send Grade B auto-close notification: {e}")
+                    msg = (
+                        f"🟡 *Auto-Close: Grade B Signal*\n\n"
+                        f"Position ID: {position_id}\n"
+                        f"Grade: B (Medium confidence)\n"
+                        f"Duration: {duration_minutes:.1f} menit\n"
+                        f"P/L: ${unrealized_pl:.2f}\n"
+                        f"TP Progress: {tp_progress*100:.1f}%\n"
+                        f"Reason: Minimal profit after 45 minutes"
+                    )
+                    await self._safe_send_notification(user_id, msg, parse_mode='Markdown')
                     return 'GRADE_B_TIMEOUT'
             
             elif signal_grade == 'A':
@@ -1294,22 +1530,15 @@ class PositionTracker:
                         f"🟢 [GRADE_AUTO_CLOSE] Grade A position {position_id} closing: "
                         f"Duration={duration_minutes:.1f}min (>60min max hold), P/L=${unrealized_pl:.2f}"
                     )
-                    if self.telegram_app:
-                        try:
-                            msg = (
-                                f"🟢 *Auto-Close: Grade A Max Duration*\n\n"
-                                f"Position ID: {position_id}\n"
-                                f"Grade: A (High confidence)\n"
-                                f"Duration: {duration_minutes:.1f} menit\n"
-                                f"P/L: ${unrealized_pl:.2f}\n"
-                                f"Reason: Maximum hold time reached (60 min)"
-                            )
-                            await asyncio.wait_for(
-                                self.telegram_app.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown'),
-                                timeout=NOTIFICATION_TIMEOUT
-                            )
-                        except (asyncio.TimeoutError, TelegramError) as e:
-                            logger.error(f"Failed to send Grade A auto-close notification: {e}")
+                    msg = (
+                        f"🟢 *Auto-Close: Grade A Max Duration*\n\n"
+                        f"Position ID: {position_id}\n"
+                        f"Grade: A (High confidence)\n"
+                        f"Duration: {duration_minutes:.1f} menit\n"
+                        f"P/L: ${unrealized_pl:.2f}\n"
+                        f"Reason: Maximum hold time reached (60 min)"
+                    )
+                    await self._safe_send_notification(user_id, msg, parse_mode='Markdown')
                     return 'GRADE_A_MAX_DURATION'
             
             return None
@@ -1629,51 +1858,19 @@ class PositionTracker:
                         }
                         exit_msg = MessageFormatter.trade_exit(exit_data, pip_value=self.config.XAUUSD_PIP_VALUE)
                         
-                        try:
-                            await asyncio.wait_for(
-                                self.telegram_app.bot.send_message(
-                                    chat_id=user_id,
-                                    text=exit_msg,
-                                    parse_mode='Markdown'
-                                ),
-                                timeout=10.0
-                            )
+                        notification_sent = await self._safe_send_notification(user_id, exit_msg, parse_mode='Markdown')
+                        
+                        if notification_sent:
                             logger.info(f"Exit notification sent to user {user_id} - TEXT ONLY (no photo)")
                             
                             if chart_path and self.config.CHART_AUTO_DELETE:
                                 await asyncio.sleep(1)
                                 self.chart_generator.delete_chart(chart_path)
                                 logger.info(f"Auto-deleted unused exit chart: {chart_path}")
-                        except asyncio.TimeoutError:
-                            logger.error(f"Failed to send exit notification to user {user_id}: asyncio.TimeoutError after 10s")
-                            try:
-                                result_emoji = '✅' if actual_pl >= 0 else '❌'
-                                pl_text = f"+${actual_pl:.2f}" if actual_pl >= 0 else f"-${abs(actual_pl):.2f}"
-                                result_status = "PROFIT LOCKED" if actual_pl >= 0 and reason in ['SL_HIT', 'DYNAMIC_SL_HIT'] else ("WIN" if actual_pl >= 0 else "LOSS")
-                                simple_msg = f"{result_emoji} TRADE CLOSED - {result_status}\nEntry: ${entry_price:.2f}\nExit: ${exit_price:.2f}\nP/L: {pl_text}"
-                                await asyncio.wait_for(
-                                    self.telegram_app.bot.send_message(chat_id=user_id, text=simple_msg),
-                                    timeout=5.0
-                                )
-                                logger.info(f"Fallback notification sent to user {user_id}")
-                            except (asyncio.TimeoutError, RetryAfter, TimedOut, BadRequest, Forbidden, NetworkError, TelegramError) as fallback_error:
-                                logger.error(f"Fallback notification also failed: {fallback_error}")
-                        except TimedOut as telegram_err:
-                            logger.error(f"Failed to send exit notification to user {user_id}: telegram.error.TimedOut")
-                            try:
-                                result_emoji = '✅' if actual_pl >= 0 else '❌'
-                                pl_text = f"+${actual_pl:.2f}" if actual_pl >= 0 else f"-${abs(actual_pl):.2f}"
-                                result_status = "PROFIT LOCKED" if actual_pl >= 0 and reason in ['SL_HIT', 'DYNAMIC_SL_HIT'] else ("WIN" if actual_pl >= 0 else "LOSS")
-                                simple_msg = f"{result_emoji} TRADE CLOSED - {result_status}\nEntry: ${entry_price:.2f}\nExit: ${exit_price:.2f}\nP/L: {pl_text}"
-                                await asyncio.wait_for(
-                                    self.telegram_app.bot.send_message(chat_id=user_id, text=simple_msg),
-                                    timeout=5.0
-                                )
-                                logger.info(f"Fallback notification sent to user {user_id}")
-                            except (asyncio.TimeoutError, RetryAfter, TimedOut, BadRequest, Forbidden, NetworkError, TelegramError) as fallback_error:
-                                logger.error(f"Fallback notification also failed: {fallback_error}")
-                        except (RetryAfter, BadRequest, Forbidden, NetworkError, TelegramError) as telegram_err:
-                            logger.error(f"Failed to send exit notification to user {user_id}: {telegram_err}")
+                        else:
+                            logger.warning(f"Exit notification failed, cleanup trailing stop notify tracking")
+                        
+                        self._cleanup_trailing_stop_notify(user_id, position_id)
                     else:
                         logger.warning(f"Not enough candles for exit chart: {len(df_m1) if df_m1 else 0}")
                         
@@ -1857,26 +2054,18 @@ class PositionTracker:
                             'reason': 'STALE_TIMEOUT'
                         })
                         
-                        if self.alert_system and self.telegram_app:
-                            try:
-                                msg = (
-                                    f"⏰ *Posisi Auto-Close: STALE_TIMEOUT*\n\n"
-                                    f"Position ID: {position_id}\n"
-                                    f"Type: {pos.get('signal_type', 'UNKNOWN')}\n"
-                                    f"Alasan: Tidak ada update selama {elapsed/60:.1f} menit\n"
-                                    f"Entry: ${pos.get('entry_price', 0):.2f}\n"
-                                    f"Exit: ${current_price:.2f}\n\n"
-                                    f"💡 Posisi ditutup otomatis karena tidak aktif."
-                                )
-                                await self.telegram_app.bot.send_message(
-                                    chat_id=user_id,
-                                    text=msg,
-                                    parse_mode='Markdown'
-                                )
-                            except (RetryAfter, TimedOut, BadRequest, Forbidden, NetworkError, TelegramError) as e:
-                                logger.error(f"Failed to send stale position alert: {e}")
-                            except Exception as e:
-                                logger.error(f"Failed to send stale position alert (unexpected): {e}")
+                        msg = (
+                            f"⏰ *Posisi Auto-Close: STALE_TIMEOUT*\n\n"
+                            f"Position ID: {position_id}\n"
+                            f"Type: {pos.get('signal_type', 'UNKNOWN')}\n"
+                            f"Alasan: Tidak ada update selama {elapsed/60:.1f} menit\n"
+                            f"Entry: ${pos.get('entry_price', 0):.2f}\n"
+                            f"Exit: ${current_price:.2f}\n\n"
+                            f"💡 Posisi ditutup otomatis karena tidak aktif."
+                        )
+                        await self._safe_send_notification(user_id, msg, parse_mode='Markdown')
+                        
+                        self._cleanup_trailing_stop_notify(user_id, position_id)
                         
                         if self.signal_session_manager:
                             try:
