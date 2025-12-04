@@ -37,7 +37,7 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **Indicators:** EMA (5, 10, 20, 50), RSI (14), Stochastic (K=14, D=3), ATR (14), MACD (12,26,9), Volume, Twin Range Filter, Market Bias CEREBR. Includes advanced features like RSI Divergence, ATR Volatility Zones, and Adaptive Smoothed RSI.
 - **Risk Management:** Fixed SL ($1 per trade), dynamic TP (1.45x-2.50x R:R), max spread (5 pips), risk per trade (0.5%), and fixed lot size at 0.01.
 - **Access Control:** Private bot with dual-tier access and a trial system, with strict per-user data isolation.
-- **Telegram Commands:** 12 command yang tersedia:
+- **Telegram Commands:** 14 command yang tersedia:
   - `/start` - Memulai bot dan aktivasi user
   - `/help` - Menampilkan bantuan dan daftar command
   - `/monitor` - Mulai monitoring sinyal trading real-time
@@ -46,6 +46,8 @@ The bot features a modular architecture designed for scalability and maintainabi
   - `/status` - Melihat posisi aktif dan status koneksi
   - `/riwayat` - Melihat riwayat trading terakhir
   - `/performa` - Statistik performa trading (7d, 30d, all-time)
+  - `/dashboard` - Mulai real-time dashboard
+  - `/stopdashboard` - Menghentikan real-time dashboard
   - `/trialstatus` - Melihat status trial/akses user
   - `/buyaccess` - Informasi berlangganan premium
   - `/riset` - Reset database trading (Admin only)
@@ -59,7 +61,20 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **Timezone WIB:** Web dashboard menampilkan waktu dalam zona waktu WIB (UTC+7) untuk user Indonesia.
 
 ## Recent Changes (December 2024)
-- **[TERBARU - 4 Des] Perbaikan Bug Auto-Monitor Mati Sendiri:**
+- **[TERBARU - 4 Des] Perbaikan 3 Bug Kritikal:**
+  1. **HTTPXRequest Initialization Fix:**
+     - Tambah import HTTPXRequest dari telegram.request
+     - Inisialisasi HTTPXRequest dengan connection pool config (pool_size=8, timeout=30s)
+     - Dipasang di Application.builder() untuk mencegah RuntimeError "HTTPXRequest is not initialized"
+  2. **Dashboard Commands Fix:**
+     - Implementasi `/dashboard` command untuk memulai real-time dashboard
+     - Implementasi `/stopdashboard` command untuk menghentikan dashboard
+     - Registrasi command handlers di initialize() method
+     - Error handling lengkap (Forbidden, NetworkError, TimedOut, Conflict, InvalidToken, dll)
+  3. **Monitoring Loop Stability:**
+     - HTTPXRequest fix menstabilkan network operations yang sebelumnya menyebabkan cascading failures
+     - Monitoring loop sekarang lebih stabil dengan proper connection pooling
+- **[4 Des - Sebelumnya] Perbaikan Bug Auto-Monitor Mati Sendiri:**
   - ROOT CAUSE: Duplicate `end_session` call di `position_tracker.py` menyebabkan event handler dipanggil 2x
   - FIX: Hapus duplicate `end_session` di method `_close_position_internal` - sekarang hanya dipanggil sekali
   - Tambah dokumentasi jelas di `_resolve_session_state` bahwa cleanup session TIDAK menghentikan monitoring

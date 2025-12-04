@@ -1322,11 +1322,48 @@ class TradingBot:
                     cleaned = await self._cleanup_expired_cache_entries()
                     if cleaned > 0:
                         logger.debug(f"Signal cache cleanup: removed {cleaned} expired entries")
+                    
+                    restarted = await self._check_and_restart_dead_monitoring_tasks()
+                    if restarted > 0:
+                        logger.info(f"🔄 Monitoring watchdog: restarted {restarted} dead monitoring task(s)")
                 except (asyncio.TimeoutError, KeyError, ValueError, RuntimeError) as e:
                     logger.error(f"Error in signal cache cleanup: {e}")
                     
         except asyncio.CancelledError:
             logger.info("Signal cache cleanup loop cancelled")
+    
+    async def _check_and_restart_dead_monitoring_tasks(self) -> int:
+        """Watchdog: check and restart any dead monitoring tasks.
+        
+        This ensures monitoring continues even if a task unexpectedly dies.
+        Returns the number of tasks restarted.
+        """
+        if self._is_shutting_down:
+            return 0
+        
+        restarted_count = 0
+        
+        for chat_id in list(self.monitoring_chats):
+            task = self.monitoring_tasks.get(chat_id)
+            
+            if task is None or task.done():
+                if self._is_shutting_down:
+                    break
+                    
+                logger.warning(f"🔄 [WATCHDOG] Dead monitoring task detected for chat {mask_user_id(chat_id)} - restarting...")
+                
+                try:
+                    new_task = asyncio.create_task(self._monitoring_loop(chat_id))
+                    new_task.add_done_callback(
+                        lambda t, cid=chat_id: self._on_monitoring_task_done(cid, t)
+                    )
+                    self.monitoring_tasks[chat_id] = new_task
+                    restarted_count += 1
+                    logger.info(f"✅ [WATCHDOG] Monitoring task restarted for chat {mask_user_id(chat_id)}")
+                except Exception as e:
+                    logger.error(f"❌ [WATCHDOG] Failed to restart monitoring for chat {mask_user_id(chat_id)}: {e}")
+        
+        return restarted_count
     
     async def _cleanup_expired_cache_entries(self) -> int:
         """Cleanup expired entries dari signal cache dengan time decay.
@@ -2287,20 +2324,23 @@ class TradingBot:
                 "/monitor - Mulai monitoring sinyal\n"
                 "/stopmonitor - Stop monitoring\n"
                 "/getsignal - Dapatkan sinyal manual\n"
-                "/status - Lihat posisi aktif dan status\n"
+                "/status - Lihat posisi aktif\n"
                 "/riwayat - Lihat riwayat trading\n"
                 "/performa - Statistik performa\n\n"
-                "*🔧 System Commands:*\n"
+                "*📊 Dashboard:*\n"
+                "/dashboard - Mulai real-time dashboard\n"
+                "/stopdashboard - Stop dashboard\n\n"
+                "*🔧 System:*\n"
                 "/optimize - Status auto-optimizer\n\n"
-                "*🔑 Access Commands:*\n"
-                "/trialstatus - Status trial Anda\n"
-                "/buyaccess - Info beli akses\n\n"
+                "*🔑 Access:*\n"
+                "/trialstatus - Status trial\n"
+                "/buyaccess - Info berlangganan\n\n"
             )
             
             if is_admin_user:
                 help_msg += (
-                    "*👨‍💼 Admin Commands:*\n"
-                    "/riset - Reset database trading\n\n"
+                    "*👨‍💼 Admin:*\n"
+                    "/riset - Reset database\n\n"
                 )
             
             help_msg += (
