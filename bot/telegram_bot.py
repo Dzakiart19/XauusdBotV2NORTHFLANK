@@ -3001,9 +3001,10 @@ class TradingBot:
         - Finishes current signal processing before exiting (drain pattern)
         - Calls _drain_user_monitoring() for proper per-chat cleanup
         - Signals drain completion for shutdown coordination
+        - Heartbeat logging setiap 30 detik untuk monitoring health
         """
         tick_queue = await self.market_data.subscribe_ticks(f'telegram_bot_{chat_id}')
-        logger.debug(f"Monitoring dimulai untuk user {mask_user_id(chat_id)}")
+        logger.info(f"🟢 Monitoring STARTED untuk user {mask_user_id(chat_id)}")
         
         ctx = MonitoringContext(chat_id=chat_id)
         logger.debug(f"Created new MonitoringContext for chat {mask_user_id(chat_id)}")
@@ -3012,14 +3013,29 @@ class TradingBot:
         self._active_monitoring[chat_id] = {
             'started_at': datetime.now(),
             'context': ctx,
-            'status': 'running'
+            'status': 'running',
+            'last_heartbeat': datetime.now(),
+            'iteration_count': 0
         }
         
         exit_reason = "normal"
+        last_heartbeat_log = datetime.now()
+        iteration_count = 0
+        heartbeat_interval = 30.0
         
         try:
             while self.monitoring and chat_id in self.monitoring_chats and not self._is_shutting_down:
                 try:
+                    iteration_count += 1
+                    now = datetime.now()
+                    
+                    if (now - last_heartbeat_log).total_seconds() >= heartbeat_interval:
+                        last_heartbeat_log = now
+                        if chat_id in self._active_monitoring:
+                            self._active_monitoring[chat_id]['last_heartbeat'] = now
+                            self._active_monitoring[chat_id]['iteration_count'] = iteration_count
+                        logger.info(f"💓 [HEARTBEAT] Monitoring aktif user {mask_user_id(chat_id)} | Iterasi: {iteration_count} | Status: running")
+                    
                     if await self._check_daily_summary_pause(ctx):
                         continue
                     
@@ -3113,15 +3129,36 @@ class TradingBot:
                         break
                     await asyncio.sleep(ctx.retry_delay)
                     ctx.increase_retry_delay()
+                except Exception as e:
+                    logger.error(f"⚠️ [UNEXPECTED ERROR] in monitoring loop for {mask_user_id(chat_id)}: {type(e).__name__}: {e}")
+                    if self._is_shutting_down:
+                        exit_reason = "shutdown_unexpected_error"
+                        break
+                    await asyncio.sleep(max(ctx.retry_delay, 5.0))
+                    ctx.increase_retry_delay()
             
             if self._is_shutting_down and exit_reason == "normal":
                 exit_reason = "shutdown_graceful"
+            elif exit_reason == "normal":
+                logger.warning(f"⚠️ Monitoring loop exited with normal reason but conditions changed for user {mask_user_id(chat_id)}")
+                exit_reason = "condition_changed"
+                    
+        except Exception as outer_error:
+            logger.error(f"🔴 [CRITICAL] Outer exception in monitoring loop for {mask_user_id(chat_id)}: {type(outer_error).__name__}: {outer_error}")
+            exit_reason = "critical_error"
                     
         finally:
+            logger.info(f"🔴 Monitoring STOPPING untuk user {mask_user_id(chat_id)} | Iterasi total: {iteration_count} | Reason: {exit_reason}")
+            
             if chat_id in self._active_monitoring:
                 self._active_monitoring[chat_id]['status'] = 'draining'
+                self._active_monitoring[chat_id]['exit_reason'] = exit_reason
+                self._active_monitoring[chat_id]['stopped_at'] = datetime.now()
             
-            await self.market_data.unsubscribe_ticks(f'telegram_bot_{chat_id}')
+            try:
+                await self.market_data.unsubscribe_ticks(f'telegram_bot_{chat_id}')
+            except Exception as unsub_error:
+                logger.warning(f"Error unsubscribing ticks for {mask_user_id(chat_id)}: {unsub_error}")
             
             if self.monitoring_tasks.pop(chat_id, None):
                 logger.debug(f"Monitoring task removed from tracking for chat {mask_user_id(chat_id)}")
@@ -3134,7 +3171,7 @@ class TradingBot:
             if chat_id in self._monitoring_drain_complete:
                 self._monitoring_drain_complete[chat_id].set()
             
-            logger.info(f"✅ Monitoring drained for user {mask_user_id(chat_id)} (reason: {exit_reason})")
+            logger.info(f"✅ Monitoring STOPPED untuk user {mask_user_id(chat_id)} (reason: {exit_reason}, iterations: {iteration_count})")
     
     @retry_on_telegram_error(max_retries=3, initial_delay=1.0)
     async def _send_telegram_message(self, chat_id: int, text: str, parse_mode: str = 'Markdown', timeout: float = 30.0):

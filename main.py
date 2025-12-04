@@ -1701,6 +1701,8 @@ class TradingBotOrchestrator:
                             in_recovery_mode = False
                             recovery_mode_start = None
                         
+                        await self._check_and_restart_dead_monitoring_tasks()
+                        
                         if healthy_check_count % 20 == 0:
                             logger.info(
                                 f"🤖 telegram_bot healthy | "
@@ -1787,6 +1789,65 @@ class TradingBotOrchestrator:
             logger.info("🤖 telegram_bot health monitor task cancelled")
         except Exception as e:
             logger.error(f"❌ telegram_bot health monitor fatal error: {e}")
+    
+    async def _check_and_restart_dead_monitoring_tasks(self):
+        """Periksa dan restart monitoring tasks yang mati untuk setiap user.
+        
+        Fungsi ini memeriksa _active_monitoring di telegram_bot dan
+        me-restart monitoring tasks yang seharusnya berjalan tapi mati.
+        """
+        try:
+            if not self.telegram_bot:
+                return
+            
+            active_monitoring = getattr(self.telegram_bot, '_active_monitoring', {})
+            monitoring_chats = getattr(self.telegram_bot, 'monitoring_chats', set())
+            monitoring_tasks = getattr(self.telegram_bot, 'monitoring_tasks', {})
+            
+            now = datetime.now()
+            stale_threshold_seconds = 90
+            restarted_count = 0
+            
+            for chat_id in list(monitoring_chats):
+                monitoring_info = active_monitoring.get(chat_id, {})
+                task = monitoring_tasks.get(chat_id)
+                
+                if task is None:
+                    logger.warning(f"🔄 [MONITORING-CHECK] User {str(chat_id)[-4:]} tidak ada task monitoring - restarting")
+                    try:
+                        new_task = asyncio.create_task(self.telegram_bot._monitoring_loop(chat_id))
+                        monitoring_tasks[chat_id] = new_task
+                        restarted_count += 1
+                        logger.info(f"✅ [MONITORING-CHECK] User {str(chat_id)[-4:]} monitoring restarted")
+                    except Exception as e:
+                        logger.error(f"❌ [MONITORING-CHECK] Gagal restart monitoring user {str(chat_id)[-4:]}: {e}")
+                    continue
+                
+                if task.done():
+                    logger.warning(f"🔄 [MONITORING-CHECK] User {str(chat_id)[-4:]} task sudah done - restarting")
+                    try:
+                        new_task = asyncio.create_task(self.telegram_bot._monitoring_loop(chat_id))
+                        monitoring_tasks[chat_id] = new_task
+                        restarted_count += 1
+                        logger.info(f"✅ [MONITORING-CHECK] User {str(chat_id)[-4:]} monitoring restarted")
+                    except Exception as e:
+                        logger.error(f"❌ [MONITORING-CHECK] Gagal restart monitoring user {str(chat_id)[-4:]}: {e}")
+                    continue
+                
+                last_heartbeat = monitoring_info.get('last_heartbeat')
+                if last_heartbeat:
+                    time_since_heartbeat = (now - last_heartbeat).total_seconds()
+                    if time_since_heartbeat > stale_threshold_seconds:
+                        logger.warning(
+                            f"⚠️ [MONITORING-CHECK] User {str(chat_id)[-4:]} heartbeat stale "
+                            f"({time_since_heartbeat:.0f}s ago > {stale_threshold_seconds}s threshold)"
+                        )
+            
+            if restarted_count > 0:
+                logger.info(f"📊 [MONITORING-CHECK] Total restarted: {restarted_count} monitoring tasks")
+                
+        except Exception as e:
+            logger.error(f"❌ [MONITORING-CHECK] Error checking monitoring tasks: {type(e).__name__}: {e}")
     
     async def _send_recovery_mode_alert(self, task_name: str, restart_count: int):
         """Kirim alert ketika masuk recovery mode.
