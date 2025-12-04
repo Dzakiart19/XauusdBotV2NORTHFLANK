@@ -2281,69 +2281,32 @@ class TradingBot:
             mode = "LIVE" if not self.config.DRY_RUN else "DRY RUN"
             
             welcome_msg = (
-                "🤖 *XAUUSD Trading Bot Pro*\n\n"
-                "Bot trading otomatis untuk XAUUSD dengan analisis teknikal canggih.\n\n"
+                "🤖 *XAUUSD Trading Bot Lite*\n\n"
+                "Bot sinyal trading XAUUSD - ringan dan efisien.\n\n"
                 f"*Status:* {user_status}\n"
                 f"{trial_msg}\n"
-                "*Commands:*\n"
-                "/help - Bantuan lengkap (24 commands)\n"
+                "*Commands Utama:*\n"
+                "/help - Bantuan\n"
                 "/monitor - Mulai monitoring sinyal\n"
-                "/getsignal - Dapatkan sinyal manual\n"
-                "/status - Cek posisi aktif\n"
-                "/dashboard - Dashboard real-time\n"
+                "/stopmonitor - Stop monitoring\n"
+                "/getsignal - Dapatkan sinyal manual\n\n"
+                "*Access:*\n"
                 "/trialstatus - Cek status trial\n"
                 "/buyaccess - Info berlangganan\n"
             )
             
             if is_admin_user:
                 welcome_msg += (
-                    "\n*Admin Commands:*\n"
-                    "/riset - Reset database trading\n"
+                    "\n*Admin:*\n"
+                    "/riset - Reset database\n"
                 )
             
-            welcome_msg += f"\n*Mode:* {mode} | Unlimited 24/7\n"
-            
-            await message.reply_text(welcome_msg, parse_mode='Markdown')
-            
-            help_msg = (
-                "📋 *PANDUAN LENGKAP BOT*\n\n"
-                "*Commands Dasar:*\n"
-                "/start - Tampilkan pesan ini\n"
-                "/help - Bantuan lengkap\n"
-                "/monitor - Mulai monitoring sinyal\n"
-                "/stopmonitor - Stop monitoring\n"
-                "/getsignal - Dapatkan sinyal manual\n"
-                "/status - Cek posisi aktif\n"
-                "/settings - Lihat konfigurasi\n\n"
-                "*Commands Statistik:*\n"
-                "/riwayat - Lihat riwayat trading\n"
-                "/performa - Statistik performa\n"
-                "/stats - Statistik harian\n"
-                "/winstats - Win rate statistics\n"
-                "/analytics - Comprehensive analytics\n\n"
-                "*Advanced Analysis:*\n"
-                "/regime - Market regime analysis\n"
-                "/optimize - Auto-optimizer status\n"
-                "/rules - Signal rules status\n"
-                "/analyze - Analisis chart detail\n\n"
-                "*Dashboard:*\n"
-                "/dashboard - Dashboard real-time\n"
-                "/stopdashboard - Hentikan dashboard\n"
-                "/refresh - Refresh dashboard\n\n"
-                f"*Mode:* {mode} | Unlimited 24/7"
+            welcome_msg += (
+                f"\n*Mode:* LITE (Koyeb Free Tier)\n"
+                f"Chart & Analytics: Tersedia di webapp\n"
             )
             
-            help_message = await message.reply_text(help_msg, parse_mode='Markdown')
-            
-            try:
-                await context.bot.pin_chat_message(
-                    chat_id=chat.id,
-                    message_id=help_message.message_id,
-                    disable_notification=True
-                )
-                logger.info(f"Help message pinned for user {mask_user_id(user.id)}")
-            except (TelegramError, BadRequest) as pin_error:
-                logger.warning(f"Could not pin help message: {pin_error}")
+            await message.reply_text(welcome_msg, parse_mode='Markdown')
             
             logger.info(f"Start command executed successfully for user {mask_user_id(user.id)}")
             
@@ -2416,50 +2379,31 @@ class TradingBot:
                 user_status = "🎁 Trial User"
             
             help_msg = (
-                "🤖 *XAUUSD Trading Bot Pro*\n\n"
-                "Bot trading otomatis untuk XAUUSD dengan analisis teknikal canggih.\n\n"
+                "🤖 *XAUUSD Trading Bot Lite*\n\n"
+                "Bot sinyal trading XAUUSD - ringan dan efisien.\n\n"
                 f"*Status:* {user_status}\n\n"
-                "*📋 Commands Dasar (7):*\n"
-                "/start - Tampilkan pesan ini\n"
-                "/help - Bantuan lengkap\n"
+                "*📋 Commands Utama:*\n"
+                "/start - Mulai bot\n"
+                "/help - Bantuan\n"
                 "/monitor - Mulai monitoring sinyal\n"
                 "/stopmonitor - Stop monitoring\n"
-                "/getsignal - Dapatkan sinyal manual\n"
-                "/status - Cek posisi aktif\n"
-                "/settings - Lihat konfigurasi\n\n"
-                "*📈 Commands Statistik (5):*\n"
-                "/riwayat - Lihat riwayat trading\n"
-                "/performa - Statistik performa\n"
-                "/stats - Statistik harian\n"
-                "/analytics - Comprehensive analytics\n"
-                "/systemhealth - System health status\n\n"
-                "*🔬 Advanced Analysis (5):*\n"
-                "/regime - 📊 Market regime analysis\n"
-                "/optimize - 🔧 Auto-optimizer status\n"
-                "/rules - 📋 Signal rules status\n"
-                "/analyze - 📉 Analisis chart detail\n"
-                "/backtest - 🧪 Backtest strategy\n\n"
-                "*📊 Dashboard Commands (3):*\n"
-                "/dashboard - 📊 Dashboard real-time\n"
-                "/stopdashboard - Hentikan dashboard\n"
-                "/refresh - Refresh dashboard\n\n"
+                "/getsignal - Dapatkan sinyal manual\n\n"
+                "*🔑 Access Commands:*\n"
+                "/trialstatus - Status trial Anda\n"
+                "/buyaccess - Info beli akses\n\n"
             )
             
             if is_admin_user:
                 help_msg += (
-                    "*👨‍💼 Admin Commands (1):*\n"
-                    "/riset - 🔴 Reset database trading\n\n"
+                    "*👨‍💼 Admin Commands:*\n"
+                    "/riset - Reset database trading\n\n"
                 )
             
             help_msg += (
-                "*🔑 Access Commands (3):*\n"
-                "/tasks - Lihat scheduled tasks\n"
-                "/trialstatus - Status trial Anda\n"
-                "/buyaccess - Info beli akses\n\n"
                 "*⚙️ System Info:*\n"
-                f"Total: 24 Commands | Mode: LIVE\n"
-                f"Indikator: EMA, RSI, Stoch, ATR, MACD, TRF, CEREBR\n"
-                f"Risk: ${self.config.FIXED_RISK_AMOUNT:.2f}/trade | Unlimited 24/7\n"
+                f"Mode: LITE (Koyeb Free Tier)\n"
+                f"Risk: ${self.config.FIXED_RISK_AMOUNT:.2f}/trade\n"
+                f"Chart & Analytics: Tersedia di webapp\n"
             )
             
             await message.reply_text(help_msg, parse_mode='Markdown')
@@ -5627,26 +5571,9 @@ class TradingBot:
         self.app.add_handler(CommandHandler("monitor", self.monitor_command))
         self.app.add_handler(CommandHandler("stopmonitor", self.stopmonitor_command))
         self.app.add_handler(CommandHandler("getsignal", self.getsignal_command))
-        self.app.add_handler(CommandHandler("status", self.status_command))
-        self.app.add_handler(CommandHandler("riwayat", self.riwayat_command))
-        self.app.add_handler(CommandHandler("performa", self.performa_command))
-        self.app.add_handler(CommandHandler("stats", self.stats_command))
-        self.app.add_handler(CommandHandler("analytics", self.analytics_command))
-        self.app.add_handler(CommandHandler("systemhealth", self.systemhealth_command))
-        self.app.add_handler(CommandHandler("tasks", self.tasks_command))
-        self.app.add_handler(CommandHandler("settings", self.settings_command))
-        self.app.add_handler(CommandHandler("riset", self.riset_command))
-        self.app.add_handler(CommandHandler("regime", self.regime_command))
-        self.app.add_handler(CommandHandler("optimize", self.optimize_command))
-        self.app.add_handler(CommandHandler("rules", self.rules_command))
-        self.app.add_handler(CommandHandler("analyze", self.analyze_command))
-        self.app.add_handler(CommandHandler("backtest", self.backtest_command))
-        self.app.add_handler(CommandHandler("dashboard", self.dashboard_command))
-        self.app.add_handler(CommandHandler("stopdashboard", self.stopdashboard_command))
-        self.app.add_handler(CommandHandler("refresh", self.refresh_command))
         self.app.add_handler(CommandHandler("trialstatus", self.trialstatus_command))
         self.app.add_handler(CommandHandler("buyaccess", self.buyaccess_command))
-        self.app.add_handler(CommandHandler("winstats", self.winstats_command))
+        self.app.add_handler(CommandHandler("riset", self.riset_command))
         
         self.app.add_error_handler(self._handle_telegram_error)
         logger.info("✅ Global error handler registered for Telegram updates")
