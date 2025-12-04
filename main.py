@@ -3631,7 +3631,11 @@ class TradingBotOrchestrator:
             if not candle_ready:
                 logger.warning("⚠️ Candles not fully built yet, but continuing - bot will use available data")
             
-            if self.telegram_bot.app and self.config.AUTHORIZED_USER_IDS:
+            all_user_ids = set(self.config.AUTHORIZED_USER_IDS)
+            if hasattr(self.config, 'ID_USER_PUBLIC') and self.config.ID_USER_PUBLIC:
+                all_user_ids.update(self.config.ID_USER_PUBLIC)
+            
+            if self.telegram_bot.app and all_user_ids:
                 startup_msg = (
                     "🤖 *Bot Started Successfully*\n\n"
                     f"Mode: {'DRY RUN' if self.config.DRY_RUN else 'LIVE'}\n"
@@ -3642,7 +3646,7 @@ class TradingBotOrchestrator:
                 )
                 
                 valid_user_ids = []
-                for user_id in self.config.AUTHORIZED_USER_IDS:
+                for user_id in all_user_ids:
                     try:
                         chat_info = await asyncio.wait_for(
                             self.telegram_bot.app.bot.get_chat(user_id),
