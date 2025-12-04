@@ -116,10 +116,15 @@ class NotificationService:
             logger.warning(f"📵 NotificationService tidak terinisialisasi - notifikasi ke user {user_id} diabaikan")
             return False
         
+        if self.telegram_app is None or not hasattr(self.telegram_app, 'bot') or self.telegram_app.bot is None:
+            logger.warning(f"📵 telegram_app.bot tidak tersedia - notifikasi ke user {user_id} diabaikan")
+            return False
+        
         last_error = None
         
         for attempt in range(self.max_retries):
             try:
+                logger.info(f"📤 Mengirim notifikasi ke user {user_id} (attempt {attempt + 1}/{self.max_retries})...")
                 await asyncio.wait_for(
                     self.telegram_app.bot.send_message(
                         chat_id=user_id,
@@ -129,7 +134,7 @@ class NotificationService:
                     timeout=self.timeout
                 )
                 self._stats['sent'] += 1
-                logger.debug(f"✅ Notifikasi terkirim ke user {user_id} (attempt {attempt + 1})")
+                logger.info(f"✅ Notifikasi BERHASIL terkirim ke user {user_id} (attempt {attempt + 1})")
                 return True
                 
             except self.NON_RETRYABLE_ERRORS as e:
@@ -139,17 +144,18 @@ class NotificationService:
                 if parse_mode and attempt == 0:
                     logger.info(f"🔄 Mencoba fallback ke plain text untuk user {user_id}")
                     try:
-                        plain_message = message.replace('*', '').replace('_', '').replace('`', '')
-                        await asyncio.wait_for(
-                            self.telegram_app.bot.send_message(
-                                chat_id=user_id,
-                                text=plain_message
-                            ),
-                            timeout=FALLBACK_NOTIFICATION_TIMEOUT
-                        )
-                        self._stats['fallback_used'] += 1
-                        logger.info(f"✅ Fallback notification berhasil ke user {user_id}")
-                        return True
+                        if self.telegram_app is not None and hasattr(self.telegram_app, 'bot') and self.telegram_app.bot is not None:
+                            plain_message = message.replace('*', '').replace('_', '').replace('`', '')
+                            await asyncio.wait_for(
+                                self.telegram_app.bot.send_message(
+                                    chat_id=user_id,
+                                    text=plain_message
+                                ),
+                                timeout=FALLBACK_NOTIFICATION_TIMEOUT
+                            )
+                            self._stats['fallback_used'] += 1
+                            logger.info(f"✅ Fallback notification berhasil ke user {user_id}")
+                            return True
                     except Exception as fallback_err:
                         logger.error(f"❌ Fallback juga gagal: {fallback_err}")
                 return False
@@ -1742,7 +1748,14 @@ class PositionTracker:
             
             self._trailing_stop_last_notify.pop(position_id, None)
             
-            logger.info(f"Position closed - User:{user_id} ID:{position_id} {reason} P/L:${actual_pl:.2f}")
+            result_emoji = "✅" if trade_result == 'WIN' else "❌"
+            logger.info(f"{'='*50}")
+            logger.info(f"{result_emoji} TRADE CLOSED: {trade_result}")
+            logger.info(f"   User: {user_id} | Position: {position_id}")
+            logger.info(f"   Type: {signal_type} | Reason: {reason}")
+            logger.info(f"   Entry: ${entry_price:.2f} | Exit: ${exit_price:.2f}")
+            logger.info(f"   P/L: ${actual_pl:+.2f}")
+            logger.info(f"{'='*50}")
             
             # Update signal quality tracker with trade result
             if hasattr(self, 'signal_quality_tracker') and self.signal_quality_tracker:
@@ -1857,17 +1870,30 @@ class PositionTracker:
                         }
                         exit_msg = MessageFormatter.trade_exit(exit_data, pip_value=self.config.XAUUSD_PIP_VALUE)
                         
+                        logger.info(f"📤 Mengirim notifikasi hasil trade {trade_result} ke user {user_id}...")
                         notification_sent = await self._safe_send_notification(user_id, exit_msg, parse_mode='Markdown')
                         
                         if notification_sent:
-                            logger.info(f"Exit notification sent to user {user_id} - TEXT ONLY (no photo)")
+                            logger.info(f"✅ Notifikasi hasil trade {trade_result} BERHASIL terkirim ke user {user_id}")
                             
                             if chart_path and self.config.CHART_AUTO_DELETE:
                                 await asyncio.sleep(1)
                                 self.chart_generator.delete_chart(chart_path)
                                 logger.info(f"Auto-deleted unused exit chart: {chart_path}")
                         else:
-                            logger.warning(f"Exit notification failed, cleanup trailing stop notify tracking")
+                            logger.warning(f"⚠️ Notifikasi hasil trade {trade_result} GAGAL - mencoba kirim via alert_system...")
+                            
+                            if self.alert_system:
+                                try:
+                                    await self.alert_system.send_trade_exit_alert({
+                                        'signal_type': signal_type,
+                                        'entry_price': entry_price,
+                                        'exit_price': exit_price,
+                                        'actual_pl': actual_pl
+                                    }, trade_result)
+                                    logger.info(f"✅ Notifikasi dikirim via alert_system sebagai fallback")
+                                except Exception as alert_err:
+                                    logger.error(f"❌ Fallback alert_system juga gagal: {alert_err}")
                         
                         self._cleanup_trailing_stop_notify(user_id, position_id)
                     else:

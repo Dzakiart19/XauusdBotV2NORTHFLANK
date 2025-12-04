@@ -168,32 +168,41 @@ class SignalSessionManager:
                 
                 is_opposite_direction = signal_type and active_session.signal_type != signal_type
                 
-                if elapsed >= 600:
+                if elapsed >= 300:
                     force_close_reason = (
-                        f"Sesi stale (>{600}s) - Durasi:{elapsed:.0f}s | "
+                        f"Sesi stale (>300s/5 menit) - Durasi:{elapsed:.0f}s | "
                         f"Arah:{active_session.signal_type} | Force close untuk sinyal baru"
                     )
                     logger.warning(
-                        f"⏰ FORCE CLOSE (stale >600s) - User:{user_id} "
+                        f"⏰ FORCE CLOSE (stale >300s) - User:{user_id} "
                         f"Sesi:{active_session.signal_type} Durasi:{elapsed:.0f}s | "
                         f"Memaksa close untuk membuat ruang sinyal baru"
                     )
+                    logger.info(f"📊 Detail sesi yang di-force close:")
+                    logger.info(f"   - Session ID: {active_session.signal_id[:8] if active_session.signal_id else 'N/A'}")
+                    logger.info(f"   - Signal Type: {active_session.signal_type}")
+                    logger.info(f"   - Entry Price: ${active_session.entry_price:.2f}")
+                    logger.info(f"   - Chart Path: {active_session.chart_path or 'None'}")
                     chart_to_cleanup = active_session.chart_path
                     force_closed_session = await self._force_close_session_internal(user_id, force_close_reason)
                     active_session = None
                     
-                elif is_opposite_direction and elapsed >= 300:
+                elif is_opposite_direction and elapsed >= 180:
                     old_direction = active_session.signal_type
                     new_direction = signal_type
                     force_close_reason = (
-                        f"Opposite direction setelah >{300}s - "
+                        f"Opposite direction setelah >180s/3 menit - "
                         f"{old_direction} -> {new_direction} | Durasi:{elapsed:.0f}s"
                     )
                     logger.warning(
-                        f"🔄 FORCE CLOSE (opposite direction >300s) - User:{user_id} "
+                        f"🔄 FORCE CLOSE (opposite direction >180s) - User:{user_id} "
                         f"Arah lama:{old_direction} -> Arah baru:{new_direction} | "
                         f"Durasi sesi:{elapsed:.0f}s | Force close untuk opposite signal"
                     )
+                    logger.info(f"📊 Detail sesi yang di-force close (opposite):")
+                    logger.info(f"   - Session ID: {active_session.signal_id[:8] if active_session.signal_id else 'N/A'}")
+                    logger.info(f"   - Old Direction: {old_direction} -> New: {new_direction}")
+                    logger.info(f"   - Entry Price: ${active_session.entry_price:.2f}")
                     chart_to_cleanup = active_session.chart_path
                     force_closed_session = await self._force_close_session_internal(user_id, force_close_reason)
                     active_session = None

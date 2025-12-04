@@ -112,6 +112,11 @@ body {
     animation: none;
 }
 
+.status-dot.syncing {
+    background: #3b82f6;
+    animation: syncPulse 0.8s infinite;
+}
+
 .status-text {
     font-weight: 600;
     text-transform: uppercase;
@@ -127,6 +132,15 @@ body {
 
 .status-text.offline {
     color: var(--color-offline);
+}
+
+.status-text.syncing {
+    color: #3b82f6;
+}
+
+@keyframes syncPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.95); }
 }
 
 @keyframes pulse {

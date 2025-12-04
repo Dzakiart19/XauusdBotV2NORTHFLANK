@@ -66,10 +66,12 @@
     var lastCandleDataFetch = 0;
     var CANDLE_CACHE_DURATION = 2000;
     
-    var ACTIVE_DATA_INTERVAL = 2000;
+    var ACTIVE_DATA_INTERVAL = 1000;
     var HISTORY_DATA_INTERVAL = 10000;
     var CHART_UPDATE_INTERVAL = 5000;
     var WS_RECONNECT_TIMEOUT = 2000;
+    var SYNC_RETRY_COUNT = 3;
+    var SYNC_RETRY_DELAY = 2000;
     var REGIME_TIMEOUT = 5000;
     var MAX_VISIBLE_TRADES = 50;
     var TRADES_PER_PAGE = 20;
@@ -371,7 +373,7 @@
         var statusText = document.querySelector('.status-text');
         
         if (statusDot && statusText) {
-            statusDot.classList.remove('offline', 'connecting', 'live');
+            statusDot.classList.remove('offline', 'connecting', 'live', 'syncing');
             
             switch(state) {
                 case 'connected':
@@ -380,6 +382,11 @@
                     statusText.textContent = 'LIVE';
                     statusText.className = 'status-text live';
                     isConnected = true;
+                    break;
+                case 'syncing':
+                    statusDot.classList.add('syncing');
+                    statusText.textContent = 'SINKRONISASI...';
+                    statusText.className = 'status-text syncing';
                     break;
                 case 'connecting':
                 case 'reconnecting':
@@ -1239,6 +1246,10 @@
         }
         fetchInProgress = true;
         debugLog('refreshData called');
+        
+        if (!isConnected) {
+            setConnectionState('syncing');
+        }
 
         return fetchDashboardData().then(function(data) {
             if (data) {
