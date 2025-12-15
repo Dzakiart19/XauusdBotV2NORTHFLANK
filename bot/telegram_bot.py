@@ -848,13 +848,15 @@ class TradingBot:
         
         if self.alert_system:
             try:
-                await self.alert_system.send_alert(
-                    level='warning',
-                    title='User Blocked Bot',
-                    message=f"User {mask_user_id(chat_id)} telah memblokir bot atau chat tidak dapat diakses",
-                    context={'chat_id': chat_id, 'error': str(error)}
+                from bot.alert_system import Alert, AlertType
+                blocked_alert = Alert(
+                    alert_type=AlertType.SYSTEM_ERROR,
+                    message=f"User {mask_user_id(chat_id)} telah memblokir bot",
+                    priority="LOW",
+                    data={'chat_id': chat_id, 'error': str(error)}
                 )
-            except (TelegramError, asyncio.TimeoutError, ConnectionError) as e:
+                await self.alert_system.send_alert(blocked_alert)
+            except (TelegramError, asyncio.TimeoutError, ConnectionError, TypeError, ImportError) as e:
                 logger.debug(f"Could not send alert for blocked user: {e}")
     
     async def _handle_chat_migrated(self, old_chat_id: int, error: ChatMigrated) -> Optional[int]:
