@@ -227,6 +227,71 @@ class Config:
     # Flag untuk tracking apakah secrets sudah di-refresh
     _secrets_refreshed = False
     
+    # Governance flags - untuk audit bypass settings
+    _bypass_flags_audit_log = []
+    
+    @classmethod
+    def _audit_bypass_flag(cls, flag_name: str, value: bool, reason: str = ""):
+        """Log bypass flag usage untuk governance dan audit"""
+        import logging
+        logger = logging.getLogger('ConfigAudit')
+        
+        audit_entry = {
+            'flag': flag_name,
+            'value': value,
+            'reason': reason,
+            'timestamp': os.getenv('HOSTNAME', 'unknown')
+        }
+        cls._bypass_flags_audit_log.append(audit_entry)
+        
+        if value:
+            logger.warning(f"⚠️ BYPASS FLAG ENABLED: {flag_name}={value} - {reason}")
+        else:
+            logger.info(f"✅ Security flag normal: {flag_name}={value}")
+    
+    @classmethod 
+    def is_owner(cls, telegram_id: int) -> bool:
+        """
+        Check if a user is the bot owner (in AUTHORIZED_USER_IDS).
+        PENTING: Pastikan ensure_secrets_loaded() sudah dipanggil sebelum method ini.
+        
+        Args:
+            telegram_id: Telegram user ID to check
+            
+        Returns:
+            True if user is owner, False otherwise
+        """
+        cls.ensure_secrets_loaded()
+        return telegram_id in cls.AUTHORIZED_USER_IDS
+    
+    @classmethod
+    def is_public_user(cls, telegram_id: int) -> bool:
+        """
+        Check if a user is in ID_USER_PUBLIC list.
+        
+        Args:
+            telegram_id: Telegram user ID to check
+            
+        Returns:
+            True if user is public user, False otherwise
+        """
+        cls.ensure_secrets_loaded()
+        return telegram_id in cls.ID_USER_PUBLIC
+    
+    @classmethod
+    def has_full_access(cls, telegram_id: int) -> bool:
+        """
+        Check if a user has full access (owner OR public user).
+        Tidak perlu trial untuk user dengan full access.
+        
+        Args:
+            telegram_id: Telegram user ID to check
+            
+        Returns:
+            True if user has full access, False otherwise
+        """
+        return cls.is_owner(telegram_id) or cls.is_public_user(telegram_id)
+    
     @classmethod
     def _refresh_secrets(cls):
         """
@@ -242,11 +307,28 @@ class Config:
             dict: Status refresh dengan info debug
         """
         import sys
+        import logging
+        logger = logging.getLogger('Config')
         
         # SELALU baca ulang dari environment (jangan check if truthy dulu)
         cls.TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '').strip()
         cls.AUTHORIZED_USER_IDS = _parse_user_ids(os.getenv('AUTHORIZED_USER_IDS', ''))
         cls.ID_USER_PUBLIC = _parse_user_ids(os.getenv('ID_USER_PUBLIC', ''))
+        
+        # Log authorized users untuk debugging
+        if cls.AUTHORIZED_USER_IDS:
+            logger.info(f"✅ AUTHORIZED_USER_IDS loaded: {len(cls.AUTHORIZED_USER_IDS)} users - {cls.AUTHORIZED_USER_IDS}")
+        else:
+            logger.warning("⚠️ AUTHORIZED_USER_IDS is EMPTY - no owner configured!")
+        
+        # Audit bypass flags
+        bypass_signal_quality = os.getenv('BYPASS_SIGNAL_QUALITY_CHECK', 'false').lower() == 'true'
+        auto_signal_replacement = os.getenv('AUTO_SIGNAL_REPLACEMENT_ALLOWED', 'false').lower() == 'true'
+        
+        cls._audit_bypass_flag('BYPASS_SIGNAL_QUALITY_CHECK', bypass_signal_quality, 
+                               "Allows signals without quality validation")
+        cls._audit_bypass_flag('AUTO_SIGNAL_REPLACEMENT_ALLOWED', auto_signal_replacement,
+                               "Allows automatic signal replacement")
         
         # Koyeb detection - check multiple indicators
         cls.KOYEB_PUBLIC_DOMAIN = os.getenv('KOYEB_PUBLIC_DOMAIN', '')

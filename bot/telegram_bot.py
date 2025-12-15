@@ -841,10 +841,9 @@ class TradingBot:
             try:
                 await self.signal_session_manager.end_session(
                     chat_id, 
-                    reason='user_blocked', 
-                    notify=False
+                    reason='user_blocked'
                 )
-            except (TelegramError, asyncio.TimeoutError, ValueError, AttributeError) as e:
+            except (TelegramError, asyncio.TimeoutError, ValueError, AttributeError, TypeError) as e:
                 logger.debug(f"Could not end session for blocked user: {e}")
         
         if self.alert_system:
@@ -2128,6 +2127,10 @@ class TradingBot:
             return
         
         try:
+            # PENTING: Pastikan config secrets sudah di-load sebelum check authorization
+            # Ini fix bug dimana AUTHORIZED_USER_IDS bisa kosong saat startup
+            self.config.ensure_secrets_loaded()
+            
             if self.user_manager:
                 self.user_manager.create_user(
                     telegram_id=user.id,
@@ -2137,14 +2140,21 @@ class TradingBot:
                 )
                 self.user_manager.update_user_activity(user.id)
             
+            # Gunakan method dari Config class untuk consistency
+            is_owner = self.config.is_owner(user.id)
+            is_public_user = self.config.is_public_user(user.id)
+            has_full_access = self.config.has_full_access(user.id)
             is_admin_user = self.is_admin(user.id)
-            is_authorized_user = user.id in self.config.AUTHORIZED_USER_IDS
-            is_public_user = hasattr(self.config, 'ID_USER_PUBLIC') and user.id in self.config.ID_USER_PUBLIC
+            
+            # Debug log untuk troubleshooting authorization issues
+            logger.debug(f"User {mask_user_id(user.id)} access check: owner={is_owner}, public={is_public_user}, full_access={has_full_access}, admin={is_admin_user}")
+            logger.debug(f"Config AUTHORIZED_USER_IDS count: {len(self.config.AUTHORIZED_USER_IDS)}")
             
             trial_info = None
             trial_msg = ""
             
-            if not is_authorized_user and not is_public_user and self.user_manager:
+            # HANYA process trial untuk user yang TIDAK punya full access
+            if not has_full_access and self.user_manager:
                 trial_status = self.user_manager.check_trial_status(user.id)
                 
                 if trial_status is None:
@@ -2152,7 +2162,6 @@ class TradingBot:
                     if trial_info and not trial_info.get('already_exists', False):
                         trial_end = trial_info.get('trial_end')
                         if trial_end:
-                            import pytz
                             jakarta_tz = pytz.timezone('Asia/Jakarta')
                             trial_end_local = trial_end.replace(tzinfo=pytz.UTC).astimezone(jakarta_tz)
                             end_date = trial_end_local.strftime('%d %B %Y, %H:%M WIB')
@@ -2195,10 +2204,13 @@ class TradingBot:
                 await message.reply_text(access_denied_msg, parse_mode='Markdown')
                 return
             
-            if is_admin_user:
+            # Tentukan status user dengan jelas dan konsisten
+            if is_owner:
+                user_status = "👑 Owner/Admin"
+            elif is_admin_user:
                 user_status = "👑 Admin"
-            elif is_authorized_user or is_public_user:
-                user_status = "✅ User Terdaftar"
+            elif is_public_user:
+                user_status = "✅ User Premium"
             else:
                 user_status = "🎁 Trial User"
             

@@ -1,7 +1,15 @@
-# XAUUSD Trading Bot - Enhanced Version 2.0
+# XAUUSD Trading Bot - Enhanced Version 2.3
 
 ## Overview
 This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It provides real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system, and supports paid subscriptions. Key capabilities include a REST API, backtesting engine, report generation, admin monitoring dashboard, and enhanced interactive menus. The bot is designed for 24/7 operation, delivering accurate signals through a multi-indicator strategy with strict validation.
+
+## Recent Changes (December 2025)
+- **Fixed Owner Recognition Bug**: AUTHORIZED_USER_IDS now properly loaded via `Config.ensure_secrets_loaded()` before bot initialization
+- **Improved User Status Display**: Clear differentiation between Owner/Admin, Premium User, and Trial User
+- **Added Config Methods**: `is_owner()`, `is_public_user()`, `has_full_access()` for consistent authorization checks
+- **Governance Audit**: Added audit logging for bypass flags (BYPASS_SIGNAL_QUALITY_CHECK, AUTO_SIGNAL_REPLACEMENT_ALLOWED)
+- **Unit Tests**: Added comprehensive tests for config, strategy, and risk manager modules
+- **Adaptive Position Sizing**: Dynamic lot adjustment based on volatility and drawdown protection
 
 ## User Preferences
 - Bahasa komunikasi: **Bahasa Indonesia** (100% tidak ada bahasa Inggris)
@@ -12,6 +20,11 @@ This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized
 - Mode: **24/7 unlimited** untuk user terdaftar
 - Akurasi: Strategi multi-indicator dengan validasi ketat
 - Akses Bot: **Privat** - hanya untuk user yang terdaftar di AUTHORIZED_USER_IDS atau ID_USER_PUBLIC
+
+## Access Control Hierarchy
+1. **Owner/Admin** (AUTHORIZED_USER_IDS): Full access, no trial needed, all admin commands available
+2. **Premium User** (ID_USER_PUBLIC): Full access, no trial needed
+3. **Trial User**: 3-day trial access, limited features after expiration
 
 ## System Architecture
 The bot employs a modular architecture for scalability and maintainability, focusing on market data processing, strategy execution, and user interaction.

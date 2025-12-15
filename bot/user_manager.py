@@ -275,7 +275,13 @@ class UserManager:
         return await asyncio.to_thread(self.update_user_activity, telegram_id)
     
     def is_authorized(self, telegram_id: int) -> bool:
-        """Check if user is authorized (READ operation - no lock needed)."""
+        """Check if user is authorized (READ operation - no lock needed).
+        
+        PENTING: Pastikan Config.ensure_secrets_loaded() sudah dipanggil sebelum method ini.
+        """
+        # Pastikan secrets sudah di-load
+        self.config.ensure_secrets_loaded()
+        
         if telegram_id in self.config.AUTHORIZED_USER_IDS:
             return True
         
@@ -285,11 +291,17 @@ class UserManager:
         return False
     
     def is_admin(self, telegram_id: int) -> bool:
-        """Check if user is admin (READ operation - no lock needed)."""
-        # Check AUTHORIZED_USER_IDS dulu (dari secrets)
+        """Check if user is admin (READ operation - no lock needed).
+        
+        PENTING: Pastikan Config.ensure_secrets_loaded() sudah dipanggil sebelum method ini.
+        """
+        # Pastikan secrets sudah di-load
+        self.config.ensure_secrets_loaded()
+        
+        # Check AUTHORIZED_USER_IDS dulu (dari secrets) - ini adalah OWNER
         if telegram_id in self.config.AUTHORIZED_USER_IDS:
             return True
-        # Kalau tidak, check database
+        # Kalau tidak, check database untuk admin flag
         user = self.get_user(telegram_id)
         return bool(user.is_admin) if user else False
     
@@ -544,16 +556,27 @@ class UserManager:
         """Check if user has access (READ operation - no lock needed).
         
         Access hierarchy:
-        1. AUTHORIZED_USER_IDS - Full access (no trial needed)
-        2. ID_USER_PUBLIC - Full access (no trial needed)
+        1. AUTHORIZED_USER_IDS - Full access (no trial needed) - OWNER
+        2. ID_USER_PUBLIC - Full access (no trial needed) - PREMIUM
         3. Active trial - Temporary access during trial period
+        
+        PENTING: Pastikan Config.ensure_secrets_loaded() sudah dipanggil sebelum method ini.
         """
-        if telegram_id in self.config.AUTHORIZED_USER_IDS:
-            return True
+        # Pastikan secrets sudah di-load
+        self.config.ensure_secrets_loaded()
         
-        if hasattr(self.config, 'ID_USER_PUBLIC') and telegram_id in self.config.ID_USER_PUBLIC:
-            return True
+        # Check menggunakan method dari Config untuk consistency
+        if hasattr(self.config, 'has_full_access'):
+            if self.config.has_full_access(telegram_id):
+                return True
+        else:
+            # Fallback untuk backward compatibility
+            if telegram_id in self.config.AUTHORIZED_USER_IDS:
+                return True
+            if hasattr(self.config, 'ID_USER_PUBLIC') and telegram_id in self.config.ID_USER_PUBLIC:
+                return True
         
+        # Check trial status untuk user yang tidak punya full access
         trial_status = self.check_trial_status(telegram_id)
         if trial_status and trial_status.get('is_active', False):
             return True
@@ -564,6 +587,7 @@ class UserManager:
         """Start a 3-day trial for a new user (WRITE operation).
         
         Trial hanya diberikan untuk user baru yang belum terdaftar di AUTHORIZED_USER_IDS.
+        PENTING: Pastikan Config.ensure_secrets_loaded() sudah dipanggil sebelum method ini.
         
         Args:
             user_id: Telegram user ID
@@ -571,12 +595,21 @@ class UserManager:
         Returns:
             Dict with trial info if successful, None if already has trial or is authorized user
         """
+        # Pastikan secrets sudah di-load sebelum check authorization
+        self.config.ensure_secrets_loaded()
+        
+        # Check menggunakan method dari Config untuk consistency
+        if hasattr(self.config, 'has_full_access') and self.config.has_full_access(user_id):
+            logger.info(f"User {user_id} has full access (owner/premium), no trial needed")
+            return None
+        
+        # Fallback checks untuk backward compatibility
         if user_id in self.config.AUTHORIZED_USER_IDS:
-            logger.info(f"User {user_id} is authorized, no trial needed")
+            logger.info(f"User {user_id} is authorized (owner), no trial needed")
             return None
         
         if hasattr(self.config, 'ID_USER_PUBLIC') and user_id in self.config.ID_USER_PUBLIC:
-            logger.info(f"User {user_id} is public user, no trial needed")
+            logger.info(f"User {user_id} is public user (premium), no trial needed")
             return None
         
         with self.user_lock(user_id):
