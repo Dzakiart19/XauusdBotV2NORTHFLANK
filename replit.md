@@ -1,7 +1,7 @@
 # XAUUSD Trading Bot - Enhanced Version 2.0
 
 ## Overview
-This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It delivers real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system for new users, and includes a mechanism for paid subscriptions. The bot features advanced capabilities including a REST API, backtesting engine, report generation, admin monitoring dashboard, and enhanced interactive menus.
+This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It provides real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system, and supports paid subscriptions. Key capabilities include a REST API, backtesting engine, report generation, admin monitoring dashboard, and enhanced interactive menus. The bot is designed for 24/7 operation, delivering accurate signals through a multi-indicator strategy with strict validation.
 
 ## User Preferences
 - Bahasa komunikasi: **Bahasa Indonesia** (100% tidak ada bahasa Inggris)
@@ -14,15 +14,14 @@ This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized
 - Akses Bot: **Privat** - hanya untuk user yang terdaftar di AUTHORIZED_USER_IDS atau ID_USER_PUBLIC
 
 ## System Architecture
-The bot features a modular architecture designed for scalability and maintainability, centered on components for market data processing, strategy execution, and user interaction.
+The bot employs a modular architecture for scalability and maintainability, focusing on market data processing, strategy execution, and user interaction.
 
 **Core Components & System Design:**
 - **Orchestrator:** Manages overall bot operations.
 - **Market Data:** Handles Deriv WebSocket connection, OHLC candle construction, and persistence.
-- **Strategy:** Implements dual-mode signal detection using indicators like Twin Range Filter, Market Bias CEREBR, EMA 50, and RSI, with a weighted scoring system, Market Regime Detector, and Confluence Scoring System. Includes adaptive volume filters, dynamic ADX thresholds, parallel timeframe signal generation, and smart signal cooldown.
-- **Position Tracker:** Monitors real-time trade positions per user, including dynamic SL settings and trailing stops, with grade-based auto-closure.
-- **Telegram Bot:** Manages command handling, notifications, and features a real-time dashboard with auto-updates.
-- **Chart Generator:** Operates in a stub mode (no-op) to conserve memory.
+- **Strategy:** Implements dual-mode signal detection using indicators like Twin Range Filter, Market Bias CEREBR, EMA 50, and RSI, with a weighted scoring system, Market Regime Detector, and Confluence Scoring System. Features adaptive volume filters, dynamic ADX thresholds, parallel timeframe signal generation, and smart signal cooldown.
+- **Position Tracker:** Monitors real-time trade positions per user, including dynamic SL and trailing stops, with grade-based auto-closure.
+- **Telegram Bot:** Manages commands, notifications, and a real-time dashboard with auto-updates.
 - **Risk Manager:** Calculates lot sizes, P/L, enforces per-user risk limits, and optimizes TP/SL based on session strength.
 - **Database:** PostgreSQL (with SQLite support) for persistent data, featuring auto-migration, connection pooling, and robust transaction management.
 - **User Manager:** Handles user authentication, access control, and a 3-day trial system with auto-expiration.
@@ -32,181 +31,35 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **Enhanced Signal Features:** Includes enhanced inside bar pattern detection and a breakout confirmation system.
 - **Win Rate Tracking:** Provides enhanced win rate statistics per signal type, session, pattern, and streak information.
 - **Deployment:** Optimized for Koyeb and Replit, supporting webhook mode, memory optimization, and self-ping for free-tier services.
+- **Report Generator:** Provides daily, weekly, monthly trading reports with export options (CSV, JSON, text) and scheduled delivery.
+- **Backtesting Engine:** Allows historical data simulation, comprehensive backtest results, and strategy optimization.
+- **REST API Server:** Offers full REST API endpoints for external access, including status, price, signals, positions, trades, performance, and reports, with API key authentication and rate limiting.
+- **Admin Monitoring Dashboard:** Displays real-time system and bot metrics, performance metrics, and automated alerting with Telegram notifications.
+- **Enhanced Interactive Menu:** Provides a context-aware main menu, settings, reports, signal action, position management, user onboarding, and help menus via inline keyboards.
+- **Security Module:** Implements webhook HMAC verification, enhanced secret masking, input sanitization, and rate limiting.
+- **Multi-Language Support:** Supports Indonesian and English translations with user language preferences.
+- **Indicator Caching:** Utilizes LRU cache with TTL for indicator calculations.
 
 **Technical Implementations & Feature Specifications:**
-- **Indicators:** EMA (5, 10, 20, 50), RSI (14), Stochastic (K=14, D=3), ATR (14), MACD (12,26,9), Volume, Twin Range Filter, Market Bias CEREBR. Includes advanced features like RSI Divergence, ATR Volatility Zones, and Adaptive Smoothed RSI.
+- **Indicators:** EMA (5, 10, 20, 50), RSI (14), Stochastic (K=14, D=3), ATR (14), MACD (12,26,9), Volume, Twin Range Filter, Market Bias CEREBR. Includes RSI Divergence, ATR Volatility Zones, and Adaptive Smoothed RSI.
 - **Risk Management:** Fixed SL ($1 per trade), dynamic TP (1.45x-2.50x R:R), max spread (5 pips), risk per trade (0.5%), and fixed lot size at 0.01.
-- **Access Control:** Private bot with dual-tier access and a trial system, with strict per-user data isolation.
-- **Telegram Commands:** 14 command yang tersedia:
-  - `/start` - Memulai bot dan aktivasi user
-  - `/help` - Menampilkan bantuan dan daftar command
-  - `/monitor` - Mulai monitoring sinyal trading real-time
-  - `/stopmonitor` - Menghentikan monitoring sinyal
-  - `/getsignal` - Mendapatkan sinyal trading manual
-  - `/status` - Melihat posisi aktif dan status koneksi
-  - `/riwayat` - Melihat riwayat trading terakhir
-  - `/performa` - Statistik performa trading (7d, 30d, all-time)
-  - `/dashboard` - Mulai real-time dashboard
-  - `/stopdashboard` - Menghentikan real-time dashboard
-  - `/trialstatus` - Melihat status trial/akses user
-  - `/buyaccess` - Informasi berlangganan premium
-  - `/riset` - Reset database trading (Admin only)
-  - `/optimize` - Melihat status auto-optimizer dan parameter trading
+- **Access Control:** Private bot with dual-tier access and a trial system.
+- **Telegram Commands:** `/start`, `/help`, `/monitor`, `/stopmonitor`, `/getsignal`, `/status`, `/riwayat`, `/performa`, `/dashboard`, `/stopdashboard`, `/trialstatus`, `/buyaccess`, `/riset` (Admin only), `/optimize`.
 - **Anti-Duplicate Protection:** Two-phase cache pattern with hash-based tracking for signal deduplication.
 - **Candle Data Persistence:** Stores M1, M5, and H1 candles, including a smart H1 candle bootstrap.
 - **Bot Stability:** Hang detection, health monitors, optimized Telegram polling, and a global error handler.
-- **Polling Mode Keep-Alive:** Implemented to prevent unexpected task completion and ensure 24/7 bot availability.
-- **Koyeb Anti-Sleep Optimization:** Aggressive self-ping interval and multi-endpoint ping strategy with burst ping mode to prevent idle shutdown.
-- **Background Task Health Management:** Smart stuck-task detection with whitelist for continuous background tasks (self_ping, health_check, memory_monitor, etc.) to prevent false-positive restarts and warning spam.
-- **Timezone WIB:** Web dashboard menampilkan waktu dalam zona waktu WIB (UTC+7) untuk user Indonesia.
-
-## Recent Changes (December 2024)
-- **[15 Des] Enhanced Bot v2.0 - Major Feature Additions:**
-  1. **Report Generator Module (bot/report_generator.py):**
-     - Daily, weekly, monthly trading reports
-     - Export to CSV, JSON, and formatted text
-     - Hourly performance breakdown
-     - Signal source performance analysis
-     - Scheduled report delivery to subscribers
-  2. **Backtesting Engine (bot/backtesting.py):**
-     - Historical data simulation with synthetic data generation
-     - Comprehensive backtest results (win rate, profit factor, drawdown, Sharpe ratio)
-     - Strategy optimizer with parameter grid search
-     - Equity curve tracking and consecutive win/loss streaks
-  3. **REST API Server (bot/api_server.py):**
-     - Full REST API endpoints for external access
-     - Endpoints: /status, /price, /signals, /positions, /trades, /performance
-     - Report endpoints: /reports/daily, /reports/weekly, /reports/monthly
-     - Webhook registration for signal notifications
-     - Rate limiting (100 requests/minute)
-     - API key authentication system
-     - Comprehensive API documentation at /api/v1/docs
-  4. **Admin Monitoring Dashboard (bot/admin_monitor.py):**
-     - Real-time system metrics (CPU, memory, disk usage)
-     - Bot metrics (signals, positions, connections)
-     - Performance metrics (latency, response times)
-     - Automated alerting with threshold configuration
-     - Alert suppression to prevent spam
-     - Telegram notifications to admin chat IDs
-  5. **Enhanced Interactive Menu (bot/enhanced_menu.py):**
-     - Context-aware main menu (monitoring status, active positions)
-     - Settings menu (language, notifications, risk, timeframe)
-     - Reports menu with export options
-     - Signal action menu (update, modify SL/TP, close)
-     - Position management menu
-     - User onboarding flow
-     - Help menu with categorized topics
-
-- **[15 Des] Security & UX Improvements:**
-  1. **Security Module (bot/security.py):**
-     - Webhook HMAC verification with constant-time comparison
-     - Enhanced secret masking (bot tokens, API keys, database URLs, passwords)
-     - Input sanitization against XSS and injection attacks
-     - Telegram user ID validation with bounds checking
-     - Rate limiting decorators for both sync and async functions
-  2. **Multi-Language Support (bot/i18n.py):**
-     - Indonesian and English translations with easy extensibility
-     - User language preferences stored per user ID
-     - Localized datetime formatting (WIB timezone)
-     - Currency and percentage formatting helpers
-  3. **Interactive Menu System (bot/menu.py):**
-     - Inline keyboard menus for better UX
-     - Localized button labels
-     - Trading, settings, language selection, and onboarding menus
-     - Callback query handlers for menu navigation
-  4. **Indicator Caching (bot/indicator_cache.py):**
-     - LRU cache with TTL support for indicator calculations
-     - Memory usage tracking and automatic eviction
-     - DataFrame/Series/numpy array support with size estimation
-     - Decorator for easy caching of indicator functions
-  5. **Backup Security Fix (bot/backup.py):**
-     - PostgreSQL parameter sanitization to prevent command injection
-     - Regex validation for hostname, username, and database names
-     - shell=False enforcement in subprocess calls
-  6. **Unit Tests (tests/):**
-     - 114 tests for security, i18n, menu, indicators, backup, and cache modules
-     - Coverage for edge cases and security scenarios
-
-
-- **[TERBARU - 4 Des] Perbaikan 3 Bug Kritikal:**
-  1. **HTTPXRequest Initialization Fix:**
-     - Tambah import HTTPXRequest dari telegram.request
-     - Inisialisasi HTTPXRequest dengan connection pool config (pool_size=8, timeout=30s)
-     - Dipasang di Application.builder() untuk mencegah RuntimeError "HTTPXRequest is not initialized"
-  2. **Dashboard Commands Fix:**
-     - Implementasi `/dashboard` command untuk memulai real-time dashboard
-     - Implementasi `/stopdashboard` command untuk menghentikan dashboard
-     - Registrasi command handlers di initialize() method
-     - Error handling lengkap (Forbidden, NetworkError, TimedOut, Conflict, InvalidToken, dll)
-  3. **Monitoring Loop Stability:**
-     - HTTPXRequest fix menstabilkan network operations yang sebelumnya menyebabkan cascading failures
-     - Monitoring loop sekarang lebih stabil dengan proper connection pooling
-- **[4 Des - Sebelumnya] Perbaikan Bug Auto-Monitor Mati Sendiri:**
-  - ROOT CAUSE: Duplicate `end_session` call di `position_tracker.py` menyebabkan event handler dipanggil 2x
-  - FIX: Hapus duplicate `end_session` di method `_close_position_internal` - sekarang hanya dipanggil sekali
-  - Tambah dokumentasi jelas di `_resolve_session_state` bahwa cleanup session TIDAK menghentikan monitoring
-  - Perbaiki `_on_session_end_handler` dengan logging detail - HANYA stop dashboard dan clear cache, TIDAK stop monitoring
-  - Tambah logging detail saat monitoring loop exit untuk diagnosa kondisi yang menyebabkan exit
-  - Perbaiki `_on_monitoring_task_done` dengan logging lengkap untuk debug
-  - PENTING: Monitoring sekarang TETAP BERJALAN setelah posisi ditutup (session end)
-- **[TERBARU] Perbaikan Unlimited Signal Trading:**
-  - Signal Quality Grade minimum diubah dari 'C' ke 'D' untuk membolehkan sinyal lebih banyak
-  - Ditambahkan BYPASS_SIGNAL_QUALITY_CHECK=true mode untuk menonaktifkan blocking signal quality sepenuhnya
-  - Sinyal trading sekarang benar-benar unlimited tanpa blocking berdasarkan grade
-- **Perbaikan Auto-Monitoring Sebelumnya:**
-  - Ditambahkan heartbeat logging setiap 30 detik untuk memantau kesehatan monitoring loop
-  - Ditambahkan exception handling catch-all untuk mencegah monitoring loop berhenti tiba-tiba
-  - Ditambahkan health check untuk auto-restart monitoring tasks yang mati (_check_and_restart_dead_monitoring_tasks)
-  - Enhanced logging untuk monitoring lifecycle (start/stop dengan detail iterasi dan reason)
-- Implementasi command `/status` untuk melihat posisi aktif dan status koneksi
-- Implementasi command `/optimize` untuk melihat status auto-optimizer dan parameter trading
-- Auto-monitor sekarang aktif otomatis untuk SEMUA user (AUTHORIZED_USER_IDS + ID_USER_PUBLIC) saat bot restart
-- Emergency brake drawdown dinonaktifkan (DRAWDOWN_EMERGENCY_BRAKE_ENABLED=false) untuk sinyal unlimited
-- Perbaikan duplicate method `should_run_optimization` di auto_optimizer.py
-- Optimasi ukuran log files untuk menghemat storage Koyeb (dari 2.2M ke 524K)
-- Update dokumentasi command (12 command tersedia)
-- Fixed stuck task detection to skip background tasks that are designed to run continuously
-- Reduced "LONG TASK" warning spam for legitimate background processes
-- Added WIB timezone conversion to web dashboard (formatTime/formatTimeShort functions)
-- Fixed datetime serialization for health check endpoints
-- Improved import handling (pytz)
-
-## New Module Files (v2.0)
-- **bot/report_generator.py** - Report generation with CSV/JSON export
-- **bot/backtesting.py** - Backtesting engine and strategy optimizer
-- **bot/api_server.py** - REST API server with webhook support
-- **bot/admin_monitor.py** - Admin monitoring dashboard and alerting
-- **bot/enhanced_menu.py** - Enhanced interactive menu system
-
-## API Endpoints (v2.0)
-Base URL: `/api/v1/`
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| /status | GET | Bot status and component health |
-| /price | GET | Current XAUUSD price |
-| /signals | GET | Recent trading signals |
-| /signals/latest | GET | Latest signal |
-| /positions | GET | Open positions |
-| /trades | GET | Trade history |
-| /performance | GET | Trading performance stats |
-| /performance/hourly | GET | Hourly performance breakdown |
-| /reports/daily | GET | Daily trading report |
-| /reports/weekly | GET | Weekly trading report |
-| /reports/monthly | GET | Monthly trading report |
-| /webhooks | POST | Register webhook for notifications |
-| /webhooks | GET | List registered webhooks |
-| /webhooks/{id} | DELETE | Delete webhook |
-| /health | GET | API health check |
-| /docs | GET | API documentation |
+- **Polling Mode Keep-Alive:** Ensures 24/7 bot availability.
+- **Koyeb Anti-Sleep Optimization:** Aggressive self-ping and multi-endpoint ping strategy.
+- **Background Task Health Management:** Smart stuck-task detection with whitelisting for continuous tasks.
+- **Timezone:** Web dashboard displays time in WIB (UTC+7).
 
 ## External Dependencies
-- **Deriv WebSocket API:** For real-time XAUUSD market data.
-- **Telegram Bot API (`python-telegram-bot`):** For all Telegram interactions.
+- **Deriv WebSocket API:** Real-time XAUUSD market data.
+- **Telegram Bot API (`python-telegram-bot`):** All Telegram interactions.
 - **SQLAlchemy:** ORM for database interactions.
-- **Pandas & NumPy:** For data manipulation and numerical operations.
-- **pytz:** For timezone handling.
-- **aiohttp:** For asynchronous HTTP server and client operations.
-- **python-dotenv:** For managing environment variables.
-- **Sentry:** For advanced error tracking and monitoring.
-- **psutil:** For system resource monitoring in admin dashboard.
+- **Pandas & NumPy:** Data manipulation and numerical operations.
+- **pytz:** Timezone handling.
+- **aiohttp:** Asynchronous HTTP server and client operations.
+- **python-dotenv:** Environment variable management.
+- **Sentry:** Advanced error tracking and monitoring.
+- **psutil:** System resource monitoring.
