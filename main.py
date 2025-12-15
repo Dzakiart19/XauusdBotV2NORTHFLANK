@@ -161,6 +161,13 @@ from bot.signal_quality_tracker import SignalQualityTracker
 from bot.auto_optimizer import AutoOptimizer
 from bot.indicators import IndicatorEngine
 
+# New Enhancement Modules
+from bot.report_generator import ReportGenerator, ScheduledReportManager
+from bot.backtesting import BacktestEngine, StrategyOptimizer
+from bot.api_server import TradingAPIServer
+from bot.admin_monitor import AdminDashboard, MetricsCollector, AlertManager
+from bot.enhanced_menu import EnhancedMenuHandler
+
 update_init_status("imports_complete")
 logger = setup_logger('Main')
 

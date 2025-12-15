@@ -1,7 +1,7 @@
-# XAUUSD Trading Bot - Enhanced Version Lite
+# XAUUSD Trading Bot - Enhanced Version 2.0
 
 ## Overview
-This project is a lightweight Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It delivers real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system for new users, and includes a mechanism for paid subscriptions. The bot focuses on core functionality: signal delivery without heavy chart generation (charts are available in a separate web application).
+This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It delivers real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system for new users, and includes a mechanism for paid subscriptions. The bot features advanced capabilities including a REST API, backtesting engine, report generation, admin monitoring dashboard, and enhanced interactive menus.
 
 ## User Preferences
 - Bahasa komunikasi: **Bahasa Indonesia** (100% tidak ada bahasa Inggris)
@@ -61,7 +61,43 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **Timezone WIB:** Web dashboard menampilkan waktu dalam zona waktu WIB (UTC+7) untuk user Indonesia.
 
 ## Recent Changes (December 2024)
-- **[15 Des] Enhanced Bot Improvements:**
+- **[15 Des] Enhanced Bot v2.0 - Major Feature Additions:**
+  1. **Report Generator Module (bot/report_generator.py):**
+     - Daily, weekly, monthly trading reports
+     - Export to CSV, JSON, and formatted text
+     - Hourly performance breakdown
+     - Signal source performance analysis
+     - Scheduled report delivery to subscribers
+  2. **Backtesting Engine (bot/backtesting.py):**
+     - Historical data simulation with synthetic data generation
+     - Comprehensive backtest results (win rate, profit factor, drawdown, Sharpe ratio)
+     - Strategy optimizer with parameter grid search
+     - Equity curve tracking and consecutive win/loss streaks
+  3. **REST API Server (bot/api_server.py):**
+     - Full REST API endpoints for external access
+     - Endpoints: /status, /price, /signals, /positions, /trades, /performance
+     - Report endpoints: /reports/daily, /reports/weekly, /reports/monthly
+     - Webhook registration for signal notifications
+     - Rate limiting (100 requests/minute)
+     - API key authentication system
+     - Comprehensive API documentation at /api/v1/docs
+  4. **Admin Monitoring Dashboard (bot/admin_monitor.py):**
+     - Real-time system metrics (CPU, memory, disk usage)
+     - Bot metrics (signals, positions, connections)
+     - Performance metrics (latency, response times)
+     - Automated alerting with threshold configuration
+     - Alert suppression to prevent spam
+     - Telegram notifications to admin chat IDs
+  5. **Enhanced Interactive Menu (bot/enhanced_menu.py):**
+     - Context-aware main menu (monitoring status, active positions)
+     - Settings menu (language, notifications, risk, timeframe)
+     - Reports menu with export options
+     - Signal action menu (update, modify SL/TP, close)
+     - Position management menu
+     - User onboarding flow
+     - Help menu with categorized topics
+
+- **[15 Des] Security & UX Improvements:**
   1. **Security Module (bot/security.py):**
      - Webhook HMAC verification with constant-time comparison
      - Enhanced secret masking (bot tokens, API keys, database URLs, passwords)
@@ -135,6 +171,35 @@ The bot features a modular architecture designed for scalability and maintainabi
 - Fixed datetime serialization for health check endpoints
 - Improved import handling (pytz)
 
+## New Module Files (v2.0)
+- **bot/report_generator.py** - Report generation with CSV/JSON export
+- **bot/backtesting.py** - Backtesting engine and strategy optimizer
+- **bot/api_server.py** - REST API server with webhook support
+- **bot/admin_monitor.py** - Admin monitoring dashboard and alerting
+- **bot/enhanced_menu.py** - Enhanced interactive menu system
+
+## API Endpoints (v2.0)
+Base URL: `/api/v1/`
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| /status | GET | Bot status and component health |
+| /price | GET | Current XAUUSD price |
+| /signals | GET | Recent trading signals |
+| /signals/latest | GET | Latest signal |
+| /positions | GET | Open positions |
+| /trades | GET | Trade history |
+| /performance | GET | Trading performance stats |
+| /performance/hourly | GET | Hourly performance breakdown |
+| /reports/daily | GET | Daily trading report |
+| /reports/weekly | GET | Weekly trading report |
+| /reports/monthly | GET | Monthly trading report |
+| /webhooks | POST | Register webhook for notifications |
+| /webhooks | GET | List registered webhooks |
+| /webhooks/{id} | DELETE | Delete webhook |
+| /health | GET | API health check |
+| /docs | GET | API documentation |
+
 ## External Dependencies
 - **Deriv WebSocket API:** For real-time XAUUSD market data.
 - **Telegram Bot API (`python-telegram-bot`):** For all Telegram interactions.
@@ -144,3 +209,4 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **aiohttp:** For asynchronous HTTP server and client operations.
 - **python-dotenv:** For managing environment variables.
 - **Sentry:** For advanced error tracking and monitoring.
+- **psutil:** For system resource monitoring in admin dashboard.
