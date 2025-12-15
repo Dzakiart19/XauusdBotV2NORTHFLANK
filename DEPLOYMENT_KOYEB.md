@@ -83,14 +83,45 @@ VALUE: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz1234567890
 - Kirim `/newbot` ke @BotFather untuk buat bot baru
 - Copy token yang diberikan (format: angka:huruf-angka)
 
-**2. AUTHORIZED_USER_IDS**
+**2. AUTHORIZED_USER_IDS** (Owner/Admin Bot)
 ```
 NAME:  AUTHORIZED_USER_IDS
 VALUE: 123456789
 ```
+- **INI ADALAH ID PEMILIK BOT** - akan muncul sebagai "👑 Owner/Admin"
 - Dapatkan user ID Telegram Anda dari @userinfobot
 - Kirim pesan apa saja ke @userinfobot untuk dapatkan ID
-- Jika lebih dari 1 user, pisahkan dengan koma: `123456,789012,345678`
+- Jika lebih dari 1 admin, pisahkan dengan koma: `123456,789012,345678`
+
+**3. ID_USER_PUBLIC** (User Premium - Optional)
+```
+NAME:  ID_USER_PUBLIC
+VALUE: 111222333,444555666
+```
+- User dengan akses premium tanpa trial - akan muncul sebagai "✅ User Premium"
+- Pisahkan dengan koma jika lebih dari 1 user
+
+**⚠️ PENTING untuk Developer Open Source:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ JANGAN GUNAKAN ID ORANG LAIN!                                   │
+│                                                                 │
+│ Saat deploy bot ini, GANTI AUTHORIZED_USER_IDS dengan           │
+│ Telegram ID ANDA SENDIRI agar Anda dikenali sebagai Owner.      │
+│                                                                 │
+│ Cara dapat Telegram ID:                                         │
+│ 1. Buka Telegram → cari @userinfobot                            │
+│ 2. Kirim /start → bot akan balas dengan ID Anda                 │
+│ 3. Copy ID tersebut ke AUTHORIZED_USER_IDS                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Perbedaan Role:**
+| Role | Environment Variable | Status di Bot |
+|------|---------------------|---------------|
+| Owner/Admin | AUTHORIZED_USER_IDS | 👑 Owner/Admin |
+| User Premium | ID_USER_PUBLIC | ✅ User Premium |
+| User Biasa | (tidak perlu) | 🎁 Trial User |
 
 **WEBHOOK MODE (Recommended untuk Koyeb):**
 ```
