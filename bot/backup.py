@@ -76,6 +76,45 @@ class DatabaseBackupManager:
             logger.error(f"SQLite backup failed: {e}")
             return ""
     
+    def _sanitize_pg_param(self, value: str, param_type: str) -> str:
+        """Sanitize PostgreSQL connection parameter to prevent command injection.
+        
+        Args:
+            value: Parameter value to sanitize
+            param_type: Type of parameter ('hostname', 'username', 'database')
+        
+        Returns:
+            Sanitized value
+        
+        Raises:
+            ValueError: If value contains dangerous characters
+        """
+        import re
+        
+        if not value:
+            return value
+        
+        dangerous_patterns = [
+            ';', '|', '&', '$', '`', '(', ')', '{', '}', '[', ']',
+            '<', '>', '!', '\\', '\n', '\r', '\t', '\0'
+        ]
+        
+        for pattern in dangerous_patterns:
+            if pattern in value:
+                raise ValueError(f"Invalid character in {param_type}: {pattern}")
+        
+        if param_type == 'hostname':
+            if not re.match(r'^[a-zA-Z0-9._-]+$', value):
+                raise ValueError(f"Invalid hostname format: {value}")
+        elif param_type == 'username':
+            if not re.match(r'^[a-zA-Z0-9_-]+$', value):
+                raise ValueError(f"Invalid username format: {value}")
+        elif param_type == 'database':
+            if not re.match(r'^[a-zA-Z0-9_-]+$', value):
+                raise ValueError(f"Invalid database name format: {value}")
+        
+        return value
+    
     def backup_postgres(self) -> str:
         """Backup PostgreSQL database using pg_dump
         
@@ -93,20 +132,24 @@ class DatabaseBackupManager:
             from urllib.parse import urlparse
             parsed = urlparse(self.database_url)
             
+            hostname = self._sanitize_pg_param(parsed.hostname or 'localhost', 'hostname')
+            username = self._sanitize_pg_param(parsed.username or 'postgres', 'username')
+            database = self._sanitize_pg_param(parsed.path.lstrip('/'), 'database')
+            
             env = os.environ.copy()
             if parsed.password:
                 env['PGPASSWORD'] = parsed.password
             
             cmd = [
                 'pg_dump',
-                '-h', parsed.hostname or 'localhost',
-                '-U', parsed.username or 'postgres',
-                '-d', parsed.path.lstrip('/'),
+                '-h', hostname,
+                '-U', username,
+                '-d', database,
                 '-F', 'c',
             ]
             
             with open(backup_file, 'wb') as f:
-                result = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, env=env, check=False, timeout=300)
+                result = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, env=env, check=False, timeout=300, shell=False)
                 if result.returncode != 0:
                     raise RuntimeError(f"pg_dump failed: {result.stderr.decode()}")
             

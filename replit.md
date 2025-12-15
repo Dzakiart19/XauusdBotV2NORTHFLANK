@@ -1,4 +1,4 @@
-# XAUUSD Trading Bot Lite
+# XAUUSD Trading Bot - Enhanced Version Lite
 
 ## Overview
 This project is a lightweight Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It delivers real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system for new users, and includes a mechanism for paid subscriptions. The bot focuses on core functionality: signal delivery without heavy chart generation (charts are available in a separate web application).
@@ -61,6 +61,37 @@ The bot features a modular architecture designed for scalability and maintainabi
 - **Timezone WIB:** Web dashboard menampilkan waktu dalam zona waktu WIB (UTC+7) untuk user Indonesia.
 
 ## Recent Changes (December 2024)
+- **[15 Des] Enhanced Bot Improvements:**
+  1. **Security Module (bot/security.py):**
+     - Webhook HMAC verification with constant-time comparison
+     - Enhanced secret masking (bot tokens, API keys, database URLs, passwords)
+     - Input sanitization against XSS and injection attacks
+     - Telegram user ID validation with bounds checking
+     - Rate limiting decorators for both sync and async functions
+  2. **Multi-Language Support (bot/i18n.py):**
+     - Indonesian and English translations with easy extensibility
+     - User language preferences stored per user ID
+     - Localized datetime formatting (WIB timezone)
+     - Currency and percentage formatting helpers
+  3. **Interactive Menu System (bot/menu.py):**
+     - Inline keyboard menus for better UX
+     - Localized button labels
+     - Trading, settings, language selection, and onboarding menus
+     - Callback query handlers for menu navigation
+  4. **Indicator Caching (bot/indicator_cache.py):**
+     - LRU cache with TTL support for indicator calculations
+     - Memory usage tracking and automatic eviction
+     - DataFrame/Series/numpy array support with size estimation
+     - Decorator for easy caching of indicator functions
+  5. **Backup Security Fix (bot/backup.py):**
+     - PostgreSQL parameter sanitization to prevent command injection
+     - Regex validation for hostname, username, and database names
+     - shell=False enforcement in subprocess calls
+  6. **Unit Tests (tests/):**
+     - 114 tests for security, i18n, menu, indicators, backup, and cache modules
+     - Coverage for edge cases and security scenarios
+
+
 - **[TERBARU - 4 Des] Perbaikan 3 Bug Kritikal:**
   1. **HTTPXRequest Initialization Fix:**
      - Tambah import HTTPXRequest dari telegram.request
