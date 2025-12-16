@@ -2148,9 +2148,9 @@ class TradingBot:
             has_full_access = self.config.has_full_access(user.id)
             is_admin_user = self.is_admin(user.id)
             
-            # Debug log untuk troubleshooting authorization issues
-            logger.debug(f"User {mask_user_id(user.id)} access check: owner={is_owner}, public={is_public_user}, full_access={has_full_access}, admin={is_admin_user}")
-            logger.debug(f"Config AUTHORIZED_USER_IDS count: {len(self.config.AUTHORIZED_USER_IDS)}")
+            # Debug log untuk troubleshooting authorization issues (INFO level untuk production debugging)
+            logger.info(f"🔐 Auth check - User:{user.id} | owner={is_owner} | public={is_public_user} | full_access={has_full_access} | admin={is_admin_user}")
+            logger.info(f"🔐 AUTHORIZED_USER_IDS: {self.config.AUTHORIZED_USER_IDS} | ID_USER_PUBLIC: {getattr(self.config, 'ID_USER_PUBLIC', [])}")
             
             trial_info = None
             trial_msg = ""
