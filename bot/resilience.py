@@ -60,6 +60,47 @@ class CircuitBreaker:
             if self.failure_count >= self.failure_threshold:
                 self.is_open = True
             raise
+    
+    def get_state(self) -> dict:
+        """Get current circuit breaker state as dictionary"""
+        if self.is_open:
+            time_since_failure = time.time() - (self.last_failure_time or 0)
+            if time_since_failure < self.recovery_timeout:
+                state = 'OPEN'
+            else:
+                state = 'HALF_OPEN'
+        else:
+            state = 'CLOSED'
+        
+        return {
+            'state': state,
+            'failure_count': self.failure_count,
+            'failure_threshold': self.failure_threshold,
+            'is_open': self.is_open,
+            'last_failure_time': self.last_failure_time,
+            'recovery_timeout': self.recovery_timeout
+        }
+    
+    def reset(self) -> None:
+        """Reset circuit breaker to closed state"""
+        self.is_open = False
+        self.failure_count = 0
+        self.last_failure_time = None
+    
+    def record_success(self) -> None:
+        """Record successful call"""
+        self.failure_count = 0
+        if self.is_open:
+            self.is_open = False
+            logger.info(f"Circuit breaker {self.name} closed after successful recovery")
+    
+    def record_failure(self) -> None:
+        """Record failed call"""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        if self.failure_count >= self.failure_threshold:
+            self.is_open = True
+            logger.warning(f"Circuit breaker {self.name} opened after {self.failure_count} failures")
 
 
 class RateLimiter:

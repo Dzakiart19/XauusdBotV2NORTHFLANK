@@ -117,6 +117,18 @@ class SignalSessionManager:
     def has_active_session(self, user_id: int) -> bool:
         return user_id in self.active_signals
     
+    async def end_session(self, user_id: int, result: str = 'closed') -> bool:
+        """End/close a signal session (async version).
+        
+        Args:
+            user_id: The user ID
+            result: Result reason for closing
+            
+        Returns:
+            bool: True if session was closed, False if no session exists
+        """
+        return self.close_session(user_id, result)
+    
     async def update_session(self, user_id: int, position_id: Optional[int] = None, 
                              trade_id: Optional[str] = None, **kwargs) -> bool:
         """Update an existing signal session with position/trade info.

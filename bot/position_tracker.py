@@ -1208,7 +1208,7 @@ class PositionTracker:
             )
             session.add(position)
             session.flush()
-            position_id = position.id
+            position_id = getattr(position, 'id', None)
             session.commit()
             
             logger.info(f"📊 Position created with Grade:{signal_grade} Confidence:{confidence_score:.2f}")
@@ -1236,11 +1236,13 @@ class PositionTracker:
             
             if self.signal_session_manager:
                 try:
+                    pos_id_int: Optional[int] = int(position_id) if position_id is not None else None
+                    trade_id_str: Optional[str] = str(trade_id) if trade_id is not None else None
                     await asyncio.wait_for(
                         self.signal_session_manager.update_session(
                             user_id,
-                            position_id=position_id,
-                            trade_id=trade_id
+                            position_id=pos_id_int,
+                            trade_id=trade_id_str
                         ),
                         timeout=DEFAULT_OPERATION_TIMEOUT
                     )
