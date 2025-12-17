@@ -14,3 +14,4 @@ numpy==1.26.2
 
 # Optional - for WebSocket price feed
 websockets==12.0
+telegram
