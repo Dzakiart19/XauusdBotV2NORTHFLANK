@@ -4790,6 +4790,8 @@ class TradingStrategy:
                     except (ValueError, TypeError):
                         return default
                 
+                confidence_normalized = float(min(max(adjusted_score / 100.0, 0.0), 1.0))
+                
                 return {
                     'signal': signal,
                     'signal_source': signal_source,
@@ -4807,6 +4809,9 @@ class TradingStrategy:
                     'volatility_zone': str(volatility_zone),
                     'sl_pips': float(sl_pips),
                     'tp_pips': float(tp_pips),
+                    'confidence': confidence_normalized,
+                    'confidence_score': float(adjusted_score),
+                    'confluence_score': mc_result.get('confluence_count', 0) * 25,
                     'indicators': json.dumps({
                         'ema_short': safe_indicator_float(ema_short),
                         'ema_mid': safe_indicator_float(ema_mid),

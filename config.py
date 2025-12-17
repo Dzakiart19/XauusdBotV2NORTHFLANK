@@ -438,6 +438,16 @@ class Config:
     TICK_LOG_SAMPLE_RATE = _get_int_env('TICK_LOG_SAMPLE_RATE', '30')
     EMA_PERIODS = _parse_int_list(os.getenv('EMA_PERIODS', '5,20,50'), [5, 20, 50])
     
+    # CPU Optimization for Free Tier (Koyeb/Render)
+    # TICK_THROTTLE_SECONDS: Minimum interval between tick processing to reduce CPU usage
+    # - Free tier: 5.0s (reduced CPU, still catches signals within 5 seconds)
+    # - Standard: 0.5s (more responsive, higher CPU usage)
+    TICK_THROTTLE_SECONDS = _get_float_env('TICK_THROTTLE_SECONDS', '5.0' if FREE_TIER_MODE else '0.5')
+    
+    # SIGNAL_CHECK_INTERVAL: How often to check for new signals (seconds)
+    # Free tier uses longer intervals to reduce CPU usage
+    SIGNAL_CHECK_INTERVAL = _get_float_env('SIGNAL_CHECK_INTERVAL', '10.0' if FREE_TIER_MODE else '2.0')
+    
     MEMORY_WARNING_THRESHOLD_MB = _get_int_env('MEMORY_WARNING_THRESHOLD_MB', '400')
     MEMORY_CRITICAL_THRESHOLD_MB = _get_int_env('MEMORY_CRITICAL_THRESHOLD_MB', '450')
     OOM_GRACEFUL_DEGRADATION = os.getenv('OOM_GRACEFUL_DEGRADATION', 'true').lower() == 'true'
@@ -461,7 +471,10 @@ class Config:
     POSITION_TRACKER_RESTART_INTERVAL_SECONDS = _get_int_env('POSITION_TRACKER_RESTART_INTERVAL_SECONDS', '900')
     TASK_ROTATION_MEMORY_THRESHOLD_MB = _get_int_env('TASK_ROTATION_MEMORY_THRESHOLD_MB', '450')
     
-    GC_INTERVAL_SECONDS = _get_int_env('GC_INTERVAL_SECONDS', '180')
+    # GC Interval: Free Tier uses longer GC intervals to reduce CPU spikes
+    # - Free tier: 300s (5 minutes) - less frequent GC
+    # - Standard: 180s (3 minutes) - more frequent GC
+    GC_INTERVAL_SECONDS = _get_int_env('GC_INTERVAL_SECONDS', '300' if FREE_TIER_MODE else '180')
     TICK_DATA_RETENTION_HOURS = _get_int_env('TICK_DATA_RETENTION_HOURS', '1')
     CHART_LAZY_LOAD = os.getenv('CHART_LAZY_LOAD', 'true').lower() == 'true'
     

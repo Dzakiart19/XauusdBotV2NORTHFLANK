@@ -1,9 +1,27 @@
-# XAUUSD Trading Bot - Enhanced Version 2.3
+# XAUUSD Trading Bot - Enhanced Version 2.4
 
 ## Overview
 This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It provides real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system, and supports paid subscriptions. Key capabilities include a REST API, backtesting engine, report generation, admin monitoring dashboard, and enhanced interactive menus. The bot is designed for 24/7 operation, delivering accurate signals through a multi-indicator strategy with strict validation.
 
 ## Recent Changes (December 2025)
+
+### v2.4 - Single Signal Mode & CPU Optimization (Dec 17, 2025)
+- **SINGLE ACTIVE SIGNAL**: Diubah dari 4 posisi bersamaan menjadi 1 posisi aktif per user
+  - MAX_CONCURRENT_POSITIONS diubah dari 4 ke 1
+  - Sinyal berikutnya baru dikirim setelah TP/SL tercapai (sequential signals)
+  - Unlimited signals, tapi berurutan tidak bersamaan
+- **CONFIDENCE SCORE BUG FIX**: Memperbaiki bug critical dimana weighted_score tidak diteruskan ke signal dictionary
+  - Menambahkan field `confidence` (0-1 normalized) dan `confidence_score` (0-100%) ke signal return
+  - Menambahkan field `confluence_score` untuk quality tracking
+  - Fixed signal_params di telegram_bot.py untuk mengirim confidence_score format 0-100%
+  - Sinyal tidak lagi terblokir dengan "Low confidence: 1.0%"
+- **CPU OPTIMIZATION untuk Free Tier (Koyeb/Render)**:
+  - TICK_THROTTLE_SECONDS: 5.0s (free tier) vs 0.5s (standard) - mengurangi CPU dari 100% ke ~20-30%
+  - SIGNAL_CHECK_INTERVAL: 10.0s (free tier) vs 2.0s (standard)
+  - GC_INTERVAL_SECONDS: 300s (free tier) vs 180s (standard) - mengurangi GC spikes
+  - Bot tetap 24 jam aktif tanpa sleep mode
+
+### v2.3 - Multi-Position Support (Previous)
 - **MULTI-POSITION SUPPORT**: Bot sekarang support hingga 4 posisi concurrent per user (MAX_CONCURRENT_POSITIONS=4)
   - SignalSessionManager di-refactor untuk key session berdasarkan position_id
   - close_session memiliki priority lookup: position_id -> session_id -> first session

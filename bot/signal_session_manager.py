@@ -1,5 +1,6 @@
 """
-Multi-position signal session manager - supports up to MAX_CONCURRENT_POSITIONS per user.
+Single-position signal session manager - ONE active signal at a time per user.
+Sinyal baru hanya dikirim setelah TP/SL tercapai (unlimited signals, but sequential).
 """
 from typing import Dict, Optional, Any, Callable, List, Tuple
 from datetime import datetime
@@ -7,11 +8,13 @@ from bot.logger import setup_logger
 
 logger = setup_logger('SignalSessionManager')
 
-DEFAULT_MAX_CONCURRENT_POSITIONS = 4
+# SINGLE ACTIVE SIGNAL MODE: Hanya 1 sinyal aktif per user
+# Sinyal berikutnya baru dikirim setelah posisi sebelumnya TP/SL
+DEFAULT_MAX_CONCURRENT_POSITIONS = 1
 
 
 class SignalSessionManager:
-    """Multi-position signal session manager - supports multiple active signals per user"""
+    """Single-position signal session manager - ONE active signal per user until TP/SL"""
     
     def __init__(self, max_concurrent_positions: int = DEFAULT_MAX_CONCURRENT_POSITIONS):
         self.active_signals: Dict[int, Dict[Any, Dict[str, Any]]] = {}

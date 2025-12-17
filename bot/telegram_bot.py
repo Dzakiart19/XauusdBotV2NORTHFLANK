@@ -376,8 +376,16 @@ class TradingBot:
         self.global_last_signal_time = datetime.now() - timedelta(seconds=60)
         self.signal_detection_interval = 0  # INSTANT - 0 delay, check on every tick
         self.global_signal_cooldown = 0.0  # UNLIMITED - tidak ada cooldown global
-        self.tick_throttle_seconds = 0.0  # UNLIMITED - tidak ada throttle
-        logger.info(f"✅ UNLIMITED signal detection: global_cooldown={self.global_signal_cooldown}s, tick_throttle={self.tick_throttle_seconds}s")
+        
+        # CPU Optimization: Use throttle for Free Tier to reduce CPU from 100% to ~20-30%
+        free_tier_mode = getattr(self.config, 'FREE_TIER_MODE', True)
+        self.tick_throttle_seconds = getattr(self.config, 'TICK_THROTTLE_SECONDS', 5.0 if free_tier_mode else 0.5)
+        self.signal_check_interval = getattr(self.config, 'SIGNAL_CHECK_INTERVAL', 10.0 if free_tier_mode else 2.0)
+        
+        if free_tier_mode:
+            logger.info(f"✅ FREE TIER CPU Optimization: tick_throttle={self.tick_throttle_seconds}s, signal_check={self.signal_check_interval}s")
+        else:
+            logger.info(f"✅ Signal detection: global_cooldown={self.global_signal_cooldown}s, tick_throttle={self.tick_throttle_seconds}s")
         
         self.sent_signals_cache: Dict[str, Dict[str, Any]] = {}
         self.signal_cache_expiry_seconds = 300  # 5 menit cache expiry
@@ -3070,11 +3078,16 @@ class TradingBot:
         
         if hasattr(self, 'signal_quality_tracker') and self.signal_quality_tracker:
             try:
+                confidence_score = signal.get('confidence_score', signal.get('confidence', 0.5) * 100)
+                confluence_score = signal.get('confluence_score', 0)
+                
                 signal_params = {
-                    'rule_name': signal.get('rule_type', 'UNKNOWN'),
+                    'rule_name': signal.get('rule_type', 'STRATEGY'),
                     'signal_type': signal.get('signal', 'UNKNOWN'),
-                    'confluence_level': signal.get('confluence_score', 0) // 25 if signal.get('confluence_score') else 2,
-                    'confidence': signal.get('confidence', 0.5),
+                    'confluence_level': confluence_score // 25 if confluence_score else 2,
+                    'confluence_count': confluence_score // 25 if confluence_score else 3,
+                    'confidence_score': confidence_score,
+                    'confidence': confidence_score,
                     'market_regime': signal.get('market_regime', 'unknown')
                 }
                 
@@ -3274,11 +3287,16 @@ class TradingBot:
         
         if hasattr(self, 'signal_quality_tracker') and self.signal_quality_tracker:
             try:
+                confidence_score = signal.get('confidence_score', signal.get('confidence', 0.5) * 100)
+                confluence_score = signal.get('confluence_score', 0)
+                
                 signal_params = {
-                    'rule_name': signal.get('rule_type', 'UNKNOWN'),
+                    'rule_name': signal.get('rule_type', 'STRATEGY'),
                     'signal_type': signal.get('signal', 'UNKNOWN'),
-                    'confluence_level': signal.get('confluence_score', 0) // 25 if signal.get('confluence_score') else 2,
-                    'confidence': signal.get('confidence', 0.5),
+                    'confluence_level': confluence_score // 25 if confluence_score else 2,
+                    'confluence_count': confluence_score // 25 if confluence_score else 3,
+                    'confidence_score': confidence_score,
+                    'confidence': confidence_score,
                     'market_regime': signal.get('market_regime', 'unknown')
                 }
                 
