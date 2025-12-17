@@ -71,3 +71,7 @@ class SignalEventStore:
             'max_events': self.max_events,
             'has_current_signal': self.current_signal is not None
         }
+    
+    def record_signal(self, signal_data: Dict[str, Any]) -> None:
+        """Alias for add_signal for compatibility."""
+        self.add_signal(signal_data)

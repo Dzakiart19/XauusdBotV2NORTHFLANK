@@ -70,6 +70,7 @@ class RateLimiter:
         self.time_window = time_window
         self.name = name
         self.call_times: deque = deque(maxlen=max_calls)
+        self.last_call_time: float = 0
     
     def acquire(self) -> bool:
         now = time.time()
@@ -78,6 +79,7 @@ class RateLimiter:
         
         if len(self.call_times) < self.max_calls:
             self.call_times.append(now)
+            self.last_call_time = now
             return True
         return False
     
@@ -89,6 +91,7 @@ class RateLimiter:
             
             if len(self.call_times) < self.max_calls:
                 self.call_times.append(now)
+                self.last_call_time = now
                 return True
             
             if not wait:

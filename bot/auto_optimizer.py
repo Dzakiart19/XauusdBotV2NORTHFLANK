@@ -56,6 +56,7 @@ class AutoOptimizer:
     def __init__(self, signal_quality_tracker=None, config=None):
         self.enabled = False
         self.status = OptimizationStatus.IDLE
+        self.last_call_time = None
     
     def optimize(self) -> OptimizationResult:
         return OptimizationResult(success=True, message="Auto-optimization disabled")
@@ -66,3 +67,15 @@ class AutoOptimizer:
             'status': 'disabled',
             'message': 'Auto-optimization disabled for lightweight deployment'
         }
+    
+    def should_run_optimization(self) -> bool:
+        """Check if optimization should run. Always returns False for stub."""
+        return False
+    
+    def run_optimization(self) -> OptimizationResult:
+        """Run optimization. Disabled for lightweight deployment."""
+        return OptimizationResult(success=True, message="Auto-optimization disabled")
+    
+    def get_status_report(self) -> str:
+        """Get human-readable status report."""
+        return "Auto-optimization disabled for lightweight deployment"

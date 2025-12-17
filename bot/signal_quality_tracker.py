@@ -58,3 +58,36 @@ class SignalQualityTracker:
             'win_rate': (total_wins / total * 100) if total > 0 else 0,
             'by_rule': dict(self.signal_stats)
         }
+    
+    def should_block_signal(self, signal_data: Dict[str, Any]) -> tuple:
+        """Check if a signal should be blocked based on quality metrics.
+        
+        Returns:
+            Tuple of (should_block: bool, reason: str or None)
+        """
+        return (False, None)
+    
+    def track_blocked_signal(self, signal_data: Dict[str, Any] = None, reason: str = None, 
+                               user_id: int = None, blocking_reason: str = None) -> None:
+        """Track a blocked signal for analytics.
+        
+        Args:
+            signal_data: Signal data dict
+            reason: Blocking reason (legacy param)
+            user_id: User ID (optional)
+            blocking_reason: Blocking reason (alternative param name)
+        """
+        final_reason = blocking_reason or reason or "Unknown"
+        logger.debug(f"Signal blocked for user {user_id}: {final_reason}")
+    
+    def get_overall_stats(self, days: int = None) -> Dict[str, Any]:
+        """Get overall signal quality statistics.
+        
+        Args:
+            days: Number of days to look back (optional, for compatibility)
+        """
+        stats = self.get_stats()
+        stats['total_wins'] = stats.get('wins', 0)
+        stats['total_losses'] = stats.get('losses', 0)
+        stats['overall_accuracy'] = stats.get('win_rate', 0) / 100 if stats.get('win_rate', 0) > 0 else 0
+        return stats

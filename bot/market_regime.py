@@ -101,3 +101,16 @@ class MarketRegimeDetector:
         elif regime.regime_type == RegimeType.RANGE_BOUND:
             return 0.9
         return 1.0
+    
+    def get_regime(self, indicators=None, df_m1=None, df_m5=None) -> MarketRegime:
+        """Get market regime with optional indicators and dataframes.
+        
+        Args:
+            indicators: Dict of indicator values (optional)
+            df_m1: M1 timeframe dataframe (optional)
+            df_m5: M5 timeframe dataframe (preferred for detection)
+        """
+        df = df_m5 if df_m5 is not None else df_m1
+        if df is not None:
+            return self.detect_regime(df)
+        return self.current_regime
