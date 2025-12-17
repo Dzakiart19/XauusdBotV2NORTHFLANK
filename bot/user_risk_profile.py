@@ -24,8 +24,8 @@ class RiskProfile:
     user_id: int
     risk_level: RiskLevel = RiskLevel.MODERATE
     
-    max_daily_loss_percent: float = 1.0
-    max_daily_loss_amount: float = 10.0
+    max_daily_loss_percent: float = 0.0  # 0.0 = unlimited (no daily loss limit)
+    max_daily_loss_amount: float = 0.0   # 0.0 = unlimited (no daily loss limit)
     max_concurrent_positions: int = 4
     risk_per_trade_percent: float = 2.0
     
@@ -66,8 +66,8 @@ class RiskProfile:
 
 PRESET_PROFILES = {
     RiskLevel.CONSERVATIVE: {
-        'max_daily_loss_percent': 0.5,
-        'max_daily_loss_amount': 5.0,
+        'max_daily_loss_percent': 0.0,  # Unlimited
+        'max_daily_loss_amount': 0.0,   # Unlimited
         'max_concurrent_positions': 2,
         'risk_per_trade_percent': 1.0,
         'lot_size': 0.01,
@@ -78,8 +78,8 @@ PRESET_PROFILES = {
         'min_confluence_count': 3
     },
     RiskLevel.MODERATE: {
-        'max_daily_loss_percent': 1.0,
-        'max_daily_loss_amount': 10.0,
+        'max_daily_loss_percent': 0.0,  # Unlimited
+        'max_daily_loss_amount': 0.0,   # Unlimited
         'max_concurrent_positions': 4,
         'risk_per_trade_percent': 2.0,
         'lot_size': 0.01,
@@ -90,8 +90,8 @@ PRESET_PROFILES = {
         'min_confluence_count': 2
     },
     RiskLevel.AGGRESSIVE: {
-        'max_daily_loss_percent': 2.0,
-        'max_daily_loss_amount': 20.0,
+        'max_daily_loss_percent': 0.0,  # Unlimited
+        'max_daily_loss_amount': 0.0,   # Unlimited
         'max_concurrent_positions': 6,
         'risk_per_trade_percent': 3.0,
         'lot_size': 0.02,

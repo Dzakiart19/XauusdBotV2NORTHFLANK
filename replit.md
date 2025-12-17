@@ -8,6 +8,7 @@ This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized
 - **CRITICAL FIX - Stale Price Circuit Breaker**: Posisi akan force-close di SL setelah 6 siklus (~30-60s) tanpa data harga untuk mencegah drawdown unlimited
 - **CRITICAL FIX - Task Scheduler Position Monitoring**: Tidak lagi skip monitoring saat WebSocket stale jika ada posisi aktif
 - **Failure Escalation**: Setelah 3x gagal force-close, posisi dihapus dari tracking dengan CRITICAL log untuk manual intervention
+- **No Daily Loss Limit**: Daily loss limit dihapus - trading tidak akan berhenti berdasarkan kerugian harian
 - **Trailing Stop $0.5**: Trailing stop sekarang aktif setiap profit $0.5 dengan jarak trail 0.5 pips - auto-detect tanpa perlu env manual
 - **Signal Quality Filter AKTIF**: Filter kualitas sinyal sekarang aktif - hanya sinyal dengan confidence >50%, grade C+, dan confluence >2 yang dikirim
 - **Koyeb Auto-Detect**: Semua konfigurasi optimal sudah di-hardcode, hanya perlu 3 env vars: TELEGRAM_BOT_TOKEN, AUTHORIZED_USER_IDS, WEBHOOK_URL

@@ -49,8 +49,8 @@ class DynamicRiskCalculator:
         risk_manager: Parent RiskManager instance (optional)
     """
     
-    DEFAULT_MAX_DAILY_LOSS = 10.0
-    DEFAULT_MAX_DAILY_LOSS_PERCENT = 1.0
+    DEFAULT_MAX_DAILY_LOSS = 0.0  # 0.0 = unlimited (no daily loss limit)
+    DEFAULT_MAX_DAILY_LOSS_PERCENT = 0.0  # 0.0 = unlimited (no daily loss limit)
     DEFAULT_MAX_CONCURRENT_POSITIONS = 4
     DEFAULT_RISK_SAFETY_FACTOR = 0.5
     
@@ -90,11 +90,17 @@ class DynamicRiskCalculator:
         self.risk_safety_factor = getattr(config, 'RISK_SAFETY_FACTOR', self.DEFAULT_RISK_SAFETY_FACTOR)
         
         account_balance = getattr(config, 'ACCOUNT_BALANCE', 1000.0)
-        threshold_from_percent = account_balance * (self.max_daily_loss_percent / 100)
-        self.effective_daily_threshold = min(self.max_daily_loss, threshold_from_percent)
         
+        # 0.0 means unlimited (no daily loss limit)
+        if self.max_daily_loss_percent <= 0 or self.max_daily_loss <= 0:
+            self.effective_daily_threshold = float('inf')  # Unlimited
+        else:
+            threshold_from_percent = account_balance * (self.max_daily_loss_percent / 100)
+            self.effective_daily_threshold = min(self.max_daily_loss, threshold_from_percent)
+        
+        daily_loss_display = "UNLIMITED" if self.effective_daily_threshold == float('inf') else f"${self.effective_daily_threshold:.2f}"
         logger.info(f"🎯 DynamicRiskCalculator initialized: "
-                   f"Max Daily Loss=${self.effective_daily_threshold:.2f}, "
+                   f"Max Daily Loss={daily_loss_display}, "
                    f"Max Concurrent={self.max_concurrent_positions}, "
                    f"Safety Factor={self.risk_safety_factor}")
     
