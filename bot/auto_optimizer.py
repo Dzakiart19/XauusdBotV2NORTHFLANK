@@ -1,7 +1,7 @@
 """
 Lightweight auto optimizer stub - disabled for Koyeb free tier.
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from bot.logger import setup_logger
@@ -31,7 +31,13 @@ class OptimizationParameters:
 class OptimizationResult:
     success: bool = True
     message: str = ''
-    parameters: OptimizationParameters = None
+    parameters: Optional[OptimizationParameters] = None
+    adjustments: Optional[list] = None
+    status: str = 'idle'
+    
+    def __post_init__(self):
+        if self.adjustments is None:
+            self.adjustments = []
 
 
 @dataclass
@@ -68,9 +74,9 @@ class AutoOptimizer:
             'message': 'Auto-optimization disabled for lightweight deployment'
         }
     
-    def should_run_optimization(self) -> bool:
-        """Check if optimization should run. Always returns False for stub."""
-        return False
+    def should_run_optimization(self) -> tuple:
+        """Check if optimization should run. Returns (should_run, reason) tuple."""
+        return (False, "Auto-optimization disabled for lightweight deployment")
     
     def run_optimization(self) -> OptimizationResult:
         """Run optimization. Disabled for lightweight deployment."""

@@ -1,7 +1,7 @@
 """
 Lightweight signal session manager - simplified for Koyeb free tier.
 """
-from typing import Dict, Optional, Any, Callable, List
+from typing import Dict, Optional, Any, Callable, List, Tuple
 from datetime import datetime
 from bot.logger import setup_logger
 
@@ -15,6 +15,57 @@ class SignalSessionManager:
         self.active_signals: Dict[int, Dict[str, Any]] = {}
         self.signal_history: list = []
         self.event_handlers: Dict[str, List[Callable]] = {}
+    
+    async def can_create_signal(self, user_id: int, signal_source: str = 'auto', 
+                                 position_tracker: Any = None) -> tuple:
+        """Check if user can create a new signal.
+        
+        Args:
+            user_id: The user ID to check
+            signal_source: Source of signal ('auto' or 'manual')
+            position_tracker: Optional position tracker to check active positions
+            
+        Returns:
+            tuple: (can_create: bool, block_reason: Optional[str])
+        """
+        if self.has_active_session(user_id):
+            return (False, "Anda sudah memiliki sinyal aktif. Tunggu hingga posisi ditutup.")
+        
+        if position_tracker:
+            try:
+                has_position = await position_tracker.has_active_position_async(user_id)
+                if has_position:
+                    return (False, "Anda memiliki posisi aktif. Tunggu hingga TP/SL tercapai.")
+            except Exception:
+                pass
+        
+        return (True, None)
+    
+    async def create_session_async(self, user_id: int, session_id: Optional[str] = None, 
+                                   signal_source: str = 'auto', signal_type: Optional[str] = None,
+                                   entry_price: Optional[float] = None, stop_loss: Optional[float] = None,
+                                   take_profit: Optional[float] = None) -> str:
+        """Create a new signal session with extended parameters (async version)."""
+        signal_data: Dict[str, Any] = {
+            'signal_source': signal_source,
+            'signal_type': signal_type,
+            'entry_price': entry_price,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit
+        }
+        if session_id:
+            signal_data['session_id'] = session_id
+        return self._create_session_internal(user_id, signal_data)
+    
+    def _create_session_internal(self, user_id: int, signal_data: Dict[str, Any]) -> str:
+        """Internal session creation method."""
+        session_id = signal_data.get('session_id') or f"sig_{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        self.active_signals[user_id] = {
+            'session_id': session_id,
+            'signal': signal_data,
+            'created_at': datetime.now()
+        }
+        return session_id
     
     def register_event_handler(self, event_type: str, handler: Callable) -> None:
         """Register an event handler for a specific event type"""

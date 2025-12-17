@@ -4,16 +4,25 @@
 This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It provides real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system, and supports paid subscriptions. Key capabilities include a REST API, backtesting engine, report generation, admin monitoring dashboard, and enhanced interactive menus. The bot is designed for 24/7 operation, delivering accurate signals through a multi-indicator strategy with strict validation.
 
 ## Recent Changes (December 2025)
+- **Fixed Critical Bug - can_create_signal()**: Added missing async method to SignalSessionManager that was causing all /getsignal and auto signal commands to fail
+- **Fixed AutoOptimizer API**: Changed `should_run_optimization()` to return tuple `(bool, reason)` matching caller expectations
+- **Fixed OptimizationResult**: Added `adjustments` and `status` attributes that were missing
+- **Fixed MarketRegime Usage**: Updated telegram_bot.py to use correct attributes (`volatility`, `trend_direction`) instead of non-existent (`volatility_analysis`, `bias`)
+- **Fixed SignalEventStore**: Updated `record_signal()` to handle both sync call and (user_id, data) signature
+- **Synchronized Codebase**: Ensured all component APIs match their caller expectations after lightweight simplification
 - **Fixed Command Errors**: Added missing methods to analytics.py, signal_quality_tracker.py, market_regime.py, auto_optimizer.py for /riwayat, /performa, /getsignal, /status commands
-- **get_recent_trades()**: Returns list of recent trades with proper field structure for /riwayat
-- **get_trading_performance()**: Returns stats with correct format (winrate, total_pl, avg_pl, profit_factor) for /performa
 - **Stub Classes**: Lightweight implementations for SignalQualityTracker, MarketRegimeDetector, AutoOptimizer optimized for free-tier deployment
 - **Fixed Owner Recognition Bug**: AUTHORIZED_USER_IDS now properly loaded via `Config.ensure_secrets_loaded()` before bot initialization
-- **Improved User Status Display**: Clear differentiation between Owner/Admin, Premium User, and Trial User
-- **Added Config Methods**: `is_owner()`, `is_public_user()`, `has_full_access()` for consistent authorization checks
 - **Governance Audit**: Added audit logging for bypass flags (BYPASS_SIGNAL_QUALITY_CHECK, AUTO_SIGNAL_REPLACEMENT_ALLOWED)
-- **Unit Tests**: Added comprehensive tests for config, strategy, and risk manager modules
-- **Adaptive Position Sizing**: Dynamic lot adjustment based on volatility and drawdown protection
+
+## Stub/Disabled Modules (Lightweight Deployment)
+The following modules are stubs (disabled) for Koyeb free-tier optimization:
+- `admin_monitor.py` - AdminDashboard, MetricsCollector, AlertManager (stubs)
+- `backtesting.py` - BacktestEngine, StrategyOptimizer (stubs)
+- `enhanced_menu.py` - EnhancedMenuHandler (stub)
+- `report_generator.py` - ReportGenerator, ScheduledReportManager (stubs)
+- `chart_generator.py` - ChartGenerator (stub, returns None)
+- `sentry_integration.py` - SentryIntegrationManager (optional, requires SENTRY_DSN)
 
 ## User Preferences
 - Bahasa komunikasi: **Bahasa Indonesia** (100% tidak ada bahasa Inggris)

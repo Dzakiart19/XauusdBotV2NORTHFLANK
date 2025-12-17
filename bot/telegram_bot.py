@@ -1885,10 +1885,11 @@ class TradingBot:
                     regime_result = self.market_regime_detector.get_regime(indicators or {}, None, df_m5)
                     
                     if regime_result:
-                        regime_type = regime_result.regime_type if hasattr(regime_result, 'regime_type') else 'unknown'
-                        volatility_info = regime_result.volatility_analysis if hasattr(regime_result, 'volatility_analysis') else None
-                        volatility = volatility_info.volatility_level if volatility_info else 'normal'
-                        bias = regime_result.bias if hasattr(regime_result, 'bias') else 'NEUTRAL'
+                        regime_type = regime_result.regime_type.value if hasattr(regime_result, 'regime_type') and hasattr(regime_result.regime_type, 'value') else str(regime_result.regime_type) if hasattr(regime_result, 'regime_type') else 'unknown'
+                        volatility_val = regime_result.volatility if hasattr(regime_result, 'volatility') else 0.5
+                        volatility = 'high' if volatility_val > 0.7 else 'low' if volatility_val < 0.3 else 'normal'
+                        trend_dir = regime_result.trend_direction if hasattr(regime_result, 'trend_direction') else 'neutral'
+                        bias = 'BUY' if trend_dir == 'bullish' else 'SELL' if trend_dir == 'bearish' else 'NEUTRAL'
                         confidence = regime_result.confidence * 100 if hasattr(regime_result, 'confidence') else 0
                         
                         regime_emoji = {'strong_trend': '📈', 'moderate_trend': '📈', 'weak_trend': '📉', 
@@ -3085,7 +3086,7 @@ class TradingBot:
                     logger.info(f"Signal creation blocked for user {mask_user_id(ctx.chat_id)}: {block_reason}")
                     return False
                 
-                await self.signal_session_manager.create_session(
+                await self.signal_session_manager.create_session_async(
                     ctx.chat_id,
                     f"auto_{int(time.time())}",
                     'auto',
@@ -3844,7 +3845,7 @@ class TradingBot:
                 
                 if hasattr(self, 'signal_event_store') and self.signal_event_store:
                     try:
-                        await self.signal_event_store.record_signal(user_id, signal_record_data)
+                        self.signal_event_store.record_signal(user_id, signal_record_data)
                         logger.debug(f"📝 Sinyal direkam ke SignalEventStore untuk user {mask_user_id(user_id)}")
                     except Exception as store_error:
                         logger.warning(f"Gagal merekam sinyal ke SignalEventStore: {store_error}")

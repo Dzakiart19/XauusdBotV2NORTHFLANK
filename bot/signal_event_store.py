@@ -72,6 +72,19 @@ class SignalEventStore:
             'has_current_signal': self.current_signal is not None
         }
     
-    def record_signal(self, signal_data: Dict[str, Any]) -> None:
-        """Alias for add_signal for compatibility."""
-        self.add_signal(signal_data)
+    def record_signal(self, user_id_or_data = None, signal_data: Optional[Dict[str, Any]] = None) -> None:
+        """Record a signal for a user. Supports both (user_id, data) and (data) signatures."""
+        actual_data: Optional[Dict[str, Any]] = None
+        actual_user_id: Optional[int] = None
+        
+        if signal_data is None and isinstance(user_id_or_data, dict):
+            actual_data = user_id_or_data
+        elif signal_data is not None:
+            actual_data = signal_data
+            if isinstance(user_id_or_data, int):
+                actual_user_id = user_id_or_data
+        
+        if actual_data:
+            if actual_user_id is not None:
+                actual_data['user_id'] = actual_user_id
+            self.add_signal(actual_data)
