@@ -438,15 +438,19 @@ class Config:
     TICK_LOG_SAMPLE_RATE = _get_int_env('TICK_LOG_SAMPLE_RATE', '30')
     EMA_PERIODS = _parse_int_list(os.getenv('EMA_PERIODS', '5,20,50'), [5, 20, 50])
     
+    # SINGLE POSITION MODE: Hanya 1 sinyal aktif per user
+    # Sinyal baru hanya dikirim setelah posisi sebelumnya TP/SL
+    MAX_CONCURRENT_POSITIONS = _get_int_env('MAX_CONCURRENT_POSITIONS', '1')
+    
     # CPU Optimization for Free Tier (Koyeb/Render)
     # TICK_THROTTLE_SECONDS: Minimum interval between tick processing to reduce CPU usage
-    # - Free tier: 5.0s (reduced CPU, still catches signals within 5 seconds)
+    # - Free tier: 10.0s (heavily reduced CPU for Koyeb free tier)
     # - Standard: 0.5s (more responsive, higher CPU usage)
-    TICK_THROTTLE_SECONDS = _get_float_env('TICK_THROTTLE_SECONDS', '5.0' if FREE_TIER_MODE else '0.5')
+    TICK_THROTTLE_SECONDS = _get_float_env('TICK_THROTTLE_SECONDS', '10.0' if FREE_TIER_MODE else '0.5')
     
     # SIGNAL_CHECK_INTERVAL: How often to check for new signals (seconds)
     # Free tier uses longer intervals to reduce CPU usage
-    SIGNAL_CHECK_INTERVAL = _get_float_env('SIGNAL_CHECK_INTERVAL', '10.0' if FREE_TIER_MODE else '2.0')
+    SIGNAL_CHECK_INTERVAL = _get_float_env('SIGNAL_CHECK_INTERVAL', '15.0' if FREE_TIER_MODE else '2.0')
     
     MEMORY_WARNING_THRESHOLD_MB = _get_int_env('MEMORY_WARNING_THRESHOLD_MB', '400')
     MEMORY_CRITICAL_THRESHOLD_MB = _get_int_env('MEMORY_CRITICAL_THRESHOLD_MB', '450')
