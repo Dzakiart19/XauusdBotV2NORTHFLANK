@@ -17,6 +17,14 @@ class ChartGenerator:
     def generate_chart(self, *args, **kwargs) -> Optional[str]:
         return None
     
+    async def generate_chart_async(self, *args, **kwargs) -> Optional[str]:
+        """Async version of generate_chart - returns None (charts disabled)"""
+        return None
+    
+    async def immediate_delete_chart_async(self, chart_path: str) -> None:
+        """Async delete chart - no-op since charts are disabled"""
+        pass
+    
     def shutdown(self):
         pass
     

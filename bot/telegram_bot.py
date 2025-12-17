@@ -3765,11 +3765,11 @@ class TradingBot:
                         photo_already_sent = False
                         if self.signal_session_manager:
                             session_data = self.signal_session_manager.get_active_session(user_id)
-                            if session_data and session_data.photo_sent:
+                            if session_data and session_data.get('photo_sent', False):
                                 photo_already_sent = True
                                 logger.debug(f"Photo already sent for user {mask_user_id(user_id)}, skipping duplicate")
                         
-                        if not photo_already_sent:
+                        if not photo_already_sent and self.chart_generator and self.chart_generator.enabled:
                             try:
                                 chart_path = await asyncio.wait_for(
                                     self.chart_generator.generate_chart_async(df, signal, signal['timeframe']),
