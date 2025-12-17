@@ -2219,30 +2219,34 @@ class TradingBot:
             mode = "LIVE" if not self.config.DRY_RUN else "DRY RUN"
             
             welcome_msg = (
-                "🤖 *XAUUSD Trading Bot*\n\n"
-                "Bot sinyal trading XAUUSD - ringan dan efisien.\n\n"
-                f"*Status:* {user_status}\n"
+                "🏆 *XAUUSD SIGNAL BOT*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"Selamat datang, {user.first_name}!\n\n"
+                f"📌 *Status:* {user_status}\n"
                 f"{trial_msg}\n"
-                "*Commands Utama:*\n"
-                "/help - Bantuan\n"
-                "/monitor - Mulai monitoring sinyal\n"
-                "/stopmonitor - Stop monitoring\n"
-                "/getsignal - Dapatkan sinyal manual\n"
-                "/riwayat - Lihat riwayat trading\n"
-                "/performa - Statistik performa\n\n"
-                "*Access:*\n"
-                "/trialstatus - Cek status trial\n"
-                "/buyaccess - Info berlangganan\n"
+                "🔔 *MENU UTAMA*\n\n"
+                "📊 *Trading*\n"
+                "/monitor - Aktifkan auto-sinyal\n"
+                "/stopmonitor - Hentikan sinyal\n"
+                "/getsignal - Minta sinyal manual\n"
+                "/status - Cek posisi aktif\n\n"
+                "📈 *Statistik*\n"
+                "/riwayat - Histori 10 trade terakhir\n"
+                "/performa - Win rate & profit\n\n"
+                "🔐 *Akun*\n"
+                "/trialstatus - Status langganan\n"
+                "/buyaccess - Upgrade premium\n"
             )
             
             if is_admin_user:
                 welcome_msg += (
-                    "\n*Admin:*\n"
-                    "/riset - Reset database\n"
+                    "\n⚙️ *Admin Panel*\n"
+                    "/riset - Reset semua data\n"
                 )
             
             welcome_msg += (
-                f"\nChart & Analytics: Tersedia di webapp\n"
+                "\n━━━━━━━━━━━━━━━━━━━━\n"
+                "💡 Ketik /help untuk bantuan lengkap"
             )
             
             await message.reply_text(welcome_msg, parse_mode='Markdown')
@@ -2255,7 +2259,12 @@ class TradingBot:
                     logger.warning(f"Cannot auto-start monitoring for user {mask_user_id(user.id)} - limit reached ({self.MAX_MONITORING_CHATS})")
                 else:
                     await self.auto_start_monitoring([chat_id])
-                    await message.reply_text("✅ Auto-monitoring diaktifkan! Bot akan mendeteksi sinyal secara real-time.")
+                    await message.reply_text(
+                        "🟢 *AUTO-MONITORING AKTIF*\n\n"
+                        "Bot otomatis memantau XAUUSD.\n"
+                        "Sinyal akan dikirim saat terdeteksi.",
+                        parse_mode='Markdown'
+                    )
                     logger.info(f"✅ Auto-monitoring started for user {mask_user_id(user.id)} on /start")
             else:
                 logger.debug(f"Monitoring already active for user {mask_user_id(user.id)}")
@@ -2329,38 +2338,41 @@ class TradingBot:
                 user_status = "🎁 Trial User"
             
             help_msg = (
-                "🤖 *XAUUSD Trading Bot*\n\n"
-                "Bot sinyal trading XAUUSD - ringan dan efisien.\n\n"
-                f"*Status:* {user_status}\n\n"
-                "*📋 Commands Utama:*\n"
-                "/start - Mulai bot\n"
-                "/help - Bantuan\n"
-                "/monitor - Mulai monitoring sinyal\n"
-                "/stopmonitor - Stop monitoring\n"
-                "/getsignal - Dapatkan sinyal manual\n"
-                "/status - Lihat posisi aktif\n"
-                "/riwayat - Lihat riwayat trading\n"
-                "/performa - Statistik performa\n\n"
-                "*📊 Dashboard:*\n"
-                "/dashboard - Mulai real-time dashboard\n"
-                "/stopdashboard - Stop dashboard\n\n"
-                "*🔧 System:*\n"
-                "/optimize - Status auto-optimizer\n\n"
-                "*🔑 Access:*\n"
-                "/trialstatus - Status trial\n"
-                "/buyaccess - Info berlangganan\n\n"
+                "📖 *PANDUAN BOT*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"📌 Status: {user_status}\n\n"
+                "🎯 *COMMAND TRADING*\n"
+                "┌─────────────────────\n"
+                "│ /monitor - Aktifkan deteksi sinyal otomatis\n"
+                "│ /stopmonitor - Matikan deteksi sinyal\n"
+                "│ /getsignal - Request sinyal manual\n"
+                "│ /status - Lihat posisi yang sedang berjalan\n"
+                "└─────────────────────\n\n"
+                "📈 *COMMAND STATISTIK*\n"
+                "┌─────────────────────\n"
+                "│ /riwayat - 10 trade terakhir (Win/Loss)\n"
+                "│ /performa - Win rate 7 hari, 30 hari, total\n"
+                "│ /dashboard - Dashboard real-time\n"
+                "└─────────────────────\n\n"
+                "🔐 *COMMAND AKUN*\n"
+                "┌─────────────────────\n"
+                "│ /trialstatus - Cek masa aktif akun\n"
+                "│ /buyaccess - Info upgrade premium\n"
+                "└─────────────────────\n\n"
             )
             
             if is_admin_user:
                 help_msg += (
-                    "*👨‍💼 Admin:*\n"
-                    "/riset - Reset database\n\n"
+                    "⚙️ *ADMIN ONLY*\n"
+                    "┌─────────────────────\n"
+                    "│ /riset - Reset database & cache\n"
+                    "└─────────────────────\n\n"
                 )
             
             help_msg += (
-                "*⚙️ System Info:*\n"
-                f"Risk: ${self.config.FIXED_RISK_AMOUNT:.2f}/trade\n"
-                f"Chart & Analytics: Tersedia di webapp\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 Risk per trade: ${self.config.FIXED_RISK_AMOUNT:.2f}\n"
+                "📱 Web Dashboard tersedia"
             )
             
             await message.reply_text(help_msg, parse_mode='Markdown')
@@ -2418,11 +2430,21 @@ class TradingBot:
             chat_id = chat.id
             
             if self.monitoring and chat_id in self.monitoring_chats:
-                await message.reply_text("⚠️ Monitoring sudah berjalan untuk Anda!")
+                await message.reply_text(
+                    "⚡ *MONITORING AKTIF*\n\n"
+                    "Bot sudah memantau market untuk Anda.\n"
+                    "Sinyal akan dikirim otomatis saat terdeteksi.\n\n"
+                    "💡 Gunakan /stopmonitor untuk berhenti",
+                    parse_mode='Markdown'
+                )
                 return
             
             if len(self.monitoring_chats) >= self.MAX_MONITORING_CHATS:
-                await message.reply_text("⚠️ Batas maksimum monitoring tercapai. Silakan coba lagi nanti.")
+                await message.reply_text(
+                    "⚠️ *KAPASITAS PENUH*\n\n"
+                    "Server sedang sibuk, coba lagi nanti.",
+                    parse_mode='Markdown'
+                )
                 logger.warning(f"Limit monitoring tercapai ({self.MAX_MONITORING_CHATS})")
                 return
             
@@ -2431,7 +2453,16 @@ class TradingBot:
             
             if chat_id not in self.monitoring_chats:
                 self.monitoring_chats.append(chat_id)
-                await message.reply_text("✅ Monitoring dimulai! Bot akan mendeteksi sinyal secara real-time...")
+                await message.reply_text(
+                    "🟢 *MONITORING DIAKTIFKAN*\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "Bot sekarang memantau XAUUSD 24/7\n\n"
+                    "📊 Sinyal BUY/SELL akan dikirim otomatis\n"
+                    "🎯 Lengkap dengan TP & SL\n"
+                    "📈 Tracking hasil Win/Loss\n\n"
+                    "💡 Ketik /stopmonitor untuk berhenti",
+                    parse_mode='Markdown'
+                )
                 task = asyncio.create_task(self._monitoring_loop(chat_id))
                 self.monitoring_tasks[chat_id] = task
                 logger.info(f"✅ Monitoring task dibuat untuk chat {mask_user_id(chat_id)}")
@@ -2644,13 +2675,25 @@ class TradingBot:
                             pass
                     logger.info(f"✅ Monitoring task dibatalkan untuk chat {mask_user_id(chat_id)}")
                 
-                await message.reply_text("🛑 Monitoring dihentikan untuk Anda.")
+                await message.reply_text(
+                    "🔴 *MONITORING DIMATIKAN*\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "Bot berhenti memantau market.\n"
+                    "Anda tidak akan menerima sinyal otomatis.\n\n"
+                    "💡 Ketik /monitor untuk aktifkan lagi",
+                    parse_mode='Markdown'
+                )
                 
                 if len(self.monitoring_chats) == 0:
                     self.monitoring = False
                     logger.info("Semua monitoring dihentikan")
             else:
-                await message.reply_text("⚠️ Monitoring tidak sedang berjalan untuk Anda.")
+                await message.reply_text(
+                    "⚠️ *MONITORING TIDAK AKTIF*\n\n"
+                    "Anda belum mengaktifkan monitoring.\n"
+                    "Ketik /monitor untuk mulai.",
+                    parse_mode='Markdown'
+                )
                 
             logger.info(f"Stop monitor command dijalankan untuk user {mask_user_id(user.id)}")
             
@@ -2711,7 +2754,12 @@ class TradingBot:
             chat_id = chat.id
             
             if self.dashboard_enabled.get(chat_id, False):
-                await message.reply_text("⚠️ Dashboard sudah berjalan. Gunakan /stopdashboard untuk menghentikan.")
+                await message.reply_text(
+                    "⚡ *DASHBOARD AKTIF*\n\n"
+                    "Dashboard sudah berjalan.\n"
+                    "Ketik /stopdashboard untuk berhenti.",
+                    parse_mode='Markdown'
+                )
                 return
             
             dashboard_content = await self._render_dashboard_message(chat_id)
@@ -2785,7 +2833,12 @@ class TradingBot:
             chat_id = chat.id
             
             if not self.dashboard_enabled.get(chat_id, False):
-                await message.reply_text("⚠️ Tidak ada dashboard yang berjalan.")
+                await message.reply_text(
+                    "⚠️ *DASHBOARD TIDAK AKTIF*\n\n"
+                    "Belum ada dashboard yang berjalan.\n"
+                    "Ketik /dashboard untuk memulai.",
+                    parse_mode='Markdown'
+                )
                 return
             
             async with self._realtime_dashboard_lock:
@@ -2803,7 +2856,12 @@ class TradingBot:
                 self.dashboard_messages.pop(chat_id, None)
                 self._dashboard_last_hash.pop(chat_id, None)
             
-            await message.reply_text("🛑 Dashboard dihentikan.")
+            await message.reply_text(
+                "🔴 *DASHBOARD DIHENTIKAN*\n\n"
+                "Update real-time dimatikan.\n"
+                "Ketik /dashboard untuk memulai lagi.",
+                parse_mode='Markdown'
+            )
             logger.info(f"📊 Dashboard stopped for user {mask_user_id(user.id)}")
             
         except asyncio.CancelledError:
@@ -4563,15 +4621,17 @@ class TradingBot:
             
             if user.id in self.config.AUTHORIZED_USER_IDS:
                 premium_msg = (
-                    "👑 *Status Akun Premium*\n\n"
-                    "✅ *Akun Premium Aktif*\n\n"
-                    "Anda adalah pengguna premium dengan akses penuh ke semua fitur bot.\n\n"
-                    "🎯 Fitur yang tersedia:\n"
-                    "• Sinyal trading real-time tanpa batas\n"
-                    "• Dashboard monitoring 24/7\n"
-                    "• Analisis market regime\n"
-                    "• Auto-optimization\n"
-                    "• Dan semua fitur premium lainnya!"
+                    "👑 *AKUN PREMIUM*\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "✅ Status: *AKTIF SELAMANYA*\n\n"
+                    "🎯 *Fitur Premium:*\n"
+                    "• Sinyal unlimited 24/7\n"
+                    "• TP/SL otomatis\n"
+                    "• Tracking Win/Loss\n"
+                    "• Web Dashboard\n"
+                    "• Statistik lengkap\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "Terima kasih telah berlangganan!"
                 )
                 await message.reply_text(premium_msg, parse_mode='Markdown')
                 logger.info(f"Trialstatus command: user {mask_user_id(user.id)} is premium (AUTHORIZED_USER_IDS)")
@@ -4579,15 +4639,17 @@ class TradingBot:
             
             if hasattr(self.config, 'ID_USER_PUBLIC') and user.id in self.config.ID_USER_PUBLIC:
                 premium_msg = (
-                    "👑 *Status Akun Premium*\n\n"
-                    "✅ *Akun Premium Aktif*\n\n"
-                    "Anda adalah pengguna premium dengan akses penuh ke semua fitur bot.\n\n"
-                    "🎯 Fitur yang tersedia:\n"
-                    "• Sinyal trading real-time tanpa batas\n"
-                    "• Dashboard monitoring 24/7\n"
-                    "• Analisis market regime\n"
-                    "• Auto-optimization\n"
-                    "• Dan semua fitur premium lainnya!"
+                    "👑 *AKUN PREMIUM*\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "✅ Status: *AKTIF SELAMANYA*\n\n"
+                    "🎯 *Fitur Premium:*\n"
+                    "• Sinyal unlimited 24/7\n"
+                    "• TP/SL otomatis\n"
+                    "• Tracking Win/Loss\n"
+                    "• Web Dashboard\n"
+                    "• Statistik lengkap\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "Terima kasih telah berlangganan!"
                 )
                 await message.reply_text(premium_msg, parse_mode='Markdown')
                 logger.info(f"Trialstatus command: user {mask_user_id(user.id)} is premium (ID_USER_PUBLIC)")
@@ -4601,15 +4663,16 @@ class TradingBot:
                     logger.info(f"Trialstatus command: showed trial info for user {mask_user_id(user.id)}")
                 else:
                     no_access_msg = (
-                        "⛔ *Tidak Ada Akses*\n\n"
-                        "Anda belum memiliki akses ke bot ini.\n\n"
-                        "🛒 *Ingin berlangganan?*\n"
-                        "Gunakan /buyaccess untuk informasi berlangganan.\n\n"
-                        "💡 Dapatkan akses penuh ke:\n"
-                        "• Sinyal trading real-time\n"
-                        "• Dashboard monitoring\n"
-                        "• Analisis market regime\n"
-                        "• Dan fitur premium lainnya!"
+                        "⛔ *AKSES BERAKHIR*\n"
+                        "━━━━━━━━━━━━━━━━━━━━\n\n"
+                        "Trial Anda telah berakhir.\n\n"
+                        "🛒 *Upgrade ke Premium:*\n"
+                        "Ketik /buyaccess untuk info harga\n\n"
+                        "🎯 *Benefit Premium:*\n"
+                        "• Sinyal unlimited 24/7\n"
+                        "• TP/SL otomatis\n"
+                        "• Tracking Win/Loss\n"
+                        "• Statistik lengkap"
                     )
                     await message.reply_text(no_access_msg, parse_mode='Markdown')
                     logger.info(f"Trialstatus command: user {mask_user_id(user.id)} has no access")
@@ -4676,27 +4739,29 @@ class TradingBot:
                 self.user_manager.update_user_activity(user.id)
             
             buyaccess_msg = (
-                "💎 *Informasi Berlangganan*\n\n"
-                "Dapatkan akses penuh ke XAUUSD Trading Bot Pro!\n\n"
-                "📋 *Paket Berlangganan:*\n"
-                "├─ 1 Bulan: Rp 150.000\n"
-                "├─ 3 Bulan: Rp 400.000 _(hemat Rp 50.000)_\n"
-                "└─ 6 Bulan: Rp 750.000 _(hemat Rp 150.000)_\n\n"
-                "🎯 *Fitur Premium:*\n"
-                "• Sinyal trading real-time unlimited\n"
-                "• Dashboard monitoring 24/7\n"
-                "• Analisis market regime\n"
-                "• Auto-optimization strategy\n"
+                "💎 *UPGRADE KE PREMIUM*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "🏷️ *PAKET BERLANGGANAN*\n"
+                "┌─────────────────────\n"
+                "│ 1 Bulan  : Rp 150.000\n"
+                "│ 3 Bulan  : Rp 400.000 (hemat 50rb)\n"
+                "│ 6 Bulan  : Rp 750.000 (hemat 150rb)\n"
+                "└─────────────────────\n\n"
+                "🎯 *BENEFIT PREMIUM*\n"
+                "• Sinyal unlimited 24/7\n"
+                "• TP/SL otomatis\n"
+                "• Tracking Win/Loss real-time\n"
+                "• Web Dashboard\n"
+                "• Statistik lengkap\n"
                 "• Support prioritas\n\n"
-                "💳 *Metode Pembayaran:*\n"
-                "• Transfer Bank (BCA, Mandiri, BNI, BRI)\n"
-                "• E-Wallet (GoPay, OVO, DANA, ShopeePay)\n"
-                "• QRIS\n\n"
-                "📱 *Cara Berlangganan:*\n"
-                "Hubungi admin untuk melakukan pembayaran dan aktivasi akun.\n\n"
-                "📞 *Kontak Admin:*\n"
+                "💳 *PEMBAYARAN*\n"
+                "Bank: BCA, Mandiri, BNI, BRI\n"
+                "E-Wallet: GoPay, OVO, DANA, ShopeePay\n"
+                "QRIS tersedia\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "📱 *HUBUNGI ADMIN:*\n"
                 "Telegram: @dzeckyete\n\n"
-                "⏰ Aktivasi akun dilakukan maksimal 1x24 jam setelah pembayaran dikonfirmasi."
+                "⏰ Aktivasi dalam 1x24 jam"
             )
             
             await message.reply_text(buyaccess_msg, parse_mode='Markdown')
@@ -4825,7 +4890,7 @@ class TradingBot:
             if self.user_manager:
                 self.user_manager.update_user_activity(user.id)
             
-            response_lines = ["📊 *Status Trading Anda*\n"]
+            response_lines = ["📊 *STATUS TRADING*\n━━━━━━━━━━━━━━━━━━━━\n"]
             
             connection_status = "🔴 Terputus"
             if self.market_data:
@@ -4934,7 +4999,7 @@ class TradingBot:
             else:
                 response_lines.append("*💼 Posisi Aktif:* Tidak ada")
             
-            response_lines.append("\n_Gunakan /getsignal untuk request sinyal baru_")
+            response_lines.append("\n━━━━━━━━━━━━━━━━━━━━\n💡 /getsignal untuk sinyal baru")
             
             response_text = "\n".join(response_lines)
             await message.reply_text(response_text, parse_mode='Markdown')
