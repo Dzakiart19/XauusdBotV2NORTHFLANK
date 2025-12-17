@@ -4,6 +4,10 @@
 This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It provides real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system, and supports paid subscriptions. Key capabilities include a REST API, backtesting engine, report generation, admin monitoring dashboard, and enhanced interactive menus. The bot is designed for 24/7 operation, delivering accurate signals through a multi-indicator strategy with strict validation.
 
 ## Recent Changes (December 2025)
+- **Auto-Resume Monitoring**: Bot now automatically resumes monitoring for users when restarted, no need to click /monitor again
+- **Pin Message on /start**: Welcome message and monitoring status are now automatically pinned in chat
+- **Real-Time Price Accuracy**: Signals now use real-time market price instead of candle close price for more accurate entry points
+- **Monitoring State Persistence**: Added `is_monitoring` column to User model to persist monitoring state across bot restarts
 - **Fixed Critical Bug - can_create_signal()**: Added missing async method to SignalSessionManager that was causing all /getsignal and auto signal commands to fail
 - **Fixed AutoOptimizer API**: Changed `should_run_optimization()` to return tuple `(bool, reason)` matching caller expectations
 - **Fixed OptimizationResult**: Added `adjustments` and `status` attributes that were missing

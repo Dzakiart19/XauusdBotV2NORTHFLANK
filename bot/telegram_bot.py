@@ -2250,7 +2250,17 @@ class TradingBot:
                 "💡 Ketik /help untuk bantuan lengkap"
             )
             
-            await message.reply_text(welcome_msg, parse_mode='Markdown')
+            welcome_sent = await message.reply_text(welcome_msg, parse_mode='Markdown')
+            
+            try:
+                await context.bot.pin_chat_message(
+                    chat_id=chat.id,
+                    message_id=welcome_sent.message_id,
+                    disable_notification=True
+                )
+                logger.info(f"📌 Welcome message pinned for user {mask_user_id(user.id)}")
+            except (TelegramError, BadRequest) as pin_error:
+                logger.warning(f"Could not pin welcome message: {pin_error}")
             
             logger.info(f"Start command executed successfully for user {mask_user_id(user.id)}")
             
@@ -2260,12 +2270,23 @@ class TradingBot:
                     logger.warning(f"Cannot auto-start monitoring for user {mask_user_id(user.id)} - limit reached ({self.MAX_MONITORING_CHATS})")
                 else:
                     await self.auto_start_monitoring([chat_id])
-                    await message.reply_text(
+                    if self.user_manager:
+                        await self.user_manager.async_set_monitoring_state(user.id, True)
+                    monitoring_msg = await message.reply_text(
                         "🟢 *AUTO-MONITORING AKTIF*\n\n"
                         "Bot otomatis memantau XAUUSD.\n"
                         "Sinyal akan dikirim saat terdeteksi.",
                         parse_mode='Markdown'
                     )
+                    try:
+                        await context.bot.pin_chat_message(
+                            chat_id=chat.id,
+                            message_id=monitoring_msg.message_id,
+                            disable_notification=True
+                        )
+                        logger.info(f"📌 Monitoring message pinned for user {mask_user_id(user.id)}")
+                    except (TelegramError, BadRequest) as pin_error:
+                        logger.warning(f"Could not pin monitoring message: {pin_error}")
                     logger.info(f"✅ Auto-monitoring started for user {mask_user_id(user.id)} on /start")
             else:
                 logger.debug(f"Monitoring already active for user {mask_user_id(user.id)}")
@@ -2454,6 +2475,8 @@ class TradingBot:
             
             if chat_id not in self.monitoring_chats:
                 self.monitoring_chats.append(chat_id)
+                if self.user_manager:
+                    await self.user_manager.async_set_monitoring_state(user.id, True)
                 await message.reply_text(
                     "🟢 *MONITORING DIAKTIFKAN*\n"
                     "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -2665,6 +2688,9 @@ class TradingBot:
             
             if chat_id in self.monitoring_chats:
                 self.monitoring_chats.remove(chat_id)
+                
+                if self.user_manager:
+                    await self.user_manager.async_set_monitoring_state(user.id, False)
                 
                 task = self.monitoring_tasks.pop(chat_id, None)
                 if task:
@@ -3621,7 +3647,29 @@ class TradingBot:
             
             signal_sent_successfully = False
             signal_type = signal['signal']
-            entry_price = signal['entry_price']
+            original_entry_price = signal['entry_price']
+            entry_price = original_entry_price
+            
+            try:
+                if self.market_data:
+                    current_price = await asyncio.wait_for(
+                        self.market_data.get_current_price(),
+                        timeout=2.0
+                    )
+                    if current_price and current_price > 0:
+                        price_diff = abs(current_price - original_entry_price)
+                        if price_diff <= 5.0:
+                            entry_price = current_price
+                            sl_diff = original_entry_price - signal['stop_loss']
+                            tp_diff = signal['take_profit'] - original_entry_price
+                            signal['entry_price'] = entry_price
+                            signal['stop_loss'] = entry_price - sl_diff
+                            signal['take_profit'] = entry_price + tp_diff
+                            logger.info(f"📊 Updated signal price: ${original_entry_price:.2f} → ${entry_price:.2f} (real-time)")
+                        else:
+                            logger.warning(f"Price moved too much: ${price_diff:.2f} - keeping original entry")
+            except (asyncio.TimeoutError, ValueError, TypeError, AttributeError) as price_err:
+                logger.debug(f"Could not get real-time price, using candle close: {price_err}")
             
             session = self.db.get_session()
             trade_id = None
@@ -5106,7 +5154,68 @@ class TradingBot:
         await self.app.initialize()
         await self.app.start()
         logger.info("Telegram bot initialized and ready!")
+        
+        await self._auto_resume_monitoring()
+        
         return True
+    
+    async def _auto_resume_monitoring(self):
+        """Auto-resume monitoring for users who had it enabled before bot restart.
+        
+        This method queries the database for users with is_monitoring=True and
+        automatically starts monitoring for them without requiring /monitor command.
+        """
+        if not self.user_manager:
+            logger.warning("UserManager not available - skipping auto-resume monitoring")
+            return
+        
+        try:
+            monitoring_user_ids = await self.user_manager.async_get_users_with_monitoring_enabled()
+            
+            if not monitoring_user_ids:
+                logger.info("📊 No users with active monitoring to resume")
+                return
+            
+            logger.info(f"🔄 Auto-resuming monitoring for {len(monitoring_user_ids)} user(s)")
+            
+            resumed_count = 0
+            for user_id in monitoring_user_ids:
+                if len(self.monitoring_chats) >= self.MAX_MONITORING_CHATS:
+                    logger.warning(f"Max monitoring chats reached ({self.MAX_MONITORING_CHATS}), stopping auto-resume")
+                    break
+                
+                chat_id = user_id
+                if chat_id not in self.monitoring_chats and chat_id not in self.monitoring_tasks:
+                    try:
+                        await self.auto_start_monitoring([chat_id])
+                        resumed_count += 1
+                        logger.info(f"✅ Auto-resumed monitoring for user {mask_user_id(user_id)}")
+                        
+                        if self.app and self.app.bot:
+                            try:
+                                await self.app.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=(
+                                        "🔄 *BOT RESTART*\n"
+                                        "━━━━━━━━━━━━━━━━━━━━\n\n"
+                                        "Bot telah di-restart dan monitoring\n"
+                                        "otomatis dilanjutkan untuk Anda.\n\n"
+                                        "🟢 *Status: AKTIF*\n"
+                                        "📊 Sinyal akan dikirim saat terdeteksi."
+                                    ),
+                                    parse_mode='Markdown'
+                                )
+                            except (TelegramError, asyncio.TimeoutError) as send_err:
+                                logger.warning(f"Could not send resume notification to user {mask_user_id(user_id)}: {send_err}")
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to auto-resume monitoring for user {mask_user_id(user_id)}: {e}")
+                        await self.user_manager.async_set_monitoring_state(user_id, False)
+            
+            logger.info(f"✅ Auto-resume complete: {resumed_count}/{len(monitoring_user_ids)} users resumed")
+            
+        except Exception as e:
+            logger.error(f"Error in auto-resume monitoring: {e}", exc_info=True)
     
     async def setup_webhook(self, webhook_url: str, max_retries: int = 3):
         if not self.app:

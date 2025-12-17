@@ -53,6 +53,7 @@ class User(Base):
     last_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_monitoring: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_active: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     total_trades: Mapped[int] = mapped_column(Integer, default=0)
@@ -273,6 +274,57 @@ class UserManager:
     async def async_update_user_activity(self, telegram_id: int):
         """Async wrapper for update_user_activity using asyncio.to_thread."""
         return await asyncio.to_thread(self.update_user_activity, telegram_id)
+    
+    def set_monitoring_state(self, telegram_id: int, is_monitoring: bool) -> bool:
+        """Update user monitoring state (WRITE operation).
+        
+        Thread-safe: Acquires per-user lock before modification.
+        
+        Args:
+            telegram_id: Telegram user ID
+            is_monitoring: Whether user is actively monitoring
+            
+        Returns:
+            True if update succeeded, False otherwise
+        """
+        with self.user_lock(telegram_id):
+            with self.get_session() as session:
+                try:
+                    user = session.query(User).filter(User.telegram_id == telegram_id).first()
+                    if user:
+                        user.is_monitoring = is_monitoring
+                        user.last_active = datetime.utcnow()
+                        logger.info(f"Updated monitoring state for user {telegram_id}: {is_monitoring}")
+                        return True
+                    return False
+                except (SQLAlchemyError, ValueError, TypeError, AttributeError) as e:
+                    logger.error(f"Error updating monitoring state: {e}")
+                    return False
+    
+    async def async_set_monitoring_state(self, telegram_id: int, is_monitoring: bool) -> bool:
+        """Async wrapper for set_monitoring_state."""
+        return await asyncio.to_thread(self.set_monitoring_state, telegram_id, is_monitoring)
+    
+    def get_users_with_monitoring_enabled(self) -> List[int]:
+        """Get list of telegram_ids for users with monitoring enabled (READ operation).
+        
+        Returns:
+            List of telegram IDs with active monitoring
+        """
+        with self.get_session() as session:
+            try:
+                users = session.query(User).filter(
+                    User.is_monitoring == True,
+                    User.is_active == True
+                ).all()
+                return [user.telegram_id for user in users]
+            except (SQLAlchemyError, ValueError, TypeError, AttributeError) as e:
+                logger.error(f"Error getting users with monitoring: {e}")
+                return []
+    
+    async def async_get_users_with_monitoring_enabled(self) -> List[int]:
+        """Async wrapper for get_users_with_monitoring_enabled."""
+        return await asyncio.to_thread(self.get_users_with_monitoring_enabled)
     
     def is_authorized(self, telegram_id: int) -> bool:
         """Check if user is authorized (READ operation - no lock needed).
