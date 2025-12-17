@@ -2944,23 +2944,30 @@ class TradingBot:
         return True
     
     async def _check_position_eligibility(self, ctx: MonitoringContext) -> Tuple[bool, Optional[str]]:
-        """Cek apakah user eligible untuk sinyal baru. Returns (can_proceed, block_reason)."""
-        # CRITICAL: Early check position_tracker FIRST sebelum SignalSessionManager
-        # Ini mencegah session dibuat sia-sia jika user sudah punya active position
-        if await self.position_tracker.has_active_position_async(ctx.chat_id):
-            logger.debug(f"⏸️ Signal blocked (EARLY) - active position exists | User:{mask_user_id(ctx.chat_id)}")
-            return False, "active_position_early_check"
+        """Cek apakah user eligible untuk sinyal baru berdasarkan MAX_CONCURRENT_POSITIONS (default: 4).
+        
+        Returns (can_proceed, block_reason).
+        """
+        max_positions = getattr(self.config, 'MAX_CONCURRENT_POSITIONS', 4)
+        
+        active_count = await self.position_tracker.get_active_position_count_async(ctx.chat_id)
+        
+        if active_count >= max_positions:
+            logger.debug(f"⏸️ Signal blocked - max positions reached ({active_count}/{max_positions}) | User:{mask_user_id(ctx.chat_id)}")
+            return False, f"max_positions_reached_{active_count}_{max_positions}"
         
         if self.signal_session_manager:
             can_create, block_reason = await self.signal_session_manager.can_create_signal(
-                ctx.chat_id, 'auto', position_tracker=self.position_tracker
+                ctx.chat_id, 'auto', 
+                position_tracker=self.position_tracker,
+                risk_manager=self.risk_manager
             )
             if not can_create:
                 logger.debug(f"⏸️ Signal blocked - {block_reason} | User:{mask_user_id(ctx.chat_id)} | Will recheck in 0.5s")
                 await asyncio.sleep(0.5)
                 return False, block_reason
         
-        logger.debug(f"✅ No active position - ready for new signal | User:{mask_user_id(ctx.chat_id)}")
+        logger.debug(f"✅ Eligible for new signal ({active_count}/{max_positions} positions) | User:{mask_user_id(ctx.chat_id)}")
         return True, None
     
     def _check_candle_filter(self, ctx: MonitoringContext, df_m1: pd.DataFrame) -> bool:
@@ -3104,9 +3111,18 @@ class TradingBot:
                 logger.info(f"Global cooldown aktif, menunda sinyal {wait_time:.1f}s untuk user {mask_user_id(ctx.chat_id)}")
                 await asyncio.sleep(wait_time)
             
+            max_positions = getattr(self.config, 'MAX_CONCURRENT_POSITIONS', 4)
+            active_count = await self.position_tracker.get_active_position_count_async(ctx.chat_id)
+            
+            if active_count >= max_positions:
+                logger.debug(f"Skipping - max positions reached ({active_count}/{max_positions})")
+                return False
+            
             if self.signal_session_manager:
                 can_create, block_reason = await self.signal_session_manager.can_create_signal(
-                    ctx.chat_id, 'auto', position_tracker=self.position_tracker
+                    ctx.chat_id, 'auto', 
+                    position_tracker=self.position_tracker,
+                    risk_manager=self.risk_manager
                 )
                 if not can_create:
                     logger.info(f"Signal creation blocked for user {mask_user_id(ctx.chat_id)}: {block_reason}")
@@ -3121,9 +3137,6 @@ class TradingBot:
                     signal['stop_loss'],
                     signal['take_profit']
                 )
-            elif await self.position_tracker.has_active_position_async(ctx.chat_id):
-                logger.debug(f"Skipping - user has active position (race condition check)")
-                return False
             
             await self._send_signal(ctx.chat_id, ctx.chat_id, signal, df_m1)
             
@@ -3280,7 +3293,7 @@ class TradingBot:
                     self.signal_quality_tracker.track_blocked_signal(
                         user_id=ctx.chat_id,
                         signal_data=signal_params,
-                        blocking_reason=blocking_reason
+                        blocking_reason=blocking_reason or "Unknown reason"
                     )
                     return False
                 
@@ -4318,25 +4331,30 @@ class TradingBot:
         user_id = update.effective_user.id
         
         try:
-            if self.signal_session_manager:
-                can_create, block_reason = await self.signal_session_manager.can_create_signal(
-                    user_id, 'manual', position_tracker=self.position_tracker
-                )
-                if not can_create:
-                    await update.message.reply_text(
-                        block_reason if block_reason else MessageFormatter.session_blocked('auto', 'manual'),
-                        parse_mode='Markdown'
-                    )
-                    return
-            elif self.position_tracker and await self.position_tracker.has_active_position_async(user_id):
+            max_positions = getattr(self.config, 'MAX_CONCURRENT_POSITIONS', 4)
+            active_count = await self.position_tracker.get_active_position_count_async(user_id)
+            
+            if active_count >= max_positions:
                 await update.message.reply_text(
-                    "⏳ *Tidak Dapat Membuat Sinyal Baru*\n\n"
-                    "Saat ini Anda memiliki posisi aktif yang sedang berjalan.\n"
-                    "Bot akan tracking hingga TP/SL tercapai.\n\n"
-                    "Tunggu hasil posisi Anda saat ini sebelum request sinyal baru.",
+                    f"⏳ *Maksimum Posisi Tercapai*\n\n"
+                    f"Anda sudah memiliki {active_count} posisi aktif (maksimum {max_positions}).\n"
+                    f"Tunggu salah satu posisi mencapai TP/SL sebelum membuat sinyal baru.",
                     parse_mode='Markdown'
                 )
                 return
+            
+            if self.signal_session_manager:
+                can_create, block_reason = await self.signal_session_manager.can_create_signal(
+                    user_id, 'manual', 
+                    position_tracker=self.position_tracker,
+                    risk_manager=self.risk_manager
+                )
+                if not can_create:
+                    await update.message.reply_text(
+                        block_reason if block_reason else f"Maksimum {max_positions} posisi tercapai.",
+                        parse_mode='Markdown'
+                    )
+                    return
             
             can_trade, rejection_reason = self.risk_manager.can_trade(user_id, 'ANY')
             

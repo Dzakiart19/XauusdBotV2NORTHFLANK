@@ -2298,13 +2298,14 @@ class PositionTracker:
                 except Exception as e:
                     logger.error(f"❌ Error updating signal quality for position {position_id}: {e}")
             
-            # End signal session to allow new signals
+            # End signal session for THIS SPECIFIC position to allow new signals
+            # CRITICAL: Pass position_id so only this session is ended, not all user sessions
             if self.signal_session_manager:
                 try:
-                    await self.signal_session_manager.end_session(user_id, reason)
-                    logger.info(f"✅ Signal session ended for user {user_id} - reason: {reason}")
+                    await self.signal_session_manager.end_session(user_id, reason, position_id=position_id)
+                    logger.info(f"✅ Signal session ended for user {user_id} position {position_id} - reason: {reason}")
                 except Exception as e:
-                    logger.error(f"❌ Error ending signal session for user {user_id}: {e}")
+                    logger.error(f"❌ Error ending signal session for user {user_id} position {position_id}: {e}")
             
             if self.telegram_app and self.chart_generator and self.market_data:
                 try:
@@ -2795,18 +2796,49 @@ class PositionTracker:
             return self.active_positions.get(user_id, {}).copy()
         return {uid: pos.copy() for uid, pos in self.active_positions.items()}
     
+    async def get_active_position_count_async(self, user_id: int) -> int:
+        """Thread-safe count of active positions for a user.
+        
+        Returns:
+            int: Number of active positions (in-memory + DB fallback)
+        """
+        count = 0
+        
+        async with self._position_lock:
+            if user_id in self.active_positions:
+                count = len(self.active_positions[user_id])
+        
+        if count == 0:
+            try:
+                session = self.db.get_session()
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+                
+                try:
+                    db_count = session.query(Position).filter(
+                        Position.user_id == user_id,
+                        Position.status == 'ACTIVE'
+                    ).count()
+                    count = db_count
+                finally:
+                    session.close()
+            except Exception as e:
+                logger.error(f"Error counting active positions in DB: {e}")
+        
+        return count
+    
     async def has_active_position_async(self, user_id: int) -> bool:
         """Thread-safe check for active position with multi-source verification including DB fallback
         
         NOTE: Does NOT check SignalSessionManager to avoid circular dependency
         Session != Position. Session tracks pending signal, Position tracks actual trade.
         """
-        # Check 1: In-memory cache (with lock)
         async with self._position_lock:
             if user_id in self.active_positions and len(self.active_positions[user_id]) > 0:
                 return True
         
-        # Check 2: Database fallback (critical for restart scenarios)
         db_has_active = await self.verify_active_position_in_db(user_id)
         if db_has_active:
             logger.debug(f"Active position found in DB for user {user_id} (not in cache/session)")
