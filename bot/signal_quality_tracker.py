@@ -62,9 +62,49 @@ class SignalQualityTracker:
     def should_block_signal(self, signal_data: Dict[str, Any]) -> tuple:
         """Check if a signal should be blocked based on quality metrics.
         
+        Quality filters:
+        - Block signals with confidence < 50%
+        - Block signals with grade D (lowest quality)
+        - Block signals with confluence_count < 2
+        - Block signals during high volatility with low confidence
+        
         Returns:
             Tuple of (should_block: bool, reason: str or None)
         """
+        if not signal_data:
+            return (True, "Empty signal data")
+        
+        confidence = signal_data.get('confidence_score', signal_data.get('confidence', 0))
+        if isinstance(confidence, str):
+            try:
+                confidence = float(confidence.replace('%', ''))
+            except (ValueError, TypeError):
+                confidence = 0
+        
+        if confidence < 50:
+            reason = f"Low confidence: {confidence:.1f}% (min 50%)"
+            logger.info(f"🚫 Signal blocked: {reason}")
+            return (True, reason)
+        
+        grade = signal_data.get('quality_grade', signal_data.get('grade', 'B'))
+        if grade == 'D':
+            reason = f"Low quality grade: {grade} (min C)"
+            logger.info(f"🚫 Signal blocked: {reason}")
+            return (True, reason)
+        
+        confluence_count = signal_data.get('confluence_count', 0)
+        if confluence_count < 2:
+            reason = f"Insufficient confluence: {confluence_count} (min 2)"
+            logger.info(f"🚫 Signal blocked: {reason}")
+            return (True, reason)
+        
+        weighted_score = signal_data.get('weighted_confluence_score', 0)
+        if weighted_score < 2.0 and confidence < 60:
+            reason = f"Weak signal: score={weighted_score:.1f}, conf={confidence:.1f}%"
+            logger.info(f"🚫 Signal blocked: {reason}")
+            return (True, reason)
+        
+        logger.debug(f"✅ Signal passed quality check: grade={grade}, conf={confidence:.1f}%, confluence={confluence_count}")
         return (False, None)
     
     def track_blocked_signal(self, signal_data: Dict[str, Any] = None, reason: str = None, 

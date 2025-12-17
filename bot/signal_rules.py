@@ -413,8 +413,8 @@ class AggressiveSignalRules:
             
             self._current_regime = self.regime_detector.get_regime(
                 indicators=indicators,
-                m1_df=df_m1,
-                m5_df=df_m5
+                df_m1=df_m1,
+                df_m5=df_m5
             )
             return self._current_regime
         except Exception as e:
