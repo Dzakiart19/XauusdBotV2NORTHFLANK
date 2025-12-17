@@ -2471,8 +2471,76 @@ class PositionTracker:
                     pass
             
             if not current_price or current_price <= 0:
-                logger.warning("No current price available for position monitoring (both methods failed)")
+                # CRITICAL: No price data available - this is dangerous for open positions!
+                # Count consecutive failures and force close at SL if too many
+                if not hasattr(self, '_no_price_count'):
+                    self._no_price_count = 0
+                self._no_price_count += 1
+                
+                total_active = sum(len(positions) for positions in positions_snapshot.values())
+                logger.warning(f"No price data available (count={self._no_price_count}), {total_active} positions at risk!")
+                
+                # After 6 consecutive failures (~30-60 seconds with 10s interval), force close all positions at their SL
+                if self._no_price_count >= 6 and total_active > 0:
+                    logger.error(f"🚨 CRITICAL: No price data for {self._no_price_count} cycles, FORCE CLOSING {total_active} positions at SL!")
+                    
+                    # Track failed closes for escalation
+                    if not hasattr(self, '_force_close_failures'):
+                        self._force_close_failures = {}
+                    
+                    # Collect position IDs first, then close each with fresh SL under per-position lock
+                    position_ids_to_close = []
+                    async with self._position_lock:
+                        for user_id in list(self.active_positions.keys()):
+                            for position_id in list(self.active_positions.get(user_id, {}).keys()):
+                                position_ids_to_close.append((user_id, position_id))
+                    
+                    # Close each position with fresh SL obtained right before close
+                    for user_id, position_id in position_ids_to_close:
+                        try:
+                            # Re-acquire lock to get the LATEST SL value (may have been updated by trailing stop)
+                            async with self._position_lock:
+                                pos_data = self.active_positions.get(user_id, {}).get(position_id)
+                                if not pos_data:
+                                    logger.debug(f"Position {position_id} already closed, skipping")
+                                    continue
+                                sl_price = pos_data.get('stop_loss', pos_data.get('entry_price'))
+                            
+                            logger.warning(f"Force closing position {position_id} at SL=${sl_price:.2f} due to no price data")
+                            await self.close_position(user_id, position_id, sl_price, 'NO_PRICE_DATA_SL')
+                            updated_positions.append({
+                                'user_id': user_id,
+                                'position_id': position_id,
+                                'result': 'NO_PRICE_DATA_SL',
+                                'price': sl_price
+                            })
+                            # Clear failure count on success
+                            self._force_close_failures.pop(position_id, None)
+                        except Exception as e:
+                            # Track failures for escalation
+                            fail_count = self._force_close_failures.get(position_id, 0) + 1
+                            self._force_close_failures[position_id] = fail_count
+                            logger.error(f"Failed to force close position {position_id} (attempt {fail_count}): {e}")
+                            
+                            # After 3 failed attempts, remove from active tracking to prevent endless retries
+                            if fail_count >= 3:
+                                logger.critical(f"🚨 MANUAL INTERVENTION REQUIRED: Position {position_id} failed to close {fail_count} times!")
+                                # Remove from active_positions to stop endless retry loop
+                                async with self._position_lock:
+                                    if user_id in self.active_positions and position_id in self.active_positions[user_id]:
+                                        del self.active_positions[user_id][position_id]
+                                        if not self.active_positions[user_id]:
+                                            del self.active_positions[user_id]
+                                        logger.warning(f"Removed position {position_id} from active tracking due to repeated close failures")
+                                self._force_close_failures.pop(position_id, None)
+                    
+                    self._no_price_count = 0  # Reset counter after force close
+                    return updated_positions
+                
                 return []
+            
+            # Reset counter when price is available
+            self._no_price_count = 0
             
             logger.debug(f"Position monitoring: checking {len(positions_snapshot)} user(s) with price=${current_price:.2f}")
             

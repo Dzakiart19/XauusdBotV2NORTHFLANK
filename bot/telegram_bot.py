@@ -4172,6 +4172,24 @@ class TradingBot:
                         
                         # CRITICAL FIX: Call update_position to check TP/SL and apply trailing stop
                         # This ensures positions are closed when TP/SL is hit
+                        # Re-verify position is still ACTIVE before calling update_position to prevent double-close
+                        session.expire_all()
+                        position_check = session.query(Position).filter(
+                            Position.id == position_id,
+                            Position.user_id == user_id,
+                            Position.status == 'ACTIVE'
+                        ).first()
+                        
+                        if not position_check:
+                            logger.info(f"Position {position_id} no longer ACTIVE, stopping dashboard")
+                            break
+                        
+                        # Update local variables with fresh data from DB
+                        stop_loss = position_check.stop_loss
+                        take_profit = position_check.take_profit
+                        sl_adjustment_count = getattr(position_check, 'sl_adjustment_count', 0) or 0
+                        max_profit_reached = getattr(position_check, 'max_profit_reached', 0) or 0
+                        
                         if self.position_tracker:
                             try:
                                 close_reason = await asyncio.wait_for(
@@ -4180,23 +4198,27 @@ class TradingBot:
                                 )
                                 if close_reason:
                                     logger.info(f"📊 Dashboard detected position close: {close_reason} for position {position_id}")
-                                    # Re-fetch position status after update
-                                    session.expire_all()
-                                    position_db = session.query(Position).filter(
-                                        Position.id == position_id,
-                                        Position.user_id == user_id
-                                    ).first()
-                                    if position_db and position_db.status != 'ACTIVE':
-                                        break
-                                    # Update local variables with new SL after trailing stop
-                                    if position_db:
-                                        stop_loss = position_db.stop_loss
-                                        sl_adjustment_count = getattr(position_db, 'sl_adjustment_count', 0) or 0
-                                        max_profit_reached = getattr(position_db, 'max_profit_reached', 0) or 0
+                                    break  # Exit dashboard loop - position is closed
                             except asyncio.TimeoutError:
                                 logger.warning(f"Timeout calling update_position for position {position_id}")
+                            except (KeyError, ValueError, RuntimeError) as e:
+                                # Position may have been closed by another coroutine (scheduler)
+                                # RuntimeError can occur when scheduler modifies position state during update
+                                error_str = str(e).lower()
+                                if "not found" in error_str or "no active" in error_str or "closed" in error_str:
+                                    logger.info(f"Position {position_id} no longer active (likely closed by scheduler): {e}")
+                                else:
+                                    logger.info(f"Position {position_id} state changed during update: {e}")
+                                break
                             except Exception as e:
-                                logger.error(f"Error calling update_position: {e}")
+                                # Any other exception - check if position was closed, log and break
+                                error_str = str(e).lower()
+                                if any(term in error_str for term in ["not found", "no active", "closed", "does not exist"]):
+                                    logger.info(f"Position {position_id} was closed during update: {e}")
+                                    break
+                                logger.error(f"Error calling update_position for position {position_id}: {e}")
+                                # Don't continue with stale data - break the loop
+                                break
                         
                         unrealized_pl = self.risk_manager.calculate_pl(entry_price, current_price, signal_type)
                         
