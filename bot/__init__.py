@@ -1,31 +1,10 @@
 """
-Bot Trading XAUUSD Module.
+Bot Trading XAUUSD Module (Lightweight Version).
 
-This package provides trading bot functionality for XAUUSD including:
-- Signal generation and quality tracking
-- Auto-optimization engine
-- Market regime detection
-- Risk management
+Core functionality:
+- Signal generation
+- Position tracking (TP/SL win/lose)
+- Performance statistics
 """
 
-from bot.auto_optimizer import (
-    AutoOptimizer,
-    OptimizationParameters,
-    OptimizationResult,
-    Adjustment,
-    AdjustmentType,
-    OptimizationStatus,
-    PerformanceSnapshot,
-    AutoOptimizerError
-)
-
-__all__ = [
-    'AutoOptimizer',
-    'OptimizationParameters',
-    'OptimizationResult',
-    'Adjustment',
-    'AdjustmentType',
-    'OptimizationStatus',
-    'PerformanceSnapshot',
-    'AutoOptimizerError'
-]
+__all__ = []
