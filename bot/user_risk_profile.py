@@ -26,7 +26,7 @@ class RiskProfile:
     
     max_daily_loss_percent: float = 0.0  # 0.0 = unlimited (no daily loss limit)
     max_daily_loss_amount: float = 0.0   # 0.0 = unlimited (no daily loss limit)
-    max_concurrent_positions: int = 4
+    max_concurrent_positions: int = 1
     risk_per_trade_percent: float = 2.0
     
     lot_size: float = 0.01
@@ -68,7 +68,7 @@ PRESET_PROFILES = {
     RiskLevel.CONSERVATIVE: {
         'max_daily_loss_percent': 0.0,  # Unlimited
         'max_daily_loss_amount': 0.0,   # Unlimited
-        'max_concurrent_positions': 2,
+        'max_concurrent_positions': 1,
         'risk_per_trade_percent': 1.0,
         'lot_size': 0.01,
         'max_lot_size': 0.03,
@@ -80,7 +80,7 @@ PRESET_PROFILES = {
     RiskLevel.MODERATE: {
         'max_daily_loss_percent': 0.0,  # Unlimited
         'max_daily_loss_amount': 0.0,   # Unlimited
-        'max_concurrent_positions': 4,
+        'max_concurrent_positions': 1,
         'risk_per_trade_percent': 2.0,
         'lot_size': 0.01,
         'max_lot_size': 0.05,
@@ -92,7 +92,7 @@ PRESET_PROFILES = {
     RiskLevel.AGGRESSIVE: {
         'max_daily_loss_percent': 0.0,  # Unlimited
         'max_daily_loss_amount': 0.0,   # Unlimited
-        'max_concurrent_positions': 6,
+        'max_concurrent_positions': 1,
         'risk_per_trade_percent': 3.0,
         'lot_size': 0.02,
         'max_lot_size': 0.1,

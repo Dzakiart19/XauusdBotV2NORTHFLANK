@@ -51,7 +51,7 @@ class DynamicRiskCalculator:
     
     DEFAULT_MAX_DAILY_LOSS = 0.0  # 0.0 = unlimited (no daily loss limit)
     DEFAULT_MAX_DAILY_LOSS_PERCENT = 0.0  # 0.0 = unlimited (no daily loss limit)
-    DEFAULT_MAX_CONCURRENT_POSITIONS = 4
+    DEFAULT_MAX_CONCURRENT_POSITIONS = 1
     DEFAULT_RISK_SAFETY_FACTOR = 0.5
     
     MIN_LOT_SIZE = 0.01

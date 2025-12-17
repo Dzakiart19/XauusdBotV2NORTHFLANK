@@ -2952,11 +2952,11 @@ class TradingBot:
         return True
     
     async def _check_position_eligibility(self, ctx: MonitoringContext) -> Tuple[bool, Optional[str]]:
-        """Cek apakah user eligible untuk sinyal baru berdasarkan MAX_CONCURRENT_POSITIONS (default: 4).
+        """Cek apakah user eligible untuk sinyal baru berdasarkan MAX_CONCURRENT_POSITIONS (default: 1).
         
         Returns (can_proceed, block_reason).
         """
-        max_positions = getattr(self.config, 'MAX_CONCURRENT_POSITIONS', 4)
+        max_positions = getattr(self.config, 'MAX_CONCURRENT_POSITIONS', 1)
         
         active_count = await self.position_tracker.get_active_position_count_async(ctx.chat_id)
         
@@ -3124,7 +3124,7 @@ class TradingBot:
                 logger.info(f"Global cooldown aktif, menunda sinyal {wait_time:.1f}s untuk user {mask_user_id(ctx.chat_id)}")
                 await asyncio.sleep(wait_time)
             
-            max_positions = getattr(self.config, 'MAX_CONCURRENT_POSITIONS', 4)
+            max_positions = getattr(self.config, 'MAX_CONCURRENT_POSITIONS', 1)
             active_count = await self.position_tracker.get_active_position_count_async(ctx.chat_id)
             
             if active_count >= max_positions:
@@ -4349,14 +4349,14 @@ class TradingBot:
         user_id = update.effective_user.id
         
         try:
-            max_positions = getattr(self.config, 'MAX_CONCURRENT_POSITIONS', 4)
+            max_positions = getattr(self.config, 'MAX_CONCURRENT_POSITIONS', 1)
             active_count = await self.position_tracker.get_active_position_count_async(user_id)
             
             if active_count >= max_positions:
                 await update.message.reply_text(
-                    f"⏳ *Maksimum Posisi Tercapai*\n\n"
-                    f"Anda sudah memiliki {active_count} posisi aktif (maksimum {max_positions}).\n"
-                    f"Tunggu salah satu posisi mencapai TP/SL sebelum membuat sinyal baru.",
+                    f"⏳ *Sinyal Masih Aktif*\n\n"
+                    f"Anda sudah memiliki {active_count} posisi aktif.\n"
+                    f"Tunggu posisi mencapai TP/SL sebelum sinyal baru.",
                     parse_mode='Markdown'
                 )
                 return
