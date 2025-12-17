@@ -4,6 +4,12 @@
 This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It provides real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system, and supports paid subscriptions. Key capabilities include a REST API, backtesting engine, report generation, admin monitoring dashboard, and enhanced interactive menus. The bot is designed for 24/7 operation, delivering accurate signals through a multi-indicator strategy with strict validation.
 
 ## Recent Changes (December 2025)
+- **MULTI-POSITION SUPPORT**: Bot sekarang support hingga 4 posisi concurrent per user (MAX_CONCURRENT_POSITIONS=4)
+  - SignalSessionManager di-refactor untuk key session berdasarkan position_id
+  - close_session memiliki priority lookup: position_id -> session_id -> first session
+  - _check_position_eligibility menggunakan active position count, bukan boolean check
+  - /getsignal dan auto-signal mengecek posisi aktif terhadap limit, bukan memblokir saat ada 1 posisi
+  - WIN/LOSE notification dikirim dengan position_id untuk targeted session cleanup
 - **CRITICAL FIX - Position TP/SL Enforcement**: Dashboard loop sekarang memanggil update_position() untuk cek TP/SL, tidak hanya menampilkan data
 - **CRITICAL FIX - Stale Price Circuit Breaker**: Posisi akan force-close di SL setelah 6 siklus (~30-60s) tanpa data harga untuk mencegah drawdown unlimited
 - **CRITICAL FIX - Task Scheduler Position Monitoring**: Tidak lagi skip monitoring saat WebSocket stale jika ada posisi aktif
