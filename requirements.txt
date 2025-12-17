@@ -27,3 +27,16 @@ SQLAlchemy==2.0.23
 telegram
 websockets==12.0
 pytest
+aiohttp
+numpy
+pandas
+psutil
+psycopg2-binary
+pytest
+python-dotenv
+python-telegram-bot
+pytz
+sentry-sdk
+SQLAlchemy
+telegram
+websockets
