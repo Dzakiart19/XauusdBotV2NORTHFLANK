@@ -461,6 +461,11 @@ class Config:
     
     CHART_EXPIRY_MINUTES = _get_int_env('CHART_EXPIRY_MINUTES', '15')
     CHART_LRU_CACHE_SIZE = _get_int_env('CHART_LRU_CACHE_SIZE', '10')
+    
+    # Webhook Security Settings
+    WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', '').strip()
+    WEBHOOK_RATE_LIMIT = _get_int_env('WEBHOOK_RATE_LIMIT', '100')
+    WEBHOOK_RATE_LIMIT_WINDOW = _get_int_env('WEBHOOK_RATE_LIMIT_WINDOW', '60')
     CHART_MEMORY_THRESHOLD_MB = _get_int_env('CHART_MEMORY_THRESHOLD_MB', '400')
     CHART_CLEANUP_INTERVAL_MINUTES = _get_int_env('CHART_CLEANUP_INTERVAL_MINUTES', '5')
     
@@ -729,7 +734,76 @@ class Config:
                 )
             return False
         
+        cls.validate_interdependent()
+        
         return True
+    
+    @classmethod
+    def validate_interdependent(cls) -> None:
+        """
+        Validate interdependent configuration fields.
+        Logs warnings for misconfigurations and silently fixes values where possible.
+        This method does not throw errors - it only logs warnings and auto-corrects.
+        """
+        try:
+            from bot.logger import setup_logger
+            logger = setup_logger('Config')
+        except (ImportError, AttributeError):
+            import logging
+            logger = logging.getLogger('Config')
+        
+        if cls.TICK_THROTTLE_SECONDS >= cls.WS_HEARTBEAT_INTERVAL:
+            logger.warning(
+                f"TICK_THROTTLE_SECONDS ({cls.TICK_THROTTLE_SECONDS}s) should be less than "
+                f"WS_HEARTBEAT_INTERVAL ({cls.WS_HEARTBEAT_INTERVAL}s). "
+                f"Auto-adjusting TICK_THROTTLE_SECONDS to {cls.WS_HEARTBEAT_INTERVAL - 1}s"
+            )
+            cls.TICK_THROTTLE_SECONDS = float(cls.WS_HEARTBEAT_INTERVAL - 1)
+        
+        if cls.SIGNAL_CHECK_INTERVAL < cls.TICK_THROTTLE_SECONDS:
+            logger.warning(
+                f"SIGNAL_CHECK_INTERVAL ({cls.SIGNAL_CHECK_INTERVAL}s) should be >= "
+                f"TICK_THROTTLE_SECONDS ({cls.TICK_THROTTLE_SECONDS}s). "
+                f"Auto-adjusting SIGNAL_CHECK_INTERVAL to {cls.TICK_THROTTLE_SECONDS}s"
+            )
+            cls.SIGNAL_CHECK_INTERVAL = cls.TICK_THROTTLE_SECONDS
+        elif cls.SIGNAL_CHECK_INTERVAL > 60.0:
+            logger.warning(
+                f"SIGNAL_CHECK_INTERVAL ({cls.SIGNAL_CHECK_INTERVAL}s) is greater than 60s. "
+                f"This may cause delayed signal detection. Auto-adjusting to 60s"
+            )
+            cls.SIGNAL_CHECK_INTERVAL = 60.0
+        
+        if cls.GC_INTERVAL_SECONDS <= cls.TASK_AUTO_CANCEL_THRESHOLD:
+            logger.warning(
+                f"GC_INTERVAL_SECONDS ({cls.GC_INTERVAL_SECONDS}s) should be greater than "
+                f"TASK_AUTO_CANCEL_THRESHOLD ({cls.TASK_AUTO_CANCEL_THRESHOLD}s) for optimal cleanup. "
+                f"Consider increasing GC_INTERVAL_SECONDS"
+            )
+        
+        if cls.TELEGRAM_CIRCUIT_BREAKER_TIMEOUT >= cls.WS_HEARTBEAT_INTERVAL:
+            logger.warning(
+                f"TELEGRAM_CIRCUIT_BREAKER_TIMEOUT ({cls.TELEGRAM_CIRCUIT_BREAKER_TIMEOUT}s) should be less than "
+                f"WS_HEARTBEAT_INTERVAL ({cls.WS_HEARTBEAT_INTERVAL}s). "
+                f"Auto-adjusting TELEGRAM_CIRCUIT_BREAKER_TIMEOUT to {cls.WS_HEARTBEAT_INTERVAL - 1}s"
+            )
+            cls.TELEGRAM_CIRCUIT_BREAKER_TIMEOUT = float(cls.WS_HEARTBEAT_INTERVAL - 1)
+        
+        if cls.MEMORY_CRITICAL_THRESHOLD_MB <= cls.MEMORY_WARNING_THRESHOLD_MB:
+            logger.warning(
+                f"MEMORY_CRITICAL_THRESHOLD_MB ({cls.MEMORY_CRITICAL_THRESHOLD_MB}MB) should be greater than "
+                f"MEMORY_WARNING_THRESHOLD_MB ({cls.MEMORY_WARNING_THRESHOLD_MB}MB). "
+                f"Auto-adjusting MEMORY_CRITICAL_THRESHOLD_MB to {cls.MEMORY_WARNING_THRESHOLD_MB + 50}MB"
+            )
+            cls.MEMORY_CRITICAL_THRESHOLD_MB = cls.MEMORY_WARNING_THRESHOLD_MB + 50
+        
+        if cls.MAX_CANDLE_HISTORY < 50:
+            logger.warning(
+                f"MAX_CANDLE_HISTORY ({cls.MAX_CANDLE_HISTORY}) is less than 50. "
+                f"Strategy requires at least 50 candles for proper analysis. "
+                f"Auto-adjusting MAX_CANDLE_HISTORY to 50"
+            )
+            cls.MAX_CANDLE_HISTORY = 50
     
     @classmethod
     def validate_runtime(cls) -> dict:

@@ -856,7 +856,9 @@ class MarketDataClient:
         self._candle_close_callbacks: List[Callable] = []
         
         self._db_manager = db_manager
-        self._pending_h1_candles: List[dict] = []
+        # Bounded deque to prevent memory leaks if DB save fails repeatedly
+        # maxlen=24 allows buffering up to 24 hours of H1 candles
+        self._pending_h1_candles: deque = deque(maxlen=24)
         self._pending_h1_lock = threading.Lock()
         
         self.circuit_breaker = CircuitBreaker(
@@ -1085,10 +1087,16 @@ class MarketDataClient:
             except RuntimeError as e:
                 logger.warning(f"Cannot schedule H1 save (no event loop): {e}")
                 with self._pending_h1_lock:
+                    # Warn if queue is near capacity (deque maxlen=24)
+                    if len(self._pending_h1_candles) >= 20:
+                        logger.warning(f"⚠️ Pending H1 candle queue near capacity ({len(self._pending_h1_candles)}/24) - oldest candles will be dropped")
                     self._pending_h1_candles.append(candle.copy())
                     logger.info(f"📦 H1 candle queued for later save (no event loop): {candle['timestamp']}")
         else:
             with self._pending_h1_lock:
+                # Warn if queue is near capacity (deque maxlen=24)
+                if len(self._pending_h1_candles) >= 20:
+                    logger.warning(f"⚠️ Pending H1 candle queue near capacity ({len(self._pending_h1_candles)}/24) - oldest candles will be dropped")
                 self._pending_h1_candles.append(candle.copy())
                 logger.info(f"📋 H1 candle queued for later save (db_manager not ready): {candle['timestamp']}")
             

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, Dict, List, Any
 from dataclasses import dataclass, field
+import threading
 import pytz
 from sqlalchemy.exc import SQLAlchemyError
 from bot.logger import setup_logger
@@ -81,6 +82,7 @@ class DynamicRiskCalculator:
         self.db = db_manager
         self.risk_manager = risk_manager
         
+        self._lock = threading.RLock()
         self._exposure_cache: Dict[int, ExposureRecord] = {}
         self._position_timestamps: Dict[int, List[datetime]] = {}
         
@@ -465,11 +467,12 @@ class DynamicRiskCalculator:
             cache_key = user_id
             cache_ttl = 30
             
-            if cache_key in self._exposure_cache:
-                cached = self._exposure_cache[cache_key]
-                cache_age = (utc_now - cached.last_updated).total_seconds()
-                if cache_age < cache_ttl:
-                    return self._build_exposure_response(cached)
+            with self._lock:
+                if cache_key in self._exposure_cache:
+                    cached = self._exposure_cache[cache_key]
+                    cache_age = (utc_now - cached.last_updated).total_seconds()
+                    if cache_age < cache_ttl:
+                        return self._build_exposure_response(cached)
             
             session = self.db.get_session()
             if session is None:
@@ -520,7 +523,8 @@ class DynamicRiskCalculator:
                     last_updated=utc_now
                 )
                 
-                self._exposure_cache[cache_key] = exposure_record
+                with self._lock:
+                    self._exposure_cache[cache_key] = exposure_record
                 
                 return self._build_exposure_response(exposure_record, daily_realized_loss)
                 
@@ -591,9 +595,10 @@ class DynamicRiskCalculator:
                 - status: 'CLOSED', 'TP_HIT', 'SL_HIT', etc.
         """
         try:
-            if user_id in self._exposure_cache:
-                del self._exposure_cache[user_id]
-                logger.debug(f"Cleared exposure cache for user {user_id}")
+            with self._lock:
+                if user_id in self._exposure_cache:
+                    del self._exposure_cache[user_id]
+                    logger.debug(f"Cleared exposure cache for user {user_id}")
             
             trade_id = trade_result.get('trade_id')
             actual_pl = trade_result.get('actual_pl', 0.0)
@@ -1032,6 +1037,7 @@ class RiskManager:
         self.config = config
         self.db = db_manager
         self.alert_system = alert_system
+        self._lock = threading.RLock()
         self.last_signal_time = {}
         self.daily_stats = {}
         self.risk_warning_sent_today = {}
@@ -1290,14 +1296,15 @@ class RiskManager:
             cache_key = f"drawdown_alert_{user_id}_{current_level}"
             utc_now = datetime.now(pytz.UTC)
             
-            if cache_key in self.risk_warning_sent_today:
-                last_alert_time = self.risk_warning_sent_today[cache_key]
-                time_since_last = (utc_now - last_alert_time).total_seconds()
-                
-                if time_since_last < alert_cooldown:
-                    logger.debug(f"[DRAWDOWN] Alert cooldown active for user {user_id} "
-                               f"({time_since_last:.0f}s < {alert_cooldown}s)")
-                    return None
+            with self._lock:
+                if cache_key in self.risk_warning_sent_today:
+                    last_alert_time = self.risk_warning_sent_today[cache_key]
+                    time_since_last = (utc_now - last_alert_time).total_seconds()
+                    
+                    if time_since_last < alert_cooldown:
+                        logger.debug(f"[DRAWDOWN] Alert cooldown active for user {user_id} "
+                                   f"({time_since_last:.0f}s < {alert_cooldown}s)")
+                        return None
             
             if current_level == 'EMERGENCY':
                 alert_message = (
@@ -1326,7 +1333,8 @@ class RiskManager:
             else:
                 return None
             
-            self.risk_warning_sent_today[cache_key] = utc_now
+            with self._lock:
+                self.risk_warning_sent_today[cache_key] = utc_now
             
             if self.alert_system:
                 await self.alert_system.send_risk_warning(
@@ -1366,16 +1374,17 @@ class RiskManager:
         cache_key = f"{user_id}_{today_str}"
         cache_ttl = 60
         
-        if cache_key in self.daily_stats:
-            cached_data = self.daily_stats[cache_key]
-            cache_age = (utc_now - cached_data['timestamp']).total_seconds()
-            if cache_age < cache_ttl:
-                total_daily_pl = cached_data['total_pl']
-                logger.debug(f"Using cached daily P/L for user {user_id}: ${total_daily_pl:.2f} (age: {cache_age:.1f}s)")
+        with self._lock:
+            if cache_key in self.daily_stats:
+                cached_data = self.daily_stats[cache_key]
+                cache_age = (utc_now - cached_data['timestamp']).total_seconds()
+                if cache_age < cache_ttl:
+                    total_daily_pl = cached_data['total_pl']
+                    logger.debug(f"Using cached daily P/L for user {user_id}: ${total_daily_pl:.2f} (age: {cache_age:.1f}s)")
+                else:
+                    total_daily_pl = None
             else:
                 total_daily_pl = None
-        else:
-            total_daily_pl = None
         
         if total_daily_pl is None:
             session = self.db.get_session()
@@ -1396,10 +1405,11 @@ class RiskManager:
                 
                 total_daily_pl = sum([pl[0] for pl in daily_pl if pl[0] is not None])
                 
-                self.daily_stats[cache_key] = {
-                    'total_pl': total_daily_pl,
-                    'timestamp': utc_now
-                }
+                with self._lock:
+                    self.daily_stats[cache_key] = {
+                        'total_pl': total_daily_pl,
+                        'timestamp': utc_now
+                    }
                 logger.debug(f"Cached daily P/L for user {user_id}: ${total_daily_pl:.2f}")
                 
             except SQLAlchemyError as e:
@@ -1505,7 +1515,8 @@ class RiskManager:
             return True, f"Time check error: {str(e)}"
     
     def record_signal(self, user_id: int):
-        self.last_signal_time[user_id] = datetime.now(pytz.UTC)
+        with self._lock:
+            self.last_signal_time[user_id] = datetime.now(pytz.UTC)
         logger.debug(f"Signal recorded for user {user_id}, cooldown timer started")
     
     def calculate_position_size(self, account_balance: float, entry_price: float, 

@@ -16,9 +16,71 @@ import fcntl
 import atexit
 import threading
 import pytz
+import hmac
+import time
 from datetime import datetime
 from aiohttp import web
 from typing import Optional, Dict, Any
+from collections import defaultdict
+
+
+class WebhookRateLimiter:
+    """Simple in-memory rate limiter for webhook requests"""
+    
+    def __init__(self, max_requests: int = 100, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._requests: Dict[str, list] = defaultdict(list)
+        self._lock = threading.Lock()
+    
+    def is_allowed(self, ip: str) -> bool:
+        """Check if request from IP is allowed"""
+        current_time = time.time()
+        cutoff_time = current_time - self.window_seconds
+        
+        with self._lock:
+            self._requests[ip] = [t for t in self._requests[ip] if t > cutoff_time]
+            
+            if len(self._requests[ip]) >= self.max_requests:
+                return False
+            
+            self._requests[ip].append(current_time)
+            return True
+    
+    def cleanup(self):
+        """Remove expired entries to prevent memory growth"""
+        current_time = time.time()
+        cutoff_time = current_time - self.window_seconds
+        
+        with self._lock:
+            expired_ips = [ip for ip, times in self._requests.items() 
+                          if not times or all(t <= cutoff_time for t in times)]
+            for ip in expired_ips:
+                del self._requests[ip]
+
+
+def verify_webhook_signature(request_token: str, expected_secret: str) -> bool:
+    """Verify Telegram webhook signature using constant-time comparison"""
+    if not expected_secret:
+        return True
+    if not request_token:
+        return False
+    return hmac.compare_digest(request_token, expected_secret)
+
+
+def get_client_ip(request) -> str:
+    """Extract client IP from request, handling proxies"""
+    forwarded = request.headers.get('X-Forwarded-For', '')
+    if forwarded:
+        return forwarded.split(',')[0].strip()
+    real_ip = request.headers.get('X-Real-IP', '')
+    if real_ip:
+        return real_ip.strip()
+    peername = request.transport.get_extra_info('peername')
+    if peername:
+        return peername[0]
+    return 'unknown'
+
 
 # Quick health server for Koyeb health checks
 _quick_health_started = False
@@ -51,8 +113,11 @@ def start_quick_health_server():
         async def run():
             global _quick_health_started
             app = web.Application()
+            async def ping_handler(request):
+                return web.Response(text='pong')
+            
             app.router.add_get('/health', health_handler)
-            app.router.add_get('/ping', lambda r: web.Response(text='pong'))
+            app.router.add_get('/ping', ping_handler)
             app.router.add_get('/', health_handler)
             
             runner = web.AppRunner(app)
@@ -62,8 +127,10 @@ def start_quick_health_server():
             _quick_health_started = True
             print(f"[QUICK-START] Health server on port {port}")
             
-            while not _quick_health_stop_event.is_set():
+            while _quick_health_stop_event is None or not _quick_health_stop_event.is_set():
                 await asyncio.sleep(0.5)
+                if _quick_health_stop_event is not None and _quick_health_stop_event.is_set():
+                    break
             
             await runner.cleanup()
         
@@ -181,6 +248,12 @@ class TradingBotOrchestrator:
         self._shutdown_in_progress = False
         self.shutdown_event = asyncio.Event()
         self.health_runner = None
+        
+        # Initialize webhook rate limiter
+        self.webhook_rate_limiter = WebhookRateLimiter(
+            max_requests=self.config.WEBHOOK_RATE_LIMIT,
+            window_seconds=self.config.WEBHOOK_RATE_LIMIT_WINDOW
+        )
         
         # Refresh and validate config
         logger.info("=" * 50)
@@ -317,8 +390,43 @@ class TradingBotOrchestrator:
         if self.telegram_bot and self.config_valid:
             async def webhook_handler(request):
                 try:
+                    client_ip = get_client_ip(request)
+                    
+                    # Rate limiting check
+                    if not self.webhook_rate_limiter.is_allowed(client_ip):
+                        logger.warning(f"Rate limit exceeded for IP: {client_ip}")
+                        return web.Response(
+                            text='Too Many Requests',
+                            status=429,
+                            headers={'Retry-After': str(self.config.WEBHOOK_RATE_LIMIT_WINDOW)}
+                        )
+                    
+                    # Webhook signature verification
+                    if self.config.WEBHOOK_SECRET:
+                        request_token = request.headers.get('X-Telegram-Bot-Api-Secret-Token', '')
+                        if not verify_webhook_signature(request_token, self.config.WEBHOOK_SECRET):
+                            logger.warning(f"Invalid webhook signature from IP: {client_ip}")
+                            return web.Response(text='Unauthorized', status=401)
+                    
                     data = await request.json()
-                    await self.telegram_bot.process_update(data)
+                    
+                    # Telegram user ID validation
+                    user_id = None
+                    if 'message' in data and 'from' in data['message']:
+                        user_id = data['message']['from'].get('id')
+                    elif 'callback_query' in data and 'from' in data['callback_query']:
+                        user_id = data['callback_query']['from'].get('id')
+                    elif 'edited_message' in data and 'from' in data['edited_message']:
+                        user_id = data['edited_message']['from'].get('id')
+                    
+                    if user_id is not None:
+                        Config.ensure_secrets_loaded()
+                        if not Config.has_full_access(user_id):
+                            logger.warning(f"Unauthorized user attempted access: {user_id} from IP: {client_ip}")
+                            return web.Response(text='ok')
+                    
+                    if self.telegram_bot:
+                        await self.telegram_bot.process_update(data)
                     return web.Response(text='ok')
                 except Exception as e:
                     logger.error(f"Webhook error: {e}")
@@ -461,15 +569,17 @@ class TradingBotOrchestrator:
     async def _run_telegram_bot(self):
         """Run telegram bot webhook mode in background"""
         try:
-            await self.telegram_bot.run_webhook()
+            if self.telegram_bot:
+                await self.telegram_bot.run_webhook()
         except Exception as e:
             logger.error(f"Telegram bot error: {e}")
     
     async def _run_market_data_websocket(self):
         """Run market data WebSocket connection to Deriv in background"""
         try:
-            logger.info("Starting Deriv WebSocket connection...")
-            await self.market_data.connect_websocket()
+            if self.market_data:
+                logger.info("Starting Deriv WebSocket connection...")
+                await self.market_data.connect_websocket()
         except Exception as e:
             logger.error(f"Market data WebSocket error: {e}", exc_info=True)
     

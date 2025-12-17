@@ -32,6 +32,10 @@ TRANSACTION_INITIAL_DELAY = 0.1
 DEADLOCK_RETRY_DELAY = 0.2
 QUERY_CACHE_TTL = 30
 CONNECTION_ACQUIRE_TIMEOUT = 10
+SLOW_QUERY_THRESHOLD = 1.0
+DEFAULT_QUERY_TIMEOUT = 30
+SESSION_STALE_THRESHOLD = 300
+METRICS_LOG_INTERVAL = 60
 
 class DatabaseError(Exception):
     """Base exception for database errors"""
@@ -56,6 +60,264 @@ class DeadlockError(DatabaseError):
 class OrphanedRecordError(DatabaseError):
     """Orphaned record detected - trade/position mismatch"""
     pass
+
+
+class QueryTimeoutError(DatabaseError):
+    """Query timeout error - query exceeded allowed execution time"""
+    pass
+
+
+class QueryMetrics:
+    """Thread-safe metrics tracker for database query performance.
+    
+    Tracks query counts, slow queries, errors, and timing statistics.
+    """
+    
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._metrics = {
+            'total_queries': 0,
+            'slow_queries': 0,
+            'errors': 0,
+            'total_query_time_ms': 0.0,
+            'max_query_time_ms': 0.0,
+            'queries_by_type': {},
+            'slow_query_log': [],
+            'last_reset': time.time()
+        }
+        self._last_log_time = time.time()
+    
+    def record_query(self, duration_ms: float, query_type: str = 'unknown', is_slow: bool = False):
+        """Record a query execution.
+        
+        Args:
+            duration_ms: Query duration in milliseconds
+            query_type: Type of query (select, insert, update, delete, etc)
+            is_slow: Whether this query exceeded the slow query threshold
+        """
+        with self._lock:
+            self._metrics['total_queries'] += 1
+            self._metrics['total_query_time_ms'] += duration_ms
+            
+            if duration_ms > self._metrics['max_query_time_ms']:
+                self._metrics['max_query_time_ms'] = duration_ms
+            
+            if is_slow:
+                self._metrics['slow_queries'] += 1
+                if len(self._metrics['slow_query_log']) < 100:
+                    self._metrics['slow_query_log'].append({
+                        'duration_ms': duration_ms,
+                        'query_type': query_type,
+                        'timestamp': datetime.utcnow().isoformat()
+                    })
+            
+            if query_type not in self._metrics['queries_by_type']:
+                self._metrics['queries_by_type'][query_type] = 0
+            self._metrics['queries_by_type'][query_type] += 1
+    
+    def record_error(self):
+        """Record a query error."""
+        with self._lock:
+            self._metrics['errors'] += 1
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get current metrics snapshot.
+        
+        Returns:
+            Dict with all tracked metrics
+        """
+        with self._lock:
+            total = self._metrics['total_queries']
+            avg_time = self._metrics['total_query_time_ms'] / total if total > 0 else 0.0
+            slow_rate = (self._metrics['slow_queries'] / total * 100) if total > 0 else 0.0
+            error_rate = (self._metrics['errors'] / total * 100) if total > 0 else 0.0
+            
+            return {
+                'total_queries': self._metrics['total_queries'],
+                'slow_queries': self._metrics['slow_queries'],
+                'errors': self._metrics['errors'],
+                'avg_query_time_ms': round(avg_time, 2),
+                'max_query_time_ms': round(self._metrics['max_query_time_ms'], 2),
+                'slow_query_rate_percent': round(slow_rate, 2),
+                'error_rate_percent': round(error_rate, 2),
+                'queries_by_type': self._metrics['queries_by_type'].copy(),
+                'uptime_seconds': round(time.time() - self._metrics['last_reset'], 0)
+            }
+    
+    def reset(self):
+        """Reset all metrics."""
+        with self._lock:
+            self._metrics = {
+                'total_queries': 0,
+                'slow_queries': 0,
+                'errors': 0,
+                'total_query_time_ms': 0.0,
+                'max_query_time_ms': 0.0,
+                'queries_by_type': {},
+                'slow_query_log': [],
+                'last_reset': time.time()
+            }
+    
+    def get_slow_query_log(self) -> List[Dict]:
+        """Get recent slow queries.
+        
+        Returns:
+            List of slow query records
+        """
+        with self._lock:
+            return self._metrics['slow_query_log'].copy()
+    
+    def should_log_periodic(self) -> bool:
+        """Check if it's time for periodic logging.
+        
+        Returns:
+            True if METRICS_LOG_INTERVAL has passed since last log
+        """
+        current_time = time.time()
+        if current_time - self._last_log_time >= METRICS_LOG_INTERVAL:
+            self._last_log_time = current_time
+            return True
+        return False
+
+
+_query_metrics = QueryMetrics()
+
+
+def log_slow_query(duration_seconds: float, operation: str = 'unknown', context: Optional[str] = None):
+    """Log slow queries that exceed the threshold.
+    
+    Args:
+        duration_seconds: Query duration in seconds
+        operation: Description of the operation being performed
+        context: Additional context about the query
+    """
+    duration_ms = duration_seconds * 1000
+    if duration_seconds > SLOW_QUERY_THRESHOLD:
+        context_str = f" - Context: {context}" if context else ""
+        logger.warning(
+            f"🐌 SLOW QUERY: {operation} took {duration_seconds:.3f}s "
+            f"(threshold: {SLOW_QUERY_THRESHOLD}s){context_str}"
+        )
+        _query_metrics.record_query(duration_ms, operation, is_slow=True)
+        return True
+    else:
+        _query_metrics.record_query(duration_ms, operation, is_slow=False)
+        return False
+
+
+class SessionTracker:
+    """Tracks active sessions and detects stale sessions.
+    
+    Thread-safe session lifecycle monitoring for leak detection.
+    """
+    
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active_sessions: Dict[int, Dict[str, Any]] = {}
+        self._session_count = 0
+    
+    def register_session(self, session) -> int:
+        """Register a new session for tracking.
+        
+        Args:
+            session: SQLAlchemy session object
+            
+        Returns:
+            Unique session ID for tracking
+        """
+        with self._lock:
+            self._session_count += 1
+            session_id = self._session_count
+            self._active_sessions[session_id] = {
+                'created_at': time.time(),
+                'session': session,
+                'thread_id': threading.current_thread().ident
+            }
+            return session_id
+    
+    def unregister_session(self, session_id: int):
+        """Unregister a session after it's closed.
+        
+        Args:
+            session_id: Session ID to unregister
+        """
+        with self._lock:
+            if session_id in self._active_sessions:
+                del self._active_sessions[session_id]
+    
+    def get_stale_sessions(self) -> List[Dict[str, Any]]:
+        """Get list of sessions that have exceeded the stale threshold.
+        
+        Returns:
+            List of stale session info dicts
+        """
+        stale = []
+        current_time = time.time()
+        with self._lock:
+            for session_id, info in self._active_sessions.items():
+                age = current_time - info['created_at']
+                if age > SESSION_STALE_THRESHOLD:
+                    stale.append({
+                        'session_id': session_id,
+                        'age_seconds': round(age, 1),
+                        'thread_id': info['thread_id']
+                    })
+        return stale
+    
+    def cleanup_stale_sessions(self) -> int:
+        """Close and cleanup stale sessions.
+        
+        Returns:
+            Number of sessions cleaned up
+        """
+        stale_sessions = self.get_stale_sessions()
+        cleaned = 0
+        
+        for stale_info in stale_sessions:
+            session_id = stale_info['session_id']
+            with self._lock:
+                if session_id in self._active_sessions:
+                    info = self._active_sessions[session_id]
+                    session = info.get('session')
+                    if session:
+                        try:
+                            session.rollback()
+                            session.close()
+                            logger.warning(
+                                f"🧹 Cleaned up stale session {session_id} "
+                                f"(age: {stale_info['age_seconds']}s, thread: {stale_info['thread_id']})"
+                            )
+                            cleaned += 1
+                        except Exception as e:
+                            logger.error(f"Error cleaning up stale session {session_id}: {e}")
+                    del self._active_sessions[session_id]
+        
+        if cleaned > 0:
+            logger.info(f"🧹 Stale session cleanup completed: {cleaned} sessions cleaned")
+        
+        return cleaned
+    
+    def get_active_count(self) -> int:
+        """Get count of currently active sessions."""
+        with self._lock:
+            return len(self._active_sessions)
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get session tracker status.
+        
+        Returns:
+            Dict with session tracking statistics
+        """
+        stale = self.get_stale_sessions()
+        return {
+            'active_sessions': self.get_active_count(),
+            'stale_sessions': len(stale),
+            'total_sessions_created': self._session_count,
+            'stale_threshold_seconds': SESSION_STALE_THRESHOLD
+        }
+
+
+_session_tracker = SessionTracker()
 
 
 class QueryCache:
@@ -1252,6 +1514,197 @@ class DatabaseManager:
                     session.close()
                 except (OperationalError, SQLAlchemyError) as close_error:
                     logger.error(f"⚠️ Error saat menutup session: {close_error}")
+    
+    @contextmanager
+    def timed_session(self, operation: str = 'database_operation', timeout: Optional[int] = None) -> Generator:
+        """Context manager with query timing, metrics tracking, and optional timeout.
+        
+        Tracks session duration, logs slow queries, and applies query timeout.
+        
+        Args:
+            operation: Name/description of the operation for logging
+            timeout: Query timeout in seconds (uses DEFAULT_QUERY_TIMEOUT if not specified)
+        
+        Usage:
+            with db.timed_session('fetch_trades') as session:
+                trades = session.query(Trade).all()
+                # Automatically tracks timing and logs if slow
+        
+        Yields:
+            Session object for database operations
+            
+        Raises:
+            ConnectionPoolExhausted: If pool is exhausted after all retries
+            QueryTimeoutError: If query exceeds timeout
+            DatabaseError: For other session failures
+        """
+        session = None
+        session_id = None
+        start_time = time.time()
+        effective_timeout = timeout if timeout is not None else DEFAULT_QUERY_TIMEOUT
+        
+        try:
+            session = self.get_session()
+            if session is None:
+                raise DatabaseError("Gagal mendapatkan session database")
+            
+            session_id = _session_tracker.register_session(session)
+            
+            if self.is_postgres and effective_timeout > 0:
+                session.execute(text(f"SET statement_timeout = '{effective_timeout * 1000}'"))
+            
+            yield session
+            session.commit()
+            
+        except ConnectionPoolExhausted:
+            _query_metrics.record_error()
+            logger.error("❌ Timed session gagal: connection pool habis")
+            raise
+        except SATimeoutError as e:
+            _query_metrics.record_error()
+            if session:
+                try:
+                    session.rollback()
+                except (OperationalError, SQLAlchemyError) as rollback_error:
+                    logger.error(f"⚠️ Error saat rollback setelah timeout: {rollback_error}")
+            logger.error(f"❌ Query timeout pada {operation}: {e}")
+            raise QueryTimeoutError(f"Query timeout pada {operation}: {e}") from e
+        except OperationalError as e:
+            _query_metrics.record_error()
+            error_str = str(e).lower()
+            if 'timeout' in error_str or 'statement timeout' in error_str:
+                if session:
+                    try:
+                        session.rollback()
+                    except (OperationalError, SQLAlchemyError):
+                        pass
+                logger.error(f"❌ Query timeout pada {operation} (>{effective_timeout}s): {e}")
+                raise QueryTimeoutError(f"Query timeout pada {operation}: {e}") from e
+            if session:
+                try:
+                    session.rollback()
+                except (OperationalError, SQLAlchemyError) as rollback_error:
+                    logger.error(f"⚠️ Error saat rollback: {rollback_error}")
+            logger.error(f"❌ Error operasional pada {operation}: {e}")
+            raise
+        except SQLAlchemyError as e:
+            _query_metrics.record_error()
+            if session:
+                try:
+                    session.rollback()
+                except (OperationalError, SQLAlchemyError) as rollback_error:
+                    logger.error(f"⚠️ Error saat rollback: {rollback_error}")
+            logger.error(f"❌ Error SQLAlchemy pada {operation}: {e}")
+            raise
+        except Exception as e:
+            _query_metrics.record_error()
+            if session:
+                try:
+                    session.rollback()
+                except (OperationalError, SQLAlchemyError):
+                    pass
+            raise
+        finally:
+            duration = time.time() - start_time
+            log_slow_query(duration, operation)
+            
+            if session_id is not None:
+                _session_tracker.unregister_session(session_id)
+            
+            if session:
+                try:
+                    if self.is_postgres:
+                        session.execute(text("RESET statement_timeout"))
+                    session.close()
+                except (OperationalError, SQLAlchemyError) as close_error:
+                    logger.warning(f"⚠️ Error saat menutup timed session: {close_error}")
+            
+            if _query_metrics.should_log_periodic():
+                self.log_metrics_summary()
+    
+    def get_query_metrics(self) -> Dict[str, Any]:
+        """Get current query metrics.
+        
+        Returns:
+            Dict with query count, slow queries, errors, timing stats
+        """
+        return _query_metrics.get_metrics()
+    
+    def get_session_tracker_status(self) -> Dict[str, Any]:
+        """Get session tracker status.
+        
+        Returns:
+            Dict with active/stale session counts and statistics
+        """
+        return _session_tracker.get_status()
+    
+    def cleanup_stale_sessions(self) -> int:
+        """Clean up stale sessions that exceeded the threshold.
+        
+        Returns:
+            Number of sessions cleaned up
+        """
+        return _session_tracker.cleanup_stale_sessions()
+    
+    def get_comprehensive_metrics(self) -> Dict[str, Any]:
+        """Get comprehensive database metrics including pool, query, and session stats.
+        
+        Returns:
+            Dict with all database metrics
+        """
+        pool_status = self.get_pool_status()
+        query_metrics = self.get_query_metrics()
+        session_status = self.get_session_tracker_status()
+        cache_stats = _query_cache.get_stats()
+        pool_health = self.check_pool_health()
+        
+        return {
+            'pool': pool_status,
+            'queries': query_metrics,
+            'sessions': session_status,
+            'cache': cache_stats,
+            'health': pool_health,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    
+    def log_metrics_summary(self):
+        """Log a summary of all database metrics."""
+        try:
+            metrics = self.get_comprehensive_metrics()
+            
+            logger.info(
+                f"📊 Database Metrics Summary:\n"
+                f"   Pool: checked_out={metrics['pool'].get('checked_out', 'N/A')}, "
+                f"utilization={metrics['pool'].get('pool_utilization_percent', 'N/A')}%\n"
+                f"   Queries: total={metrics['queries']['total_queries']}, "
+                f"slow={metrics['queries']['slow_queries']} ({metrics['queries']['slow_query_rate_percent']}%), "
+                f"errors={metrics['queries']['errors']}\n"
+                f"   Avg query time: {metrics['queries']['avg_query_time_ms']}ms, "
+                f"max: {metrics['queries']['max_query_time_ms']}ms\n"
+                f"   Sessions: active={metrics['sessions']['active_sessions']}, "
+                f"stale={metrics['sessions']['stale_sessions']}\n"
+                f"   Cache: hit_rate={metrics['cache']['hit_rate']}%, "
+                f"items={metrics['cache']['cached_items']}"
+            )
+            
+            if not metrics['health']['healthy']:
+                logger.warning(f"⚠️ Health warnings: {metrics['health']['warnings']}")
+                
+        except Exception as e:
+            logger.error(f"Error logging metrics summary: {e}")
+    
+    def reset_query_metrics(self):
+        """Reset query metrics counters."""
+        _query_metrics.reset()
+        logger.info("📊 Query metrics reset")
+    
+    def get_slow_query_log(self) -> List[Dict]:
+        """Get recent slow queries log.
+        
+        Returns:
+            List of slow query records
+        """
+        return _query_metrics.get_slow_query_log()
     
     @contextmanager
     def transaction_scope(self, isolation_level: Optional[str] = None) -> Generator:

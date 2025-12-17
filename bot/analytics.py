@@ -1,5 +1,12 @@
 """
 Lightweight trading analytics - minimal implementation.
+
+This module provides a simplified analytics implementation that delegates
+to the database manager when possible, or returns sensible defaults.
+This is a production-ready lightweight version, not a full analytics suite.
+
+All methods return proper types (lists/dicts) and handle errors gracefully
+to prevent runtime issues in the calling code.
 """
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
@@ -9,7 +16,16 @@ logger = setup_logger('Analytics')
 
 
 class TradingAnalytics:
-    """Simple trading analytics class"""
+    """Lightweight trading analytics class.
+    
+    Provides basic trade history and performance statistics by delegating
+    to database methods when available. Returns sensible defaults when
+    database methods are unavailable or on errors.
+    
+    Attributes:
+        db: Database manager instance
+        config: Configuration object
+    """
     
     def __init__(self, db_manager, config):
         self.db = db_manager

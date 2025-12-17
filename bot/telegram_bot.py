@@ -350,6 +350,7 @@ class TradingBot:
         self._bot_healthy: bool = False
         self._last_health_check: Optional[datetime] = None
         self._health_check_interval: float = 30.0
+        self._bot_start_time: datetime = datetime.now()  # Untuk tracking uptime
         
         self.dashboard_messages: Dict[int, int] = {}
         self.dashboard_tasks: Dict[int, asyncio.Task] = {}
@@ -379,8 +380,8 @@ class TradingBot:
         
         # CPU Optimization: Use throttle for Free Tier to reduce CPU from 100% to ~20-30%
         free_tier_mode = getattr(self.config, 'FREE_TIER_MODE', True)
-        self.tick_throttle_seconds = getattr(self.config, 'TICK_THROTTLE_SECONDS', 5.0 if free_tier_mode else 0.5)
-        self.signal_check_interval = getattr(self.config, 'SIGNAL_CHECK_INTERVAL', 10.0 if free_tier_mode else 2.0)
+        self.tick_throttle_seconds = getattr(self.config, 'TICK_THROTTLE_SECONDS', 10.0 if free_tier_mode else 0.5)
+        self.signal_check_interval = getattr(self.config, 'SIGNAL_CHECK_INTERVAL', 15.0 if free_tier_mode else 2.0)
         
         if free_tier_mode:
             logger.info(f"✅ FREE TIER CPU Optimization: tick_throttle={self.tick_throttle_seconds}s, signal_check={self.signal_check_interval}s")
@@ -4355,8 +4356,14 @@ class TradingBot:
             if active_count >= max_positions:
                 await update.message.reply_text(
                     f"⏳ *Sinyal Masih Aktif*\n\n"
-                    f"Anda sudah memiliki {active_count} posisi aktif.\n"
-                    f"Tunggu posisi mencapai TP/SL sebelum sinyal baru.",
+                    f"Anda sudah memiliki {active_count} posisi aktif.\n\n"
+                    f"📌 *Mode 1-Sinyal:*\n"
+                    f"Bot menggunakan mode sequential-signal untuk keamanan trading.\n"
+                    f"Maksimal {max_positions} sinyal aktif dalam satu waktu.\n\n"
+                    f"💡 *Langkah selanjutnya:*\n"
+                    f"• Tunggu posisi mencapai TP/SL\n"
+                    f"• Atau tutup posisi secara manual\n"
+                    f"• Gunakan /status untuk melihat posisi aktif",
                     parse_mode='Markdown'
                 )
                 return
@@ -4639,7 +4646,7 @@ class TradingBot:
         
         try:
             if not self.analytics:
-                await message.reply_text("Modul analytics tidak tersedia.")
+                await message.reply_text("⚠️ Modul analytics tidak tersedia saat ini.")
                 return
             
             trades = self.analytics.get_recent_trades(user_id=user_id, limit=10)
@@ -4657,7 +4664,7 @@ class TradingBot:
         except (TimedOut, NetworkError) as e:
             logger.warning(f"Network/timeout error pada riwayat command: {e}")
             try:
-                await message.reply_text("Koneksi timeout, silakan coba lagi.")
+                await message.reply_text("⏳ Koneksi timeout, silakan coba lagi.")
             except (TelegramError, asyncio.CancelledError):
                 pass
         except Conflict as e:
@@ -4667,13 +4674,13 @@ class TradingBot:
         except TelegramError as e:
             logger.error(f"Telegram error pada riwayat command: {e}")
             try:
-                await message.reply_text("Error mengambil riwayat.")
+                await message.reply_text("❌ Gagal mengambil riwayat trading. Silakan coba lagi nanti.")
             except (TelegramError, asyncio.CancelledError):
                 pass
         except (ValueError, TypeError, KeyError, AttributeError) as e:
             logger.error(f"Data error pada riwayat command: {type(e).__name__}: {e}", exc_info=True)
             try:
-                await message.reply_text("Error mengambil riwayat.")
+                await message.reply_text("❌ Gagal mengambil riwayat trading. Silakan coba lagi nanti.")
             except (TelegramError, asyncio.CancelledError):
                 pass
 
@@ -4694,7 +4701,7 @@ class TradingBot:
         
         try:
             if not self.analytics:
-                await message.reply_text("Modul analytics tidak tersedia.")
+                await message.reply_text("⚠️ Modul analytics tidak tersedia saat ini.")
                 return
             
             perf_7d = self.analytics.get_trading_performance(user_id=user_id, days=7)
@@ -4714,7 +4721,7 @@ class TradingBot:
         except (TimedOut, NetworkError) as e:
             logger.warning(f"Network/timeout error pada performa command: {e}")
             try:
-                await message.reply_text("Koneksi timeout, silakan coba lagi.")
+                await message.reply_text("⏳ Koneksi timeout, silakan coba lagi.")
             except (TelegramError, asyncio.CancelledError):
                 pass
         except Conflict as e:
@@ -4724,13 +4731,13 @@ class TradingBot:
         except TelegramError as e:
             logger.error(f"Telegram error pada performa command: {e}")
             try:
-                await message.reply_text("Error mengambil performa.")
+                await message.reply_text("❌ Gagal mengambil data performa. Silakan coba lagi nanti.")
             except (TelegramError, asyncio.CancelledError):
                 pass
         except (ValueError, TypeError, KeyError, AttributeError) as e:
             logger.error(f"Data error pada performa command: {type(e).__name__}: {e}", exc_info=True)
             try:
-                await message.reply_text("Error mengambil performa.")
+                await message.reply_text("❌ Gagal mengambil data performa. Silakan coba lagi nanti.")
             except (TelegramError, asyncio.CancelledError):
                 pass
 
@@ -5067,6 +5074,26 @@ class TradingBot:
                     pass
             
             response_lines.append(f"*🕐 Update Terakhir:* {last_update_text}")
+            
+            uptime_text = "Tidak diketahui"
+            try:
+                uptime_seconds = (datetime.now() - self._bot_start_time).total_seconds()
+                if uptime_seconds < 60:
+                    uptime_text = f"{int(uptime_seconds)} detik"
+                elif uptime_seconds < 3600:
+                    uptime_text = f"{int(uptime_seconds // 60)} menit"
+                elif uptime_seconds < 86400:
+                    hours = int(uptime_seconds // 3600)
+                    minutes = int((uptime_seconds % 3600) // 60)
+                    uptime_text = f"{hours} jam {minutes} menit"
+                else:
+                    days = int(uptime_seconds // 86400)
+                    hours = int((uptime_seconds % 86400) // 3600)
+                    uptime_text = f"{days} hari {hours} jam"
+            except (AttributeError, TypeError):
+                pass
+            
+            response_lines.append(f"*⏱️ Uptime Bot:* {uptime_text}")
             response_lines.append("")
             
             user_positions = {}

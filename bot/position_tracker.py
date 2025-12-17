@@ -345,6 +345,10 @@ class PositionTracker:
         self._slow_task_counts: Dict[str, int] = defaultdict(int)
         self._cancelled_task_names: Set[str] = set()
         
+        self._task_state_lock = threading.Lock()
+        self._history_lock = threading.Lock()
+        self._trailing_stop_lock = threading.Lock()
+        
         self.long_running_threshold = LONG_RUNNING_TASK_THRESHOLD
         self.auto_cancel_threshold = TASK_AUTO_CANCEL_THRESHOLD
         self.slow_task_alert_count = SLOW_TASK_ALERT_COUNT
@@ -371,18 +375,21 @@ class PositionTracker:
             with self._pending_tasks_lock:
                 self._pending_tasks.discard(task)
             
-            if effective_name in self._task_start_times:
-                start_time = self._task_start_times.pop(effective_name)
-                elapsed = (datetime.now(pytz.UTC) - start_time).total_seconds()
-                if elapsed > self.long_running_threshold:
-                    logger.warning(f"⏱️ Task {effective_name} took {elapsed:.2f}s to complete (threshold: {self.long_running_threshold}s)")
-                    self._slow_task_counts[effective_name] += 1
+            with self._task_state_lock:
+                if effective_name in self._task_start_times:
+                    start_time = self._task_start_times.pop(effective_name)
+                    elapsed = (datetime.now(pytz.UTC) - start_time).total_seconds()
+                    if elapsed > self.long_running_threshold:
+                        logger.warning(f"⏱️ Task {effective_name} took {elapsed:.2f}s to complete (threshold: {self.long_running_threshold}s)")
+                        with self._history_lock:
+                            self._slow_task_counts[effective_name] += 1
         except (KeyError, AttributeError, TypeError) as cleanup_err:
             logger.debug(f"Error during task cleanup: {cleanup_err}")
         
         try:
             if task.cancelled():
-                self._cancelled_task_names.add(effective_name)
+                with self._history_lock:
+                    self._cancelled_task_names.add(effective_name)
                 logger.debug(f"Task {effective_name} was cancelled")
                 self._cleanup_task_state(effective_name)
                 return
@@ -395,7 +402,8 @@ class PositionTracker:
         try:
             exception = task.exception()
         except asyncio.CancelledError:
-            self._cancelled_task_names.add(effective_name)
+            with self._history_lock:
+                self._cancelled_task_names.add(effective_name)
             logger.debug(f"Task {effective_name} was cancelled (detected via CancelledError)")
             self._cleanup_task_state(effective_name)
             return
@@ -428,19 +436,27 @@ class PositionTracker:
             try:
                 result = task.result()
                 if task_name:
-                    self._task_results[task_name] = result
+                    with self._task_state_lock:
+                        self._task_results[task_name] = result
                 logger.debug(f"Task {effective_name} completed successfully")
             except asyncio.CancelledError:
-                self._cancelled_task_names.add(effective_name)
+                with self._history_lock:
+                    self._cancelled_task_names.add(effective_name)
                 logger.debug(f"Task {effective_name} was cancelled (detected via result())")
             except asyncio.InvalidStateError as e:
                 logger.debug(f"InvalidStateError getting result for {effective_name}: {e}")
             except (ValueError, TypeError, RuntimeError) as result_err:
                 logger.error(f"Error getting result for {effective_name}: {result_err}")
         
-        if task_name and task_name in self._task_callbacks:
+        callback = None
+        with self._task_state_lock:
+            if task_name and task_name in self._task_callbacks:
+                try:
+                    callback = self._task_callbacks.pop(task_name)
+                except (KeyError, ValueError):
+                    callback = None
+        if callback:
             try:
-                callback = self._task_callbacks.pop(task_name)
                 callback(task)
             except (ValueError, TypeError, RuntimeError, AttributeError) as cb_err:
                 logger.error(f"Task callback error for {task_name}: {cb_err}")
@@ -461,25 +477,29 @@ class PositionTracker:
                 exception_message=str(exception),
                 traceback_str=tb_str
             )
-            self._exception_history.append(record)
-            
-            if len(self._exception_history) > MAX_EXCEPTION_HISTORY:
-                self._exception_history = self._exception_history[-MAX_EXCEPTION_HISTORY:]
+            with self._history_lock:
+                self._exception_history.append(record)
+                
+                if len(self._exception_history) > MAX_EXCEPTION_HISTORY:
+                    self._exception_history = self._exception_history[-MAX_EXCEPTION_HISTORY:]
         except (ValueError, TypeError, AttributeError) as e:
             logger.debug(f"Error recording exception: {e}")
     
     def _cleanup_task_state(self, task_name: str) -> None:
         """Clean up task-related state"""
-        self._task_start_times.pop(task_name, None)
-        self._task_callbacks.pop(task_name, None)
+        with self._task_state_lock:
+            self._task_start_times.pop(task_name, None)
+            self._task_callbacks.pop(task_name, None)
     
     def get_exception_history(self, limit: int = 20) -> List[TaskExceptionRecord]:
         """Get recent exception history for debugging"""
-        return self._exception_history[-limit:]
+        with self._history_lock:
+            return self._exception_history[-limit:]
     
     def get_slow_task_stats(self) -> Dict[str, int]:
         """Get statistics on slow tasks"""
-        return dict(self._slow_task_counts)
+        with self._history_lock:
+            return dict(self._slow_task_counts)
     
     async def _safe_send_notification(self, user_id: int, message: str, 
                                        parse_mode: str = 'Markdown') -> bool:
@@ -536,18 +556,19 @@ class PositionTracker:
         """
         now = datetime.now(pytz.UTC)
         
-        if user_id not in self._trailing_stop_last_notify:
-            self._trailing_stop_last_notify[user_id] = {}
-            return True
-        
-        user_notify_times = self._trailing_stop_last_notify[user_id]
-        last_notify = user_notify_times.get(position_id)
-        
-        if last_notify is None:
-            return True
-        
-        elapsed = (now - last_notify).total_seconds()
-        return elapsed >= self._trailing_stop_notify_cooldown
+        with self._trailing_stop_lock:
+            if user_id not in self._trailing_stop_last_notify:
+                self._trailing_stop_last_notify[user_id] = {}
+                return True
+            
+            user_notify_times = self._trailing_stop_last_notify[user_id]
+            last_notify = user_notify_times.get(position_id)
+            
+            if last_notify is None:
+                return True
+            
+            elapsed = (now - last_notify).total_seconds()
+            return elapsed >= self._trailing_stop_notify_cooldown
     
     def _update_trailing_stop_notify_time(self, user_id: int, position_id: int) -> None:
         """Update waktu terakhir kirim trailing stop notification.
@@ -558,10 +579,11 @@ class PositionTracker:
         """
         now = datetime.now(pytz.UTC)
         
-        if user_id not in self._trailing_stop_last_notify:
-            self._trailing_stop_last_notify[user_id] = {}
-        
-        self._trailing_stop_last_notify[user_id][position_id] = now
+        with self._trailing_stop_lock:
+            if user_id not in self._trailing_stop_last_notify:
+                self._trailing_stop_last_notify[user_id] = {}
+            
+            self._trailing_stop_last_notify[user_id][position_id] = now
     
     def _cleanup_trailing_stop_notify(self, user_id: int, position_id: int) -> None:
         """Cleanup trailing stop notification tracking untuk posisi yang ditutup.
@@ -570,10 +592,11 @@ class PositionTracker:
             user_id: User ID
             position_id: Position ID
         """
-        if user_id in self._trailing_stop_last_notify:
-            self._trailing_stop_last_notify[user_id].pop(position_id, None)
-            if not self._trailing_stop_last_notify[user_id]:
-                del self._trailing_stop_last_notify[user_id]
+        with self._trailing_stop_lock:
+            if user_id in self._trailing_stop_last_notify:
+                self._trailing_stop_last_notify[user_id].pop(position_id, None)
+                if not self._trailing_stop_last_notify[user_id]:
+                    del self._trailing_stop_last_notify[user_id]
     
     def _create_tracked_task(self, coro, name: Optional[str] = None, 
                              on_complete: Optional[Callable] = None,
@@ -608,10 +631,11 @@ class PositionTracker:
             self._pending_tasks.add(task)
             self._completion_event.clear()
         
-        self._task_start_times[effective_name] = datetime.now(pytz.UTC)
-        
-        if on_complete:
-            self._task_callbacks[effective_name] = on_complete
+        with self._task_state_lock:
+            self._task_start_times[effective_name] = datetime.now(pytz.UTC)
+            
+            if on_complete:
+                self._task_callbacks[effective_name] = on_complete
         
         def done_callback(t: asyncio.Task):
             self._on_task_done(t, effective_name)
@@ -741,10 +765,10 @@ class PositionTracker:
         
         elapsed = (datetime.now(pytz.UTC) - start_time).total_seconds()
         pending_final = self.get_pending_task_names()
-        cancelled = list(self._cancelled_task_names)
-        
-        error_tasks = [record.task_name for record in self._exception_history 
-                      if record.timestamp >= start_time]
+        with self._history_lock:
+            cancelled = list(self._cancelled_task_names)
+            error_tasks = [record.task_name for record in self._exception_history 
+                          if record.timestamp >= start_time]
         
         completed_count = initial_count - len(pending_final)
         
@@ -783,8 +807,9 @@ class PositionTracker:
         """Get age in seconds for each running task"""
         now = datetime.now(pytz.UTC)
         ages = {}
-        for task_name, start_time in self._task_start_times.items():
-            ages[task_name] = (now - start_time).total_seconds()
+        with self._task_state_lock:
+            for task_name, start_time in self._task_start_times.items():
+                ages[task_name] = (now - start_time).total_seconds()
         return ages
     
     async def _monitor_task_timeouts(self) -> None:
@@ -821,7 +846,8 @@ class PositionTracker:
                         continue
                     
                     task_name = task.get_name()
-                    start_time = self._task_start_times.get(task_name)
+                    with self._task_state_lock:
+                        start_time = self._task_start_times.get(task_name)
                     
                     if not start_time:
                         continue
@@ -836,7 +862,8 @@ class PositionTracker:
                         tasks_to_cancel.append((task, task_name, age))
                         
                     elif age >= self.long_running_threshold:
-                        slow_count = self._slow_task_counts.get(task_name, 0)
+                        with self._history_lock:
+                            slow_count = self._slow_task_counts.get(task_name, 0)
                         
                         if slow_count == 0:
                             logger.warning(
@@ -946,17 +973,23 @@ class PositionTracker:
         with self._pending_tasks_lock:
             pending_count = len(self._pending_tasks)
         
+        with self._history_lock:
+            slow_task_counts = dict(self._slow_task_counts)
+            exception_count = len(self._exception_history)
+            recent_exceptions = [
+                {"task": r.task_name, "type": r.exception_type, "time": r.timestamp.isoformat()}
+                for r in self._exception_history[-5:]
+            ]
+            cancelled_tasks = list(self._cancelled_task_names)
+        
         return {
             "pending_count": pending_count,
             "pending_tasks": self.get_pending_task_names(),
             "task_ages": ages,
-            "slow_task_counts": dict(self._slow_task_counts),
-            "exception_count": len(self._exception_history),
-            "recent_exceptions": [
-                {"task": r.task_name, "type": r.exception_type, "time": r.timestamp.isoformat()}
-                for r in self._exception_history[-5:]
-            ],
-            "cancelled_tasks": list(self._cancelled_task_names),
+            "slow_task_counts": slow_task_counts,
+            "exception_count": exception_count,
+            "recent_exceptions": recent_exceptions,
+            "cancelled_tasks": cancelled_tasks,
             "thresholds": {
                 "long_running": self.long_running_threshold,
                 "auto_cancel": self.auto_cancel_threshold,
@@ -1047,9 +1080,10 @@ class PositionTracker:
                         cancellation_results[task_name] = "timeout"
                         
                         age = "unknown"
-                        if task_name in self._task_start_times:
-                            age_seconds = (datetime.now(pytz.UTC) - self._task_start_times[task_name]).total_seconds()
-                            age = f"{age_seconds:.1f}s"
+                        with self._task_state_lock:
+                            if task_name in self._task_start_times:
+                                age_seconds = (datetime.now(pytz.UTC) - self._task_start_times[task_name]).total_seconds()
+                                age = f"{age_seconds:.1f}s"
                         
                         logger.warning(f"  ⏰ {task_name}: did not respond to cancel (age: {age})")
                         
@@ -1075,9 +1109,10 @@ class PositionTracker:
         
         with self._pending_tasks_lock:
             self._pending_tasks.clear()
-        self._task_callbacks.clear()
-        self._task_results.clear()
-        self._task_start_times.clear()
+        with self._task_state_lock:
+            self._task_callbacks.clear()
+            self._task_results.clear()
+            self._task_start_times.clear()
         self._completion_event.set()
         
         cancelled_count = sum(1 for s in cancellation_results.values() if 'cancelled' in s)
@@ -2227,7 +2262,11 @@ class PositionTracker:
                     if not self.active_positions[user_id]:
                         del self.active_positions[user_id]
             
-            self._trailing_stop_last_notify.pop(position_id, None)
+            with self._trailing_stop_lock:
+                if user_id in self._trailing_stop_last_notify:
+                    self._trailing_stop_last_notify[user_id].pop(position_id, None)
+                    if not self._trailing_stop_last_notify[user_id]:
+                        del self._trailing_stop_last_notify[user_id]
             
             result_emoji = "✅" if trade_result == 'WIN' else "❌"
             logger.info(f"{'='*50}")
@@ -2769,8 +2808,9 @@ class PositionTracker:
             if timeout_count > 0:
                 logger.warning(f"Shutdown completed with {timeout_count} tasks that did not cancel cleanly")
         
-        self._slow_task_counts.clear()
-        self._cancelled_task_names.clear()
+        with self._history_lock:
+            self._slow_task_counts.clear()
+            self._cancelled_task_names.clear()
         
         async with self._position_lock:
             active_count = sum(len(positions) for positions in self.active_positions.values())
