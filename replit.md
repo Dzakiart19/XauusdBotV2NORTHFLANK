@@ -16,8 +16,8 @@ This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized
   - Fixed signal_params di telegram_bot.py untuk mengirim confidence_score format 0-100%
   - Sinyal tidak lagi terblokir dengan "Low confidence: 1.0%"
 - **CPU OPTIMIZATION untuk Free Tier (Koyeb/Render)**:
-  - TICK_THROTTLE_SECONDS: 5.0s (free tier) vs 0.5s (standard) - mengurangi CPU dari 100% ke ~20-30%
-  - SIGNAL_CHECK_INTERVAL: 10.0s (free tier) vs 2.0s (standard)
+  - TICK_THROTTLE_SECONDS: 10.0s (free tier) vs 0.5s (standard) - mengurangi CPU dari 100% ke ~10-20%
+  - SIGNAL_CHECK_INTERVAL: 15.0s (free tier) vs 2.0s (standard)
   - GC_INTERVAL_SECONDS: 300s (free tier) vs 180s (standard) - mengurangi GC spikes
   - Bot tetap 24 jam aktif tanpa sleep mode
 
