@@ -445,6 +445,11 @@ class TradingBotOrchestrator:
                 await self.telegram_bot.initialize()
                 logger.info("Telegram bot initialized")
                 
+                # Start WebSocket connection to Deriv in background
+                if self.market_data:
+                    asyncio.create_task(self._run_market_data_websocket())
+                    logger.info("Market data WebSocket connection started")
+                
                 # Start webhook mode in background
                 asyncio.create_task(self._run_telegram_bot())
             except Exception as e:
@@ -460,6 +465,14 @@ class TradingBotOrchestrator:
         except Exception as e:
             logger.error(f"Telegram bot error: {e}")
     
+    async def _run_market_data_websocket(self):
+        """Run market data WebSocket connection to Deriv in background"""
+        try:
+            logger.info("Starting Deriv WebSocket connection...")
+            await self.market_data.connect_websocket()
+        except Exception as e:
+            logger.error(f"Market data WebSocket error: {e}", exc_info=True)
+    
     async def shutdown(self):
         """Shutdown the bot"""
         if self._shutdown_in_progress:
@@ -470,6 +483,15 @@ class TradingBotOrchestrator:
         logger.info("Shutting down...")
         
         try:
+            # Stop market data WebSocket first
+            if self.market_data:
+                try:
+                    self.market_data.running = False
+                    self.market_data._is_shutting_down = True
+                    logger.info("Market data WebSocket stopped")
+                except Exception as e:
+                    logger.error(f"Error stopping market data: {e}")
+            
             if self.telegram_bot:
                 try:
                     await asyncio.wait_for(self.telegram_bot.stop(), timeout=10)
