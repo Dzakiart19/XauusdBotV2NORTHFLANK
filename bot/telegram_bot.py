@@ -4170,6 +4170,34 @@ class TradingBot:
                         sl_adjustment_count = pos_sl_adjustment_count
                         max_profit_reached = pos_max_profit_reached
                         
+                        # CRITICAL FIX: Call update_position to check TP/SL and apply trailing stop
+                        # This ensures positions are closed when TP/SL is hit
+                        if self.position_tracker:
+                            try:
+                                close_reason = await asyncio.wait_for(
+                                    self.position_tracker.update_position(user_id, position_id, current_price),
+                                    timeout=5.0
+                                )
+                                if close_reason:
+                                    logger.info(f"📊 Dashboard detected position close: {close_reason} for position {position_id}")
+                                    # Re-fetch position status after update
+                                    session.expire_all()
+                                    position_db = session.query(Position).filter(
+                                        Position.id == position_id,
+                                        Position.user_id == user_id
+                                    ).first()
+                                    if position_db and position_db.status != 'ACTIVE':
+                                        break
+                                    # Update local variables with new SL after trailing stop
+                                    if position_db:
+                                        stop_loss = position_db.stop_loss
+                                        sl_adjustment_count = getattr(position_db, 'sl_adjustment_count', 0) or 0
+                                        max_profit_reached = getattr(position_db, 'max_profit_reached', 0) or 0
+                            except asyncio.TimeoutError:
+                                logger.warning(f"Timeout calling update_position for position {position_id}")
+                            except Exception as e:
+                                logger.error(f"Error calling update_position: {e}")
+                        
                         unrealized_pl = self.risk_manager.calculate_pl(entry_price, current_price, signal_type)
                         
                         position_data = {

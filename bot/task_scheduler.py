@@ -3354,24 +3354,26 @@ def setup_default_tasks(scheduler: TaskScheduler, bot_components: Dict):
             logger.debug("Position monitoring: Skip - market tutup (Sabtu 00:00 UTC - Minggu 21:00 UTC)")
             return
         
-        # Early exit 2: Cek WebSocket connection dan data availability
-        if market_data:
-            if not market_data.is_connected():
-                has_data = market_data.current_bid is not None and market_data.current_ask is not None
-                if not has_data:
-                    logger.debug("Position monitoring: Skip - WebSocket tidak terhubung dan tidak ada data")
-                    return
-        
-        # Early exit 3: Tidak ada position_tracker
+        # Early exit 2: Tidak ada position_tracker
         if not position_tracker:
             logger.debug("Position monitoring: Skip - position_tracker tidak tersedia")
             return
         
-        # Early exit 4: Tidak ada active positions
+        # Early exit 3: Tidak ada active positions
         total_active = sum(len(positions) for positions in position_tracker.active_positions.values())
         if total_active == 0:
             logger.debug("Position monitoring: Skip - tidak ada active positions")
             return
+        
+        # CRITICAL FIX: Even if WebSocket is stale, we should still check TP/SL 
+        # with whatever price data is available (bid/ask from cache or last candle)
+        # This prevents unlimited drawdown when WebSocket is temporarily disconnected
+        if market_data:
+            if not market_data.is_connected():
+                has_data = market_data.current_bid is not None and market_data.current_ask is not None
+                if not has_data:
+                    logger.warning(f"Position monitoring: WebSocket tidak terhubung dan tidak ada data, tapi ada {total_active} posisi aktif - FORCE CHECK!")
+                    # Don't return - let monitor_active_positions handle stale price
         
         # Proses monitoring
         updated = await position_tracker.monitor_active_positions()
