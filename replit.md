@@ -1,9 +1,39 @@
-# XAUUSD Trading Bot - Enhanced Version 2.4
+# XAUUSD Trading Bot - Enhanced Version 2.5
 
 ## Overview
 This project is a comprehensive Telegram-based trading bot for XAUUSD, optimized for Koyeb Free Tier deployment. It provides real-time trading signals with Take Profit/Stop Loss levels, offers a 3-day trial system, and supports paid subscriptions. Key capabilities include a REST API, backtesting engine, report generation, admin monitoring dashboard, and enhanced interactive menus. The bot is designed for 24/7 operation, delivering accurate signals through a multi-indicator strategy with strict validation.
 
 ## Recent Changes (December 2025)
+
+### v2.5 - Robustness & Security Hardening (Dec 17, 2025)
+- **THREAD-SAFETY**: Semua shared dictionaries sekarang thread-safe dengan RLock
+  - PositionTracker: _task_state_lock, _history_lock, _trailing_stop_lock
+  - RiskManager: _lock untuk _exposure_cache dan daily_stats
+  - Tidak ada lagi race conditions dari async/threaded contexts
+- **MEMORY BOUNDS**: Bounded deques untuk mencegah memory leaks
+  - MarketData _pending_h1_candles: deque(maxlen=24)
+  - Candle caches: deque(maxlen=60) untuk free tier
+  - Subscriber queues: asyncio.Queue(maxsize=500)
+- **DATABASE METRICS**: Full observability untuk database layer
+  - QueryMetrics: tracking query count, slow queries, error rate
+  - SessionTracker: deteksi stale sessions (>5 menit)
+  - timed_session: auto-logging untuk slow queries (>1s)
+  - get_comprehensive_metrics(): semua metrics dalam satu call
+- **SECURITY HARDENING**: Webhook endpoint lebih aman
+  - WebhookRateLimiter: max 100 req/menit per IP
+  - Webhook signature verification via X-Telegram-Bot-Api-Secret-Token
+  - User ID validation untuk authorized users only
+- **CONFIG VALIDATION**: Cross-validation untuk interdependent fields
+  - Auto-fix jika TICK_THROTTLE > WS_HEARTBEAT
+  - Auto-fix jika MEMORY_CRITICAL < MEMORY_WARNING
+  - Warning jika GC_INTERVAL < TASK_AUTO_CANCEL_THRESHOLD
+- **UX IMPROVEMENTS**: Pesan error dalam Bahasa Indonesia
+  - Semua error messages diterjemahkan ke Indonesian
+  - Inline help untuk sequential-signal mode
+  - Bot uptime info di /status command
+- **ASYNC HANDLERS**: Fixed main.py LSP errors
+  - Semua route handlers async untuk aiohttp
+  - Null checks untuk optional services
 
 ### v2.4 - Single Signal Mode & CPU Optimization (Dec 17, 2025)
 - **SINGLE ACTIVE SIGNAL**: Diubah dari 4 posisi bersamaan menjadi 1 posisi aktif per user
