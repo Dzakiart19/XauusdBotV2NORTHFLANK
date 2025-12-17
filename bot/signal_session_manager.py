@@ -116,3 +116,52 @@ class SignalSessionManager:
     
     def has_active_session(self, user_id: int) -> bool:
         return user_id in self.active_signals
+    
+    async def update_session(self, user_id: int, position_id: Optional[int] = None, 
+                             trade_id: Optional[str] = None, **kwargs) -> bool:
+        """Update an existing signal session with position/trade info.
+        
+        Args:
+            user_id: The user ID
+            position_id: Optional position ID to link
+            trade_id: Optional trade ID to link
+            **kwargs: Additional fields to update
+            
+        Returns:
+            bool: True if session was updated, False if no session exists
+        """
+        if user_id not in self.active_signals:
+            return False
+        
+        session = self.active_signals[user_id]
+        if position_id is not None:
+            session['position_id'] = position_id
+        if trade_id is not None:
+            session['trade_id'] = trade_id
+        
+        for key, value in kwargs.items():
+            session[key] = value
+        
+        session['updated_at'] = datetime.now()
+        return True
+    
+    async def clear_all_sessions(self, reason: str = 'manual_clear') -> int:
+        """Clear all active signal sessions.
+        
+        Args:
+            reason: Reason for clearing sessions
+            
+        Returns:
+            int: Number of sessions cleared
+        """
+        count = len(self.active_signals)
+        
+        for user_id in list(self.active_signals.keys()):
+            session = self.active_signals.pop(user_id)
+            session['result'] = reason
+            session['closed_at'] = datetime.now()
+            self.signal_history.append(session)
+            self._trigger_event('on_session_end', user_id, session)
+        
+        logger.info(f"Cleared {count} active sessions (reason: {reason})")
+        return count
